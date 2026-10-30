@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Manifest version and description
+        run: >-
+          node -e "const m=require('./manifest.json'),p=require('./package.json');
+          if(m.version!==p.version)throw new Error('manifest.json version '+m.version+' != package.json version '+p.version);
+          if(m.description.length>132)throw new Error('manifest description is '+m.description.length+' characters (limit 132)');
+          console.log('manifest '+m.version+': ok')"

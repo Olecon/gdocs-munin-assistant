@@ -1,0 +1,10 @@
+*.pem
+.DS_Store
+node_modules
+.claude/
+*.zip
+dist/
+.eslintcache
+build.json
+development/
+CLAUDE.local.md

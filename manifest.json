@@ -1,0 +1,104 @@
+{
+  "manifest_version": 3,
+  "name": "Munin Assistant for Google Docs",
+  "short_name": "Docs Munin",
+  "version": "1.1.1",
+  "description": "AI panel for Google Docs (Munin, OpenAI/ChatGPT or Anthropic/Claude API): edits the selection and answers about the document.",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtllY8qC7yswA8tFO3eiUdlpaTgKKKj63/jjTHAd/s6ezEafYDMRcFd7rOFQfaK5IOwuujIIfmkRZEpr39WZfladGHM4cZ3yv12WcEnWtw3lS7wqZRpmJo49oCeHvtHQCvRJ9bxGjKqx59jFpzKvppg6mSby+gQYL2nefTErYOPojNwy+e2TVrKRYLTHj019VFdwzmlzZzW9CNIBd+X+tVZFmX1IwdjRULW0khYLpbDaOKoIe5MR/Y5MXScBtftapOltk8fDkJzVgJ9TcEruaKf6lZ4Pz0ymwy0w7PVvSoxxGduqI+iPLiQGqk4uHM6VVyaokeoqHGM0Lh4uGFv3SFwIDAQAB",
+  "permissions": [
+    "storage",
+    "clipboardWrite",
+    "scripting",
+    "identity",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://api.muninai.org/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://docs.google.com/*",
+    "https://docs.googleapis.com/*",
+    "https://openidconnect.googleapis.com/*",
+    "https://*.googleusercontent.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://localhost:23119/*",
+    "https://api.crossref.org/*",
+    "https://api.openalex.org/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://docs.google.com/document/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sidepanel.html",
+        "icons/*.png"
+      ],
+      "matches": [
+        "https://docs.google.com/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "Open Munin Assistant",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "icon_variants": [
+      {
+        "16": "icons/icon16-light.png",
+        "48": "icons/icon48-light.png",
+        "128": "icons/icon128-light.png",
+        "color_schemes": [
+          "light"
+        ]
+      },
+      {
+        "16": "icons/icon16-dark.png",
+        "48": "icons/icon48-dark.png",
+        "128": "icons/icon128-dark.png",
+        "color_schemes": [
+          "dark"
+        ]
+      }
+    ]
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "icon_variants": [
+    {
+      "16": "icons/icon16-light.png",
+      "48": "icons/icon48-light.png",
+      "128": "icons/icon128-light.png",
+      "color_schemes": [
+        "light"
+      ]
+    },
+    {
+      "16": "icons/icon16-dark.png",
+      "48": "icons/icon48-dark.png",
+      "128": "icons/icon128-dark.png",
+      "color_schemes": [
+        "dark"
+      ]
+    }
+  ]
+}

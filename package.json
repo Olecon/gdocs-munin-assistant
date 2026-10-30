@@ -1,0 +1,21 @@
+{
+  "name": "munin-assistant-gdocs",
+  "version": "1.1.1",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "build": "node scripts/write-build.js",
+    "test": "node --test test/*.test.js test/dom/*.test.js",
+    "zip": "rm -f munin-assistant-$npm_package_version.zip && zip -qr munin-assistant-$npm_package_version.zip manifest.json background.js content.js sidepanel.html sidepanel.css src vendor icons README.md LICENSE"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^16.0.0",
+    "jsdom": "^29.1.1"
+  }
+}

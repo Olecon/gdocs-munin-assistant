@@ -1,0 +1,18 @@
+Germination of two barley cultivars under sodium chloride stress
+Abstract
+We germinated seeds of two spring barley cultivars on filter paper wetted with sodium chloride solutions from 0 to 200 mM and recorded the final germination percentage, the mean germination time and the length of the radicle after seven days. At 150 mM, 81 % of the Rannoch seeds germinated, against 52 % of the Kessel seeds. The difference may reflect the higher sodium exclusion reported for Rannoch seedlings (Haldane and Ruiz, 2016).
+Introduction
+Osei (2012) estimated that salinity reduces the yield of cereals on about a fifth of irrigated land. Germination is the stage at which barley is most sensitive to salt, because the seed takes up water and ions before the roots can exclude sodium. Cultivars differ in how fast they germinate under salt, and a short germination test can rank breeding lines before field trials (Lindgren, 2019; Haldane and Ruiz, 2016).
+Materials and methods
+Seeds were surface sterilised in 1 % sodium hypochlorite for 10 min and rinsed with water. Fifty seeds were placed on two layers of filter paper in each Petri dish, and 8 ml of solution was added. The concentrations were 0, 50, 100, 150 and 200 mM sodium chloride, with four dishes per concentration and cultivar. The dishes were kept in the dark at 20 °C, and a seed was counted as germinated when the radicle was at least 2 mm long.
+The mean germination time was calculated from daily counts as the sum of the number of seeds germinated on each day multiplied by the day, divided by the total number germinated. Radicle length was measured on ten seedlings per dish on day 7. Differences between cultivars were tested with a two-way analysis of variance, and the effect of concentration was described by a logistic curve (Lindgren, 2019).
+Results
+Without salt both cultivars germinated to more than 95 %, and Rannoch needed 1.90 days on average and Kessel 2.0 days. Germination of Kessel fell from 100 mM onwards, while Rannoch kept a high germination percentage up to 150 mM. At 200 mM the two cultivars germinated to 34 % and 11 %.
+The concentration that halved germination was 182 mM for Rannoch and 148 mM for Kessel. Salt delayed germination in both cultivars: at 150 mM the mean germination time was 3.6 days for Rannoch and 4.4 days for Kessel. Radicle length fell faster than germination, and at 150 mM it was 38 % of the control in Rannoch and 21 % in Kessel. Cultivar and concentration interacted significantly (p = 0.003).
+Discussion
+The ranking of the two cultivars agrees with their sodium content in seedlings grown in sand culture (Haldane and Ruiz, 2016). Radicle growth separated the cultivars at a lower concentration than germination did, so it may be the better trait for screening. Our test used constant salt concentrations, whereas the salt content of field soil changes with rain and irrigation, and the ranking should be confirmed in soil.
+A test of seven days with five concentrations takes little space and can be repeated for many lines. We suggest 150 mM as the single concentration for a first screen, because it separated the two cultivars in all three traits.
+References
+Haldane M. and Ruiz P. (2016). Sodium exclusion in barley seedlings. Plant and Soil Research 41, 233–245.
+Lindgren A. (2019). Logistic models of germination under osmotic stress. Seed Biology 27, 88–97.
+Osei K. (2012). Salinity of irrigated land: a review. Agricultural Water Studies 9, 15–31.
