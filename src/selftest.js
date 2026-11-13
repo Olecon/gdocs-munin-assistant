@@ -18,6 +18,7 @@
    renderSelection, REPLACE_TOOL, resetDocsApiTurn, runStream, sendToTab, setBusy, setDocSignalTap, setStatus, showText, showYourTurnSelection,
    snapshotDocument, state, takeSnapshot, toolLoop, useExportRead, APPLY_MODES */
 /* global docsApi, DOCS_GET_FIELDS, fetchDocRevision, LINK_COLOR, numText, SHEET_TYPES, styleSheetFor */
+/* global checkUpdateNow, updateCheckOn */
 /* exported runSelfTest, ST_SIGNAL, ST_WATCH */
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,15 @@ async function stEnvironment(ctx) {
   if (!canRequest(cfg)) return stWarn(detail, `No ${prov.label} API key is set: the provider checks are skipped.`);
   if (!locks) return stWarn(detail, 'navigator.locks is unavailable: tabs of one document are kept apart only within this panel.');
   return stPass(detail);
+}
+
+// The update check's request, now and whatever its throttle says (update-check.js checkUpdateNow): the version field of
+// the repository's manifest.json on GitHub. A store install is kept current by Chrome and asks nothing.
+async function stUpdateCheck() {
+  if (!updateCheckOn()) return stSkip('not an unpacked install: Chrome keeps it up to date');
+  const r = await checkUpdateNow();
+  if (!r.version) return stFail(`the request to GitHub did not get through (${r.error}): check the network and run /test again`);
+  return stPass(`latest ${r.version}, installed ${r.installed}`);
 }
 
 async function stContentScript() {
@@ -1628,7 +1638,7 @@ async function stHandRemove(ctx) {
 // to the gate are the same in both).
 function selfTestChecks(mode = 'api') {
   const head = [
-    ['Environment', stEnvironment], ['Content script', stContentScript], ['Change signal', stChangeSignal], ['Selection', stSelection],
+    ['Environment', stEnvironment], ['Update check', stUpdateCheck], ['Content script', stContentScript], ['Change signal', stChangeSignal], ['Selection', stSelection],
     ['Export read', stExport], ['Docs API read', stDocsApi], ['Model list', stModelList], ['Completion', stCompletion],
     ['Empty document', stEmptyDocument],
   ];

@@ -166,6 +166,13 @@ button.brand-mark:enabled:hover { background: var(--surface-2); border-color: va
 :root[data-theme="light"] #themeBtn .icon-moon { display: block; }
 .icon-btn:disabled { opacity: .45; cursor: default; }
 .icon-btn:disabled:hover { background: transparent; color: var(--fg-2); }
+/* A newer version on GitHub (src/update-check.js): a dot at the gear's top right corner, drawn over the button so the
+   icon and the header do not move; the ring in the header's colour keeps it apart from the gear in both themes. */
+#settingsBtn.update-dot { position: relative; }
+#settingsBtn.update-dot::after {
+  content: ""; position: absolute; top: 0; right: 0; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 1.5px var(--surface); pointer-events: none;
+}
 
 /* Chat switcher (header) and its dropdown */
 .chat-switch {
@@ -299,6 +306,7 @@ button.brand-mark:enabled:hover { background: var(--surface-2); border-color: va
 /* Plain text; its tooltip names the signed-in account. */
 .google-row .google-label { flex: 0 0 auto; white-space: nowrap; cursor: default; color: var(--fg); line-height: 1.6; }
 .settings-version { margin: 8px 0 0; font-size: 11px; color: var(--fg-3); }
+.settings-version a { color: var(--accent-hover); }
 /* Files (same section style as Settings, src/doc-instructions.js): MAIN.md, DOC.md and the document's attached files;
    the open entry in place of the list: the instructions box or the read-only viewer of an attachment. The list
    scrolls by itself, with room left for the header, the section's padding and its heading (about 116px), so the

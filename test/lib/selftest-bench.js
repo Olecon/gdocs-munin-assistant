@@ -97,6 +97,7 @@ const GOOD_USER = {
 async function bench({ hash = '', connected = true, spec = EMPTY(), script = {}, onRequest = null, selection = '', tabExportError = '', panelExportStatus = 0, pasteTimes = 1, user = {}, clock = false } = {}) {
   const env = await load({ hash });
   const { T, state, chrome, ctx } = env;
+  chrome.runtime.getManifest = () => ({ version: '9.9.9' }); // an unpacked install: the Update check row asks GitHub
   const ident = installIdentity(env);
   ident.granted = true;
   installDocTab(env);
@@ -146,6 +147,7 @@ async function bench({ hash = '', connected = true, spec = EMPTY(), script = {},
   const keyOf = (text) => Object.keys(prompts).find((k) => String(text).endsWith(prompts[k])) || (String(text).includes('single word OK') ? 'probe'
     : String(text).includes(`${AGENT_TASK}\n\n`) ? 'agentTask' : '?');
   ctx.fetch = async (url, init = {}) => {
+    if (url === T.UPDATE_MANIFEST_URL) return json({ manifest_version: 3, version: '9.9.9' }); // the Update check row
     const r = await b.fake.fetch(url, init);
     if (r) return r;
     if (url.includes('/export?')) {
@@ -210,7 +212,7 @@ async function bench({ hash = '', connected = true, spec = EMPTY(), script = {},
   return b;
 }
 const statusOf = (rows) => Object.fromEntries(rows.map((r) => [r.name, r.status]));
-const HEAD = ['Environment', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list', 'Completion', 'Empty document'];
+const HEAD = ['Environment', 'Update check', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list', 'Completion', 'Empty document'];
 const READING = ['read_document: outline', 'read_document: lines', 'find_in_document', 'get_selection', 'read_document: formatting', 'Matching'];
 const EDITS = ['Write: replace_text', 'Write: format_text', 'Write: text styles', 'Write: format_lines', 'Write: lists', 'Write: delete_lines', 'Write: undo_last_edit'];
 // The registered Docs API rows (registerSelfTestRows) after "Write: lists".

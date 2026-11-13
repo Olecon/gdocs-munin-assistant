@@ -29,7 +29,8 @@
    DOC_PASS_MODES, DOC_PASS_INLINE_SHARE, PAPER_CARD_PREFIX, DOC_INIT_PREFIX, docInitKey, OPENALEX_URL,
    AGENT_MAX_PER_TURN, AGENT_MAX_RUNNING, AGENTS_PREFIX, AGENT_REGISTRY_MAX, AGENT_MAX_ROUNDS, AGENT_TOKEN_BUDGET, AGENT_RESULT_MAX_CHARS, AGENT_WRAP_UP_TEXT, MODEL_NOTES,
    AGENT_TIME_LIMIT_MS, AGENT_TIME_GRACE_MS, AGENT_LABEL_WORDS, AGENT_LOG_MAX, AGENT_FULL_MAX_CHARS,
-   CHAT_TITLE_NAMED_MAX, CHAT_TITLE_MAX_WORDS, CHAT_TITLE_ANSWER_CHARS, CHAT_TITLE_MESSAGE_CHARS, CHAT_TITLE_REPLY_TOKENS */
+   CHAT_TITLE_NAMED_MAX, CHAT_TITLE_MAX_WORDS, CHAT_TITLE_ANSWER_CHARS, CHAT_TITLE_MESSAGE_CHARS, CHAT_TITLE_REPLY_TOKENS,
+   UPDATE_MANIFEST_URL, UPDATE_PAGE_URL, UPDATE_CHECK_KEY */
 
 // Assistant panel (runs as an extension page inside an iframe that content.js injects into the
 // Google Docs page; the host tab ID comes from location.hash "#tabId=N"): chat UI, settings,
@@ -559,6 +560,12 @@ const CHAT_TITLE_MAX_WORDS = 8;
 const CHAT_TITLE_ANSWER_CHARS = 600;
 const CHAT_TITLE_MESSAGE_CHARS = 1000;
 const CHAT_TITLE_REPLY_TOKENS = { munin: 512, openai: 1024, anthropic: 100 };
+// The update check of an unpacked install (src/update-check.js): the repository's manifest.json on GitHub (its version
+// field is the latest version; one plain GET, nothing about the user is sent), the page the Update link of the Settings
+// version line opens, and the record of the last attempt, shared by every panel of the browser ({ at, ok, version }).
+const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/Olecon/gdocs-munin-assistant/main/manifest.json';
+const UPDATE_PAGE_URL = 'https://github.com/Olecon/gdocs-munin-assistant#update';
+const UPDATE_CHECK_KEY = 'muninUpdateCheck';
 // 'light' | 'dark'; nothing stored: follow the system.
 const THEME_KEY = 'muninTheme';
 const SYSTEM_THEME_QUERY = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: light)') : null;

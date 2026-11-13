@@ -43,9 +43,11 @@ The model is chosen per chat in the model menu under the input (see Use); the me
 
 ## Privacy
 
-Document text, selection and messages go only to the selected provider with your key. API keys, chats and settings are stored locally in the browser. Policy: https://iyushin.ru/munin/privacy.html
+Document text, selection and messages go only to the selected provider with your key. API keys, chats and settings are stored locally in the browser. Once a day the panel also asks GitHub for the latest version number; that request carries none of your data. Policy: https://iyushin.ru/munin/privacy.html
 
 ## Update
+
+About once a day the panel asks GitHub whether a newer version exists (one request for this repository's `manifest.json`; nothing about you or your documents is sent). A newer version shows as a dot on the gear icon and at the bottom of Settings.
 
 Pull or download the new version, click the reload icon on the extension card in `chrome://extensions`, reload the Docs tabs. Keys saved by an earlier version become providers in the new list by themselves; existing chats keep the provider and model you used last. Files attached in a chat by an earlier version move to the document's Files by themselves.
 

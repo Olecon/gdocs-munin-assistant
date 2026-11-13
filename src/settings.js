@@ -9,7 +9,8 @@
 /* global addError, allStorageKeys, DOC_INSTRUCTIONS_MAX, LEGACY_USER_INSTRUCTIONS_KEY, MAIN_INSTRUCTIONS_KEY, PAPER_CARD_PREFIX, ANTHROPIC_VERSION, apiError, APPLY_MODE_DESCS, APPLY_MODE_KEY, APPLY_MODE_ORDER, APPLY_MODES, closeFiles,
    ACCOUNT_NAME_MAX, ACCOUNTS_KEY, anthropicAdaptive, openaiReasoningModel, DEFAULT_PROVIDER, el, GOOGLE_ACCOUNT_KEY, GOOGLE_CONNECTED_KEY, KEY_CHECK_DEBOUNCE_MS, LAST_MODEL_KEY, LEGACY_SETTING_FIELDS, modelsKey,
    OMITTABLE_FIELDS, PROVIDER_IDS, PROVIDER_STORAGE_KEY, PROVIDERS, REFERENCES_KEY, REFERENCES_ORIGINS, refreshModelMenu, renderChatModel, renderEmpty, renderGoogleStatus, sanitizeGoogleAccount, chooseModel,
-   MODE_BUTTON_TITLE, MODELS_FETCH_TIMEOUT_MS, chatProbeOn, probeChat, renderContextGauge, setChatModelMeta, STALE_SETTING_KEYS, state, storageKey, SYSTEM_THEME_QUERY, THEME_KEY */
+   MODE_BUTTON_TITLE, MODELS_FETCH_TIMEOUT_MS, chatProbeOn, probeChat, renderContextGauge, setChatModelMeta, STALE_SETTING_KEYS, state, storageKey, SYSTEM_THEME_QUERY, THEME_KEY,
+   UPDATE_PAGE_URL */
 /* exported defaultSettings, activeProvider, activeConfig, accountById, accountConfig, accountModel, accounts, chatAccount, chatChoice,
    loadSettings, onApiKeyInput, onApiKeyBlur, onNameChange, onUrlChange, addAccount, removeAccount, setChatModel, markAccountHealth,
    healthState, healthTime, healthTitle, healthError, isOutage, sanitizeAccounts, typeName, fetchModelList, canRequest, providerFor, toggleAccountRow,
@@ -17,7 +18,7 @@
    serverAccess, serverHost, sanitizeParams, accountParams, setAccountParams, defaultReplyTokens, temperatureRefused, cappedReply,
    TEMPERATURE_MAX, cleanTemperature, modelPrefixOf, fullModelId, shortModelId, syncRowModels,
    checkModels, openSettings, closeSettings, saveSettings, bindSettingsForm, loadApplyMode, setApplyMode, cycleApplyMode, bindModeMenu, closeModeMenu, isAutoMode, isPlanMode, applyTurnMode, sentApplyMode, systemTheme,
-   applyTheme, loadTheme, toggleTheme */
+   applyTheme, loadTheme, toggleTheme, renderVersion */
 
 // ---------------------------------------------------------------------------
 // Settings: accounts (ACCOUNTS_KEY). An account is { id, type (a PROVIDERS key), name (unique, editable), apiKey,
@@ -1518,13 +1519,22 @@ function clearSettingsErrors() {
   if (!el.chat.children.length) renderEmpty();
 }
 
-// The extension's version, at the bottom of the settings.
-function renderVersion() {
+// The extension's version, at the bottom of the settings. newer: a newer version on GitHub (src/update-check.js), shown
+// as "Version 1.1.3 · 1.1.4 available · Update" with Update a link to the README's Update section; built from text
+// nodes, since the newer version is fetched text.
+function renderVersion(newer = '') {
   const node = document.getElementById('settingsVersion');
   if (!node) return;
   let v = '';
   try { v = chrome.runtime.getManifest().version || ''; } catch (e) { /* no manifest (tests) */ }
   node.textContent = v ? `Version ${v}` : '';
+  if (!v || !newer) return;
+  const link = document.createElement('a');
+  link.href = UPDATE_PAGE_URL;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = 'Update';
+  node.append(document.createTextNode(` · ${newer} available · `), link);
 }
 renderVersion();
 

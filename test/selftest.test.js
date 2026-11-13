@@ -50,8 +50,13 @@ async function bench({ connected = true, exportFail = false, reply = 'OK', onMod
   const urls = [];
   const b = { env, T, state, ctx, fake, tabMsgs, bodies, urls, statuses: [], cards: [], turns: [] };
   ctx.exportSleep = async () => {};
+  b.latest = '9.9.9'; // the version field of the repository's manifest.json (the Update check row); null: the request fails
   ctx.fetch = async (url, init = {}) => {
     urls.push(url);
+    if (url === T.UPDATE_MANIFEST_URL) {
+      if (b.latest == null) throw new TypeError('Failed to fetch');
+      return json({ manifest_version: 3, version: b.latest });
+    }
     const r = await b.fake.fetch(url, init);
     if (r) return r;
     if (url.includes('/export?')) return exportFail ? json({ error: 'forbidden' }, 403) : { ok: true, status: 200, text: async () => exportText, headers: { get: () => '' } };
@@ -115,7 +120,7 @@ test('parseSlashCommand: /test, with anything after it ignored', async () => {
   deq(Object.keys(T.SELFTEST_COMMANDS), ['test']);
 });
 
-const HARMLESS = ['Environment', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list', 'Completion'];
+const HARMLESS = ['Environment', 'Update check', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list', 'Completion'];
 const READING = ['read_document: outline', 'read_document: lines', 'find_in_document', 'get_selection', 'read_document: formatting', 'Matching'];
 const EDITS = ['Write: replace_text', 'Write: format_text', 'Write: text styles', 'Write: format_lines', 'Write: lists', 'Write: delete_lines', 'Write: undo_last_edit'];
 // The registered Docs API rows (registerSelfTestRows) after "Write: lists".
@@ -172,15 +177,15 @@ test('/test on a document with text: the harmless checks pass, "Empty document" 
   assert.ok(md.includes('- Document: «My Doc» (DOC123) · Docs tab t.0 «Main» · browser tab 7'));
   assert.ok(md.includes('| # | Check | Result | Time | Detail |\n|---|---|---|---|---|\n| 1 | Environment | pass |'));
   assert.strictEqual(md.split('\n').filter((l) => /^\| \d+ \|/.test(l)).length, rows.length);
-  assert.ok(md.includes('**Summary:** 9 passed, 0 warnings, 1 failed, 32 skipped'));
+  assert.ok(md.includes('**Summary:** 10 passed, 0 warnings, 1 failed, 32 skipped'));
   deq(b.turns, [], 'no Your-turn card on a document with text');
   assert.ok(!md.includes('- Model:'), 'no model line without the model scenarios');
   assert.ok(!Object.keys(b.env.storage).some((k) => k.startsWith('muninSelfTest:')), 'the report is not stored');
   // the progress was in the chat's live row, not in the status line, which is back to the document line
   deq(b.statuses.filter((s) => /self-test/i.test(s)), []);
   deq(b.live[0], 'Self-test running… orbits');
-  deq(b.live[1], 'Self-test: 1 of 42 · Environment orbits');
-  assert.ok(b.live.includes('Self-test: 42 of 42 · Multi-tab orbits'));
+  deq(b.live[1], 'Self-test: 1 of 43 · Environment orbits');
+  assert.ok(b.live.includes('Self-test: 43 of 43 · Multi-tab orbits'));
   assert.ok(b.live.every((t) => t.startsWith('Self-test')), 'the live row shows only the progress');
   assert.strictEqual(b.liveRow(), undefined, 'the live row is gone, the report card took its place');
   assert.strictEqual(b.liveOrb.getAttribute('data-orb'), null, 'the orb loop stopped');
@@ -201,7 +206,7 @@ test('/test without a Google account on a document with text: the Docs API check
   assert.strictEqual(b.row('Empty document').detail, `the document is not empty (${EXPORT_MD.length} characters, 19 lines): open a new, empty Google Doc and run /test there`);
   assert.ok(!b.urls.some((u) => u.includes('docs.googleapis.com')), 'no Docs API call');
   assert.strictEqual(s.Completion, 'pass');
-  assert.ok(b.live.includes('Self-test: 1 of 31 · Environment orbits'), b.live.join('\n'));
+  assert.ok(b.live.includes('Self-test: 1 of 32 · Environment orbits'), b.live.join('\n'));
 });
 
 test('/test: a failing export (download disabled) fails that check and the gate; the harmless checks go on', async () => {
@@ -212,7 +217,7 @@ test('/test: a failing export (download disabled) fails that check and the gate;
   assert.match(b.row('Export read').detail, /^Could not get the document text \(HTTP 403; download disabled\)\. · 3 export requests in this self-test$/);
   const gate = 'the document text is unavailable: Could not get the document text (HTTP 403; download disabled).'; // no second read
   deq([s['Empty document'], b.row('Empty document').detail], ['fail', gate]);
-  assert.strictEqual(b.rows().length, 31);
+  assert.strictEqual(b.rows().length, 32);
   assert.strictEqual(b.row('read_document: lines').detail, `not run: ${gate}`);
   assert.strictEqual(b.row('Model: insert at the cursor').detail, `not run: ${gate}`);
   assert.strictEqual(s['Model list'], 'pass');
@@ -245,8 +250,8 @@ test('/test on an empty document: the write cycle runs without a card, the readi
   // the Your-turn cards are skipped: the replace row with them; nothing changed, so the paragraph is not rewritten
   deq(b.turns.length, 3);
   // while a card waits, the live row says so with the listening orb
-  assert.ok(b.live.includes('Self-test: 17 of 42 · Your turn: select text · your turn (see the card below) wave'), b.live.join('\n'));
-  assert.ok(b.live.includes('Self-test: 17 of 42 · Your turn: select text orbits'));
+  assert.ok(b.live.includes('Self-test: 18 of 43 · Your turn: select text · your turn (see the card below) wave'), b.live.join('\n'));
+  assert.ok(b.live.includes('Self-test: 18 of 43 · Your turn: select text orbits'));
   deq(b.statuses.filter((x) => /self-test/i.test(x)), []);
   deq([b.row('Your turn: typing signal').status, b.row('Your turn: typing signal').detail], ['skip', 'skipped by the user']);
   deq([b.row('Your turn: select text').status, b.row('Your turn: select text').detail], ['skip', 'skipped by the user']);
@@ -280,7 +285,7 @@ test('/test on an empty document: the write cycle runs without a card, the readi
   assert.match(b.row('Write: undo_last_edit').detail, /revision rev-1 → rev-48$/);
   assert.strictEqual(JSON.stringify(state.messages), before, 'the edit journal never reaches the chat');
   assert.ok(!b.card()._report.includes('Write cycle:'));
-  assert.match(b.card()._report, /\*\*Summary:\*\* 24 passed, 1 warning, 0 failed, 17 skipped/);
+  assert.match(b.card()._report, /\*\*Summary:\*\* 25 passed, 1 warning, 0 failed, 17 skipped/);
   assert.strictEqual(state.busy, false);
 });
 
@@ -317,10 +322,10 @@ test('/test: Stop mid-run ends it and the report lists the checks that ran', asy
   const b = await bench({ onModels: (x) => x.state.abort.abort() });
   await b.run('/test');
   const rows = b.rows();
-  deq(rows.map((r) => r.name), ['Environment', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list']);
+  deq(rows.map((r) => r.name), ['Environment', 'Update check', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list']);
   assert.strictEqual(b.bodies.length, 0, 'no completion after Stop');
   assert.ok(b.card()._selfTest.stopped);
-  assert.match(b.card()._report, /stopped by the user after 7 of 42 checks/);
+  assert.match(b.card()._report, /stopped by the user after 8 of 43 checks/);
   assert.strictEqual(b.liveRow(), undefined, 'Stop: the live row is gone');
   assert.strictEqual(b.liveOrb.getAttribute('data-orb'), null, 'Stop: the orb loop stopped');
   assert.strictEqual(b.state.busy, false);
@@ -364,4 +369,47 @@ test('Environment: the row names the mode of the cycler', async () => {
     await b.run('/test');
     assert.ok(b.row('Environment').detail.includes(` · Mode: ${label} · `), mode);
   }
+});
+
+// The Update check row (src/update-check.js checkUpdateNow): the GitHub request now, also when the daily check is not due.
+test('Update check: the request runs now whatever the throttle; the row names latest and installed; the version read is stored as a daily check stores it', async () => {
+  const b = await bench({ connected: false });
+  b.env.storage.muninUpdateCheck = { at: Date.now(), ok: true, version: '9.9.9' }; // a check just ran: none is due
+  b.latest = '9.10.0';
+  await b.run('/test');
+  const r = b.row('Update check');
+  deq([r.status, r.detail], ['pass', 'latest 9.10.0, installed 9.9.9']);
+  assert.strictEqual(b.urls.filter((u) => u === b.T.UPDATE_MANIFEST_URL).length, 1);
+  const rec = b.env.storage.muninUpdateCheck;
+  deq([rec.ok, rec.version], [true, '9.10.0']);
+  assert.ok(Number.isFinite(rec.at));
+  assert.ok(b.env.elements.get('settingsBtn').classList.contains('update-dot'), 'the marks follow the stored version');
+  // an install ahead of GitHub: the row passes, nothing is marked
+  const ahead = await bench({ connected: false });
+  ahead.latest = '9.9.8';
+  await ahead.run('/test');
+  deq([ahead.row('Update check').status, ahead.row('Update check').detail], ['pass', 'latest 9.9.8, installed 9.9.9']);
+  assert.ok(!ahead.env.elements.get('settingsBtn').classList.contains('update-dot'));
+});
+
+test('Update check: a request that does not get through is a red row that says what to do next; the stored record is left as it was', async () => {
+  const b = await bench({ connected: false });
+  const before = { at: 1000, ok: true, version: '9.9.9' };
+  b.env.storage.muninUpdateCheck = before;
+  b.latest = null;
+  await b.run('/test');
+  const r = b.row('Update check');
+  deq([r.status, r.detail], ['fail', 'the request to GitHub did not get through (Failed to fetch): check the network and run /test again']);
+  deq(b.env.storage.muninUpdateCheck, before);
+  assert.ok(b.card().innerHTML.includes('<div class="st-row st-fail"><span class="st-icon mk fail" role="img" aria-label="fail" data-tip="fail"></span> <span class="st-name">Update check</span>'));
+  deq(b.rows().filter((x) => x.status === 'fail').map((x) => x.name), ['Update check', 'Empty document']);
+});
+
+test('Update check: a store install (update_url) asks nothing and skips the row', async () => {
+  const b = await bench({ connected: false });
+  b.env.chrome.runtime.getManifest = () => ({ version: '9.9.9', update_url: 'https://clients2.google.com/service/update2/crx' });
+  await b.run('/test');
+  deq([b.row('Update check').status, b.row('Update check').detail], ['skip', 'not an unpacked install: Chrome keeps it up to date']);
+  assert.ok(!b.urls.includes(b.T.UPDATE_MANIFEST_URL));
+  assert.ok(!('muninUpdateCheck' in b.env.storage));
 });

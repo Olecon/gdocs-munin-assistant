@@ -25,7 +25,7 @@ test('/test on an empty document: no permission card, the write cycle with the r
   const card = await b.run('/test');
   const rows = b.rows();
   deq(rows.map((r) => r.name), API_ROWS);
-  assert.strictEqual(rows.length, 42);
+  assert.strictEqual(rows.length, 43);
   assert.strictEqual(new Set(rows.map((r) => r.name)).size, rows.length, 'one row per check');
   for (const r of rows) assert.strictEqual(r.status, 'pass', `${r.name}: ${r.detail} ${r.more || ''}`);
   deq(b.cards, [], 'no confirmation card');
@@ -116,7 +116,7 @@ test('/test on an empty document: no permission card, the write cycle with the r
   const md = card._report;
   assert.ok(md.startsWith('## Munin self-test\n'));
   assert.match(md, /\n- Model: Munin \/ qwen3\.8-27b · 24 requests · 2,640 tokens \(2,400 in \/ 240 out\) · \d+\.\d s\n/);
-  assert.match(md, /\*\*Summary:\*\* 42 passed, 0 warnings, 0 failed, 0 skipped/);
+  assert.match(md, /\*\*Summary:\*\* 43 passed, 0 warnings, 0 failed, 0 skipped/);
   assert.ok(card.innerHTML.includes('st-model'));
   assert.ok(!card.innerHTML.includes('Send this report to the developer'));
   // nothing reached the chat
@@ -145,7 +145,7 @@ test('/test on a document with text: only the harmless checks run, nothing is wr
   deq(b.keys, ['probe:0'], 'the probe only');
   deq(b.cards, []);
   assert.strictEqual(b.fake.text('t.0'), text);
-  assert.match(b.card()._report, /\*\*Summary:\*\* 9 passed, 0 warnings, 1 failed, 32 skipped/);
+  assert.match(b.card()._report, /\*\*Summary:\*\* 10 passed, 0 warnings, 1 failed, 32 skipped/);
   deq(b.turns, [], 'no Your-turn card');
   assert.ok(!b.card()._report.includes('- Model:'));
 });
@@ -334,7 +334,7 @@ test('/test without a Google account on an empty document: paste at the cursor, 
   assert.ok(!b.bodies.some((x) => (x.tools || []).some((t) => t.function.name === 'insert_after_line')), 'no Docs API tools offered');
   deq(b.cards, []);
   assert.match(b.card()._report, /- Model: Munin \/ qwen3\.8-27b · 7 requests/);
-  assert.match(b.card()._report, /\*\*Summary:\*\* 21 passed, 0 warnings, 0 failed, 10 skipped/);
+  assert.match(b.card()._report, /\*\*Summary:\*\* 22 passed, 0 warnings, 0 failed, 10 skipped/);
 });
 
 test('/test without a Google account: the paste inserted three times for one call fails "pasted 3 times", the later rows still run', async () => {
