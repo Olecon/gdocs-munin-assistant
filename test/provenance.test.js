@@ -2,10 +2,10 @@
 // The provenance check (src/provenance.js): which items of a new text are checked (numbers, DOIs, citation markers in
 // English and Russian; not years, small integers or the numbers of places), the sources (the document, the user's
 // message, this turn's tool results, the document instructions; not the check's own refusal), refuse once and let the
-// identical retry pass, the prompt line, the number ripple, the placeholder count and the unbacked check claim.
+// identical retry pass, the prompt line, the number ripple, the unbacked check claim.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, installDocTab, installIdentity, waitFor } = require('./lib/sandbox');
+const { deq, load, installDocTab, installIdentity, waitFor, turnRowTexts } = require('./lib/sandbox');
 const { sseResponse, tu, msgStart, stopTool, textRound } = require('./lib/streams');
 const { fakeDocsServer, docSpec, docsBench } = require('./lib/fake-docs');
 
@@ -58,7 +58,7 @@ test('hook: known items pass; unknown ones are refused once with the placeholder
   assert.ok(r._ok, r.content);
   const args = { line: 3, text: 'Order rose by 48% (Smith, 2021), n = 52.' };
   r = await exec('insert_after_line', args);
-  assert.strictEqual(r.content, "Refused by a check: these are not in the document, your message or this turn's results: 52, (Smith, 2021). Use them only if the user gave them (then call the tool again unchanged); otherwise write the placeholder [[?]] in their place and say what is missing.");
+  assert.strictEqual(r.content, "Refused by a check: these are not in the document, the user's messages or this turn's results: 52, (Smith, 2021). If the user gave them, call the tool again unchanged; otherwise write the placeholder [[?]] in their place and say what is missing.");
   assert.strictEqual(T.pendingPreviews.size, 0); // no card: refused before it
   as.chatCtx.messages.push({ role: 'tool', tool_call_id: 'x', content: r.content, _ok: false });
   // a changed call is checked again, and the refusal itself is no source
@@ -87,7 +87,8 @@ test('sources: the user\'s message, this turn\'s tool results and the document i
   assert.ok(r._ok, r.content);
   r = await exec('insert_after_line', { line: 5, text: 'It rose by 61%.' });
   assert.ok(r._ok, r.content);
-  // a find_reference result of this turn (after the user's message; an older turn's results do not count)
+  // a find_reference result of this turn (after the user's message; an older turn's results do not count, the user's
+  // older message does)
   await fresh(spec());
   withTurn(user('Old turn with 2.71 in it.'), { role: 'assistant', content: null, tool_calls: [{ id: 'f0', function: { name: 'find_reference', arguments: '{}' } }] },
     { role: 'tool', tool_call_id: 'f0', content: 'Jones, A. (2018). Old. 99.9%' },
@@ -96,13 +97,44 @@ test('sources: the user\'s message, this turn\'s tool results and the document i
   r = await exec('insert_after_line', { line: 7, text: 'Brown and Lee (2021) saw 33.3% (doi 10.1000/abc.7).' });
   assert.ok(r._ok, r.content);
   r = await exec('insert_after_line', { line: 7, text: 'Jones (2018) saw 99.9% and 2.71.' });
-  assert.ok(refused(r) && r.content.includes(': 99.9%, 2.71, Jones (2018).'), r.content);
+  assert.ok(refused(r) && r.content.includes(': 99.9%, Jones (2018).'), r.content);
   // the document instructions
   await fresh(spec());
   withTurn(user('Add the target.'));
   as.docInstructions = 'The target response rate is 75%.';
   r = await exec('insert_after_line', { line: 3, text: 'The target was 75%.' });
   assert.ok(r._ok, r.content);
+  // the main instructions (every document) count as a source too
+  await fresh(spec());
+  withTurn(user('Add the threshold.'));
+  as.docInstructions = '';
+  as.mainInstructions = 'Our significance threshold is 0.005.';
+  r = await exec('insert_after_line', { line: 3, text: 'The threshold was 0.005.' });
+  assert.ok(r._ok, r.content);
+  as.mainInstructions = '';
+});
+
+test('sources: the user\'s earlier messages and the earlier answers that carried web search; not other answers, automatic messages or summaries', async () => {
+  const assistant = (content, extra = {}) => ({ role: 'assistant', content, ...extra });
+  await fresh(spec());
+  withTurn(user('Address: Musterstraße 16-18, 12345 Musterstadt.'), assistant('Noted.'),
+    { role: 'user', content: 'Continue with 777.5 please.', _auto: true }, assistant('Continuing.'),
+    { role: 'user', content: 'Summary of the earlier conversation: the effect was 55.5%.', _summary: true },
+    assistant('The effect is 61.5% (doi 10.1000/old.1).'),
+    assistant('Search says 44.4%.', { _toolActivity: [{ name: 'web_search', text: 'membranes' }], _sources: [{ url: 'https://doi.org/10.1000/web.2', title: 'Membranes' }] }),
+    user('Now add the address.'));
+  let r = await exec('insert_after_line', { line: 3, text: 'Musterstraße 16-18, 12345 Musterstadt.' });
+  assert.ok(r._ok, r.content); // an earlier message of the user
+  r = await exec('insert_after_line', { line: 3, text: 'It was 44.4% (doi 10.1000/web.2).' });
+  assert.ok(r._ok, r.content); // an earlier answer backed by web search: its text and its sources
+  for (const text of ['It was 61.5%.', 'See doi 10.1000/old.1.', 'It was 777.5.', 'It was 55.5%.']) {
+    r = await exec('insert_after_line', { line: 3, text });
+    assert.ok(refused(r), `${text}: ${r.content}`); // a plain answer, an automatic message, a summary
+  }
+  // indexed once per turn while the chat's text is the same
+  const index = as.provChat && as.provChat.index;
+  T.provSources(as);
+  assert.ok(index && as.provChat.index === index);
 });
 
 test('years, small integers and the numbers of places are never refused; tools without new text are not checked', async () => {
@@ -113,15 +145,17 @@ test('years, small integers and the numbers of places are never refused; tools w
   deq(T.provenanceCheck('delete_lines', null, { start: 1, end: 2 }, as), null);
   deq(T.provenanceCheck('format_text', null, { old_text: '48', bold: true }, as), null);
   deq(T.provenanceCheck('remember', null, { action: 'add', text: 'Use 77%.' }, as), null);
-  deq(T.PROV_TOOLS, ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection']);
+  deq(T.PROV_TOOLS, ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection', 'edit_document']);
 });
 
-test('the prompt line: in Auto with the Docs API only', async () => {
+test('the placeholder rule: said once, in W11 of the writing rules (every mode), with no separate prompt line', async () => {
   await fresh(spec());
-  const head = T.buildSystemParts('edit', 1e5, as).head;
-  assert.ok(head.includes('\n' + T.PROV_PROMPT_LINE + '\n'), 'in the edit rules');
-  assert.ok(!T.buildSystemParts('manual', 1e5, as).head.includes(T.PROV_PROMPT_LINE));
-  assert.ok(T.PROV_PROMPT_LINE.length <= 180); // about 40 tokens
+  for (const mode of ['edit', 'manual']) {
+    const head = T.buildSystemParts(mode, 1e5, as).head;
+    assert.strictEqual(head.split('[[?]]').length, 2, mode);
+    assert.ok(head.includes('W11. ') && head.includes('a missing number, DOI or reference becomes [[?]] (say what is missing)'), mode);
+    assert.ok(!head.includes('not a simpler sentence'), mode);
+  }
 });
 
 test('ripplePairs: a changed number with the same unit; not when the old value stays, not for years', () => {
@@ -147,7 +181,7 @@ test('numbers by value; a statistic\'s comparator is part of the item (provItems
   deq(T.ripplePairs('significant (p < 0.01)', 'clearly significant (p < 0.01)'), []);
 });
 
-// The finish notices of a turn on the snapshot as: the turn's messages are the user's message and the results.
+// The finish rows of a turn on the snapshot as: the turn's messages are the user's message and the results.
 const finish = (...results) => { const u = user('Go.'); return T.provFinish(u, as, { messages: [u, ...results] }); };
 
 test('ripple: a changed number still standing elsewhere is reported with its lines and headings', async () => {
@@ -156,7 +190,7 @@ test('ripple: a changed number still standing elsewhere is reported with its lin
   const r = await exec('replace_text', { old_text: 'n = 48 at', new_text: 'n = 52 at' });
   assert.ok(r._ok && r._edit, r.content);
   deq(finish(r), ['Line 3 (Abstract) and line 7 (Conclusions) still say 48.']);
-  // the old value kept in the new text: no pair, no notice
+  // the old value kept in the new text: no pair, no row
   await fresh(spec());
   withTurn(user('Say 48 then 52.'));
   const k = await exec('replace_text', { old_text: 'n = 48 at', new_text: 'n = 48, later 52, at' });
@@ -170,17 +204,27 @@ test('ripple: a changed number still standing elsewhere is reported with its lin
   deq(finish(y), []);
 });
 
-test('finish: placeholders left after an editing turn; nothing without an edit', async () => {
+test('finish: an agent\'s edit (on its delegate result, _agent.edits) counts like the main model\'s', async () => {
+  await fresh(spec());
+  withTurn(user('Set n from 48 to 52.'));
+  const r = await exec('replace_text', { old_text: 'n = 48 at', new_text: 'n = 52 at' });
+  assert.ok(r._ok && r._edit, r.content);
+  const delegateResult = { role: 'tool', tool_call_id: 'c_agent', content: 'Agent status: ok', _ok: true,
+    _agent: { status: 'ok', edits: [{ role: 'tool', tool_call_id: r._edit.id, content: '', _ok: true, _edit: r._edit }] } };
+  deq(finish(delegateResult), ['Line 3 (Abstract) and line 7 (Conclusions) still say 48.']);
+  deq(finish({ role: 'tool', content: 'Agent status: ok', _ok: true, _agent: { status: 'ok', edits: [] } }), []); // no edit, no check
+});
+
+test('finish: no row for the placeholders left after an editing turn (the model names what is missing)', async () => {
   await fresh(spec());
   withTurn(user('Replace the 48 in Methods with placeholders.'));
   const r = await exec('replace_text', { old_text: 'n = 48 at', new_text: 'n = [[?]] at [[?]]' });
   assert.ok(r._ok, r.content);
-  deq(finish(r), ['2 placeholders [[?]] remain in the document.']);
-  deq(finish(), []); // a turn without an edit says nothing
-  assert.strictEqual(T.placeholderCount('a [[?]] b'), 1);
+  deq(finish(r), []);
+  deq(finish(), []);
 });
 
-test('finish: an answer that claims a check no tool call made gets a notice', async () => {
+test('finish: an answer that claims a check no tool call made gets a row', async () => {
   await fresh(spec());
   const answer = (content, calls = []) => ({ role: 'assistant', content, ...(calls.length ? { tool_calls: calls.map((n, i) => ({ id: 'k' + i, function: { name: n, arguments: '{}' } })) } : {}) });
   const NOTE = 'The answer claims a check that no tool call made.';
@@ -194,7 +238,7 @@ test('finish: an answer that claims a check no tool call made gets a notice', as
   deq(finish(answer('Here is the summary you asked for.')), []);
 });
 
-test('a chat turn: refusal, placeholder and the sticky notices after the turn', async () => {
+test('a chat turn: refusal, placeholder, the claimed-check row and no placeholder row after the turn', async () => {
   fake = fakeDocsServer(spec());
   await T.createChat();
   T.el.chat.children.length = 0;
@@ -212,8 +256,9 @@ test('a chat turn: refusal, placeholder and the sticky notices after the turn', 
   assert.ok(refused(results[0]) && results[0].content.includes(': 64.'), results[0].content);
   assert.ok(results[1]._ok, results[1].content);
   assert.ok(JSON.stringify(bodies[1]).includes('write the placeholder [[?]]'));
-  const notices = () => T.el.chat.children.filter((c) => c.className.includes('notice')).map((c) => c.innerHTML);
-  await waitFor(() => notices().some((t) => t.includes('placeholder')), 'the notices');
-  assert.ok(notices().includes('1 placeholder [[?]] remains in the document.'), notices().join('|'));
-  assert.ok(notices().includes('The answer claims a check that no tool call made.'), notices().join('|'));
+  const rows = () => turnRowTexts(T.el.chat);
+  await waitFor(() => rows().some((t) => t.includes('claims a check')), 'the rows');
+  assert.ok(!rows().some((t) => t.includes('placeholder')), rows().join('|'));
+  assert.ok(rows().includes('The answer claims a check that no tool call made.'), rows().join('|'));
+  deq(state.messages[state.messages.length - 1]._notes, ['The answer claims a check that no tool call made.']); // stored with the turn
 });

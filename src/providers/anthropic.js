@@ -1,22 +1,86 @@
 'use strict';
 // Module providers/anthropic.js: Anthropic Messages API: request builder (buildAnthropicRequest,
-// toAnthropicMessages, addCacheBreakpoint, anthropicAdaptive, anthropicHeaders) and stream parser (streamAnthropic).
+// toAnthropicMessages, addCacheBreakpoint, keepThinkingValid, anthropicHeaders), the model lines read from the id
+// (anthropicAdaptive, anthropicForcedToolOk, anthropicChecksHistory), programmatic tool calling (anthropicRunsCode, the
+// basic search after a refusal: anthropicSearchRefused), no strict tools after a refusal (anthropicStrictRefused) and
+// stream parser (streamAnthropic).
 /* global ANTHROPIC_FALLBACK_BETA, ANTHROPIC_FALLBACK_MODELS, ANTHROPIC_VERSION, anthropicActivity,
    anthropicSources, anthropicWebSearchTool, apiUrl, fitMessages, lastUserIndex, offersWriteTools,
-   parseToolArgs, postJson, previousUserIndex, readStream, streamError, toAnthropicTool, userContent, webSearchTurn */
-/* exported anthropicAdaptive, buildAnthropicRequest, anthropicHeaders, streamAnthropic */
+   parseToolArgs, postJson, previousUserIndex, readStream, samplingFields, streamError, toAnthropicTool, userContent, webSearchTurn */
+/* exported anthropicAdaptive, anthropicChecksHistory, anthropicForcedToolOk, anthropicRunsCode, anthropicBasicSearch,
+   anthropicSearchRefused, anthropicStrictRefused, buildAnthropicRequest, anthropicHeaders, streamAnthropic */
 
 // ---------------------------------------------------------------------------
 // Anthropic: Messages API (POST {base}/messages)
 // ---------------------------------------------------------------------------
+// The line and version of a Claude model id ({ family, major, minor }), or null for another id.
+function claudeVersion(model) {
+  const m = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?/i.exec(String(model || '').trim());
+  if (!m) return null;
+  // A long second number is a date (claude-sonnet-4-20250514, claude-haiku-4-5-20251001 keeps its 5).
+  return { family: m[1].toLowerCase(), major: Number(m[2]), minor: m[3] && m[3].length <= 2 ? Number(m[3]) : 0 };
+}
+const versionAtLeast = (v, major, minor) => v.major > major || (v.major === major && v.minor >= minor);
 // Claude 4.6 and later (and the Fable / Mythos line) take adaptive thinking;
 // older models (Haiku 4.5, Sonnet 4.5, Opus 4.1, Claude 3.x, dated snapshots) are sent without them.
 function anthropicAdaptive(model) {
-  const m = /^claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?/i.exec(String(model || '').trim());
-  if (!m) return false;
-  const major = Number(m[1]);
-  const minor = m[2] && m[2].length <= 2 ? Number(m[2]) : 0; // a long second number is a date (claude-sonnet-4-20250514)
-  return major >= 5 || (major === 4 && minor >= 6);
+  const v = claudeVersion(model);
+  return !!v && versionAtLeast(v, 4, 6);
+}
+// The first version of each line with the rules Claude Fable 5.1 brought: a forced tool choice ({type: "any"} or "tool")
+// is a 400, and a replayed thinking block is checked against everything sent before it (the history-editing check).
+// Claude Haiku 5.5 runs the check but accepts a forced tool choice. A later major version is taken to keep both rules.
+const STRICT_LINE = { fable: [5, 1], mythos: [5, 1], opus: [5, 5], sonnet: [5, 5], haiku: [5, 5] };
+const strictLine = (v) => !!v && (v.major > 5 || versionAtLeast(v, ...STRICT_LINE[v.family]));
+const anthropicChecksHistory = (model) => strictLine(claudeVersion(model));
+function anthropicForcedToolOk(model) {
+  const v = claudeVersion(model);
+  return !strictLine(v) || (v.family === 'haiku' && v.major === 5);
+}
+
+// A server tool that runs code execution under the hood: the code execution tool, web search or web fetch with dynamic
+// filtering (the 20260209 versions and later) unless it is called directly. With one in the request the API counts it as
+// programmatic tool calling, which refuses disable_parallel_tool_use and a forced tool choice.
+function runsCode(t) {
+  const m = /^(web_search|web_fetch|code_execution)_(\d{8})$/.exec((t && t.type) || '');
+  if (!m || (Array.isArray(t.allowed_callers) && t.allowed_callers.join() === 'direct')) return false;
+  return m[1] === 'code_execution' || Number(m[2]) >= 20260209;
+}
+const anthropicRunsCode = (body) => !!body && Array.isArray(body.tools) && body.tools.some(runsCode);
+
+// The accounts' models whose request with the filtering search came back as a 400 that names programmatic tool calling:
+// their requests carry the basic search (ANTHROPIC_BASIC_SEARCH) for the rest of the session. Not stored: a later
+// session tries the filtering search again.
+const basicSearchModels = new Set();
+const basicSearchKey = (cfg) => `${(cfg && cfg.accountId) || ''}\n${(cfg && cfg.model) || ''}`;
+const anthropicBasicSearch = (cfg) => basicSearchModels.has(basicSearchKey(cfg));
+// Whether error e of request req is that refusal (toolLoop then builds the request again, once): it is remembered for
+// the account's model. A request without a tool that runs code, or a model already on the basic search, is no such case.
+function anthropicSearchRefused(e, req, snap) {
+  if (!e || e.status !== 400 || !req || req.kind !== 'anthropic' || !anthropicRunsCode(req.body)) return false;
+  if (!/programmatic tool calling/i.test(String(e.serverMessage || e.message || ''))) return false;
+  const key = basicSearchKey(snap && snap.cfg);
+  if (basicSearchModels.has(key)) return false;
+  basicSearchModels.add(key);
+  return true;
+}
+
+// The accounts' models whose request with strict tools came back as a 400 about strict tools or the schemas (too many, too
+// complex for compilation, a schema feature, structured outputs not available, strict next to programmatic tool calling):
+// their requests carry no strict tool for the rest of the session, every schema compact. Not stored, as above.
+const looseToolModels = new Set();
+const anthropicLooseTools = (cfg) => looseToolModels.has(basicSearchKey(cfg));
+const STRICT_REFUSAL_RE = /\bstrict\b|structured outputs?|schema|grammar/i;
+const sendsStrict = (body) => !!body && Array.isArray(body.tools) && body.tools.some((t) => t && t.strict === true);
+// Whether error e of request req is that refusal (toolLoop then builds the request again, once): it is remembered for the
+// account's model. A request without a strict tool is no such case.
+function anthropicStrictRefused(e, req, snap) {
+  if (!e || e.status !== 400 || !req || req.kind !== 'anthropic' || !sendsStrict(req.body)) return false;
+  if (!STRICT_REFUSAL_RE.test(String(e.serverMessage || e.message || ''))) return false;
+  const key = basicSearchKey(snap && snap.cfg);
+  if (looseToolModels.has(key)) return false;
+  looseToolModels.add(key);
+  return true;
 }
 
 // Messages API messages from the history. Consecutive same-role messages are merged (tool results
@@ -27,7 +91,8 @@ function anthropicAdaptive(model) {
 // tool calls, without thinking (thinking blocks may be removed from the front of the history).
 // A user message is sent with its turn context (userContent). cacheAt: the history index of a user
 // message whose text block gets a cache breakpoint (the start of the previous turn, see buildAnthropicRequest).
-function toAnthropicMessages(hasTools, history, { cacheAt = -1 } = {}) {
+// dropThinking: the assistant messages (a WeakSet) whose replay goes without its thinking blocks (keepThinkingValid).
+function toAnthropicMessages(hasTools, history, { cacheAt = -1, dropThinking = null } = {}) {
   const stripTools = !hasTools;
   const lastUser = lastUserIndex(history);
   const msgs = [];
@@ -54,7 +119,8 @@ function toAnthropicMessages(hasTools, history, { cacheAt = -1 } = {}) {
     }
     if (m.role !== 'assistant') return;
     if (i > lastUser && Array.isArray(m._anthropicBlocks) && m._anthropicBlocks.length) {
-      push('assistant', m._anthropicBlocks.filter((b) => !(stripTools && b.type === 'tool_use')));
+      const noThinking = !!dropThinking && dropThinking.has(m);
+      push('assistant', m._anthropicBlocks.filter((b) => !(stripTools && b.type === 'tool_use') && !(noThinking && isThinkingBlock(b))));
       return;
     }
     const blocks = [];
@@ -82,11 +148,48 @@ function addCacheBreakpoint(msgs) {
   last.content[i] = { ...b, cache_control: { type: 'ephemeral' } };
 }
 
+const isThinkingBlock = (b) => !!b && (b.type === 'thinking' || b.type === 'redacted_thinking');
+// The messages of a request with their cache breakpoints (see buildAnthropicRequest).
+function anthropicMessages(fit, dropThinking) {
+  const messages = toAnthropicMessages(fit.tools.length > 0, fit.history, { cacheAt: previousUserIndex(fit.history), dropThinking });
+  addCacheBreakpoint(messages);
+  return messages;
+}
+// What a request sends, block by block, without its cache breakpoints (moving one is no edit): the system prompt and the
+// tools first, then every message block with its role.
+function sentSequence(body) {
+  const plain = (x) => JSON.stringify(x, (k, v) => (k === 'cache_control' ? undefined : v));
+  return [plain([body.system || [], body.tools || []]), ...body.messages.flatMap((m) => m.content.map((b) => `${m.role}:${plain(b)}`))];
+}
+// The history-editing check of the newer models (anthropicChecksHistory): a thinking block is valid only while the system
+// prompt, the tools and everything sent before it are unchanged. The rounds of a turn are appended, but some requests
+// change what came before: the turn's older reading results stubbed to fit the window (or after the server found the
+// request too long), older turns trimmed, the document in the prompt cut, the search tool or the strict tools changed after a refusal. Such a
+// request (not an append of the turn's previous one, snap.anthropicSent) goes without the thinking blocks of the turn's
+// rounds so far, and they stay out for the rest of the turn (snap.thinkingDropped): removing all of them keeps the
+// request valid, putting one back would not. The blocks of the later rounds are replayed as usual.
+function keepThinkingValid(fit, body, snap) {
+  const dropped = snap.thinkingDropped || (snap.thinkingDropped = new WeakSet());
+  let seq = sentSequence(body);
+  const prev = snap.anthropicSent;
+  if (prev && !(seq.length >= prev.length && prev.every((s, i) => s === seq[i]))) {
+    const lastUser = lastUserIndex(fit.history);
+    let more = false;
+    fit.history.forEach((m, i) => {
+      if (i <= lastUser || m.role !== 'assistant' || dropped.has(m) || !Array.isArray(m._anthropicBlocks) || !m._anthropicBlocks.some(isThinkingBlock)) return;
+      dropped.add(m);
+      more = true;
+    });
+    if (more) { body.messages = anthropicMessages(fit, dropped); seq = sentSequence(body); }
+  }
+  snap.anthropicSent = seq;
+}
+
 function buildAnthropicRequest(mode, snap, opts = {}) {
   const { cfg } = snap;
   const fit = fitMessages(mode, snap, opts);
-  const messages = toAnthropicMessages(fit.tools.length > 0, fit.history, { cacheAt: previousUserIndex(fit.history) });
-  addCacheBreakpoint(messages);
+  const checked = anthropicChecksHistory(cfg.model);
+  const messages = anthropicMessages(fit, checked ? snap.thinkingDropped : null);
   const body = {
     model: cfg.model,
     max_tokens: opts.maxTokens || snap.prov.maxTokens,
@@ -100,12 +203,26 @@ function buildAnthropicRequest(mode, snap, opts = {}) {
     messages,
     stream: true,
   };
-  if (fit.tools.length) body.tools = fit.tools.map(toAnthropicTool);
-  if (offersWriteTools(fit.tools)) body.tool_choice = { type: 'auto', disable_parallel_tool_use: true }; // edits one at a time
-  if (webSearchTurn(mode, snap)) body.tools = [...(body.tools || []), anthropicWebSearchTool(cfg.model)]; // server-side search (/research)
+  // A temperature only when the user set one for the model (settings.js providerFor leaves it out for the models with
+  // adaptive thinking, which refuse it).
+  const { temperature } = samplingFields(snap.prov);
+  if (temperature !== undefined) body.temperature = temperature;
+  // A fixed set of tools strict (request.js ANTHROPIC_STRICT_TOOLS), none after a refusal (anthropicStrictRefused).
+  const loose = anthropicLooseTools(cfg);
+  if (fit.tools.length) body.tools = fit.tools.map((t) => toAnthropicTool(t, loose));
+  // Server-side search (webSearchTurn), only next to the client tools (not in the probe or the wrap-up round). The
+  // filtering search unless the API refused it for this account's model in this session (anthropicSearchRefused).
+  if (fit.tools.length && webSearchTurn(mode, snap)) body.tools = [...body.tools, anthropicWebSearchTool(cfg.model, anthropicBasicSearch(cfg))];
+  // Edits one at a time (line numbers shift). Not next to the filtering search: it runs code execution, and the API
+  // refuses disable_parallel_tool_use with programmatic tool calling; the turn loop then runs only the first writing
+  // call of a response (runRoundCalls) and answers the others.
+  if (offersWriteTools(fit.tools) && !anthropicRunsCode(body)) body.tool_choice = { type: 'auto', disable_parallel_tool_use: true };
+  if (checked) keepThinkingValid(fit, body, snap);
   const headers = anthropicHeaders(cfg);
   // The model's default effort is used (no output_config.effort).
-  if (anthropicAdaptive(cfg.model)) body.thinking = { type: 'adaptive', display: 'summarized' }; // the summary feeds the Thinking section
+  // The summary feeds the Thinking section. Not when a tool call of this turn has no thinking to go back with (the chat's
+  // model was switched from another provider inside the tool loop: models, src/accounts.js).
+  if (anthropicAdaptive(cfg.model) && !(fit.tools.length && foreignToolRound(fit.history))) body.thinking = { type: 'adaptive', display: 'summarized' };
   // Server-side fallback on a safety refusal: the API re-runs the request on another Claude model
   // (the panel reports the model that answered).
   const url = apiUrl(snap, '/messages');
@@ -114,6 +231,12 @@ function buildAnthropicRequest(mode, snap, opts = {}) {
     headers['anthropic-beta'] = ANTHROPIC_FALLBACK_BETA;
   }
   return { ...fit, kind: 'anthropic', url, headers, body };
+}
+// A round of the current turn with tool calls but without Anthropic's blocks (it came from another provider).
+function foreignToolRound(history) {
+  const lastUser = lastUserIndex(history);
+  return history.some((m, i) => i > lastUser && m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0 &&
+    !(Array.isArray(m._anthropicBlocks) && m._anthropicBlocks.length));
 }
 const anthropicHeaders = (cfg) => ({
   'Content-Type': 'application/json',
@@ -144,6 +267,17 @@ function anthropicUsage(u, prev) {
   return out;
 }
 
+// The index of the last "fallback" block of a response, or -1.
+const lastFallback = (blocks) => blocks.reduce((at, b, i) => (b && b.type === 'fallback' ? i : at), -1);
+// The blocks of a response as they go back to the API (in order, without holes). Before the last fallback block the
+// API's rule for echoing a fallback turn leaves out the declined model's thinking, its tool calls and its server tool
+// calls without a result; its text and everything from the fallback block on go back as they came.
+function fallbackEcho(blocks, cut) {
+  const answered = new Set(blocks.filter((b) => b && b.tool_use_id).map((b) => b.tool_use_id));
+  return blocks.filter((b, i) => !!b && (i >= cut || !(isThinkingBlock(b) || b.type === 'tool_use' ||
+    (b.type === 'server_tool_use' && !answered.has(b.id)))));
+}
+
 async function streamAnthropic(req, signal, snap, hooks) {
   const blocks = []; // content blocks by index, as returned (plus a _json accumulator for tool_use)
   let content = '';
@@ -156,11 +290,12 @@ async function streamAnthropic(req, signal, snap, hooks) {
   let servedBy = null;
   let sawStop = false;
   const finishReason = () => {
+    const called = calls.some(Boolean);
     if (stopReason === 'tool_use') return 'tool_calls';
     if (stopReason === 'max_tokens') return 'length';
     if (stopReason === 'refusal') return 'refusal';
-    if (stopReason === 'pause_turn') return calls.length ? 'tool_calls' : 'pause_turn'; // a long server-side search: send it back
-    if (stopReason === 'end_turn' || stopReason === 'stop_sequence') return calls.length ? 'tool_calls' : 'stop';
+    if (stopReason === 'pause_turn') return called ? 'tool_calls' : 'pause_turn'; // a long server-side search: send it back
+    if (stopReason === 'end_turn' || stopReason === 'stop_sequence') return called ? 'tool_calls' : 'stop';
     return stopReason;
   };
   const partial = () => ({ content, reasoning, toolCalls: calls.filter(Boolean), finishReason: finishReason(), usage, servedBy, stopDetails });
@@ -254,8 +389,12 @@ async function streamAnthropic(req, signal, snap, hooks) {
       handle(data);
     }, partial);
   if (!sawStop && !stopReason) throw fail('The response stream was cut off');
+  // A server-side fallback in the middle of the output (a "fallback" block): the declined model's tool calls before the
+  // last such block are not run (a refusal can cut a call off mid-input).
+  const cut = lastFallback(blocks);
+  for (const [bi, ci] of callIndexByBlock) if (bi < cut) calls[ci] = null;
   calls.forEach((c, i) => { if (c && !c.id) c.id = `toolu_${Date.now()}_${i}`; });
   // Blocks to replay in the next round of this turn, exactly as returned (minus the accumulator).
-  const replay = blocks.filter(Boolean).map(({ _json, ...b }) => b).filter((b) => !(b.type === 'text' && !b.text));
+  const replay = fallbackEcho(blocks, cut).map(({ _json, ...b }) => b).filter((b) => !(b.type === 'text' && !b.text));
   return { ...partial(), raw: { key: '_anthropicBlocks', items: replay }, activity: anthropicActivity(blocks), sources: anthropicSources(blocks) };
 }

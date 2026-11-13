@@ -141,7 +141,7 @@ test('a 6-item guideline in one batch: quiet request, the table with the right c
   assert.strictEqual(lines.slice(0, 4).join('\n'), TEXT0.split('\n').slice(0, 4).join('\n'));
   assert.strictEqual(lines[lines.length - 1], 'The primary outcome improved by 12 points.');
   assert.strictEqual(r._edit.kind, 'coverage');
-  assert.match(r.content, /^Done: inserted the FAKE 1\.0 coverage table T1 \(6 items\) after line 4, with its caption below it\./);
+  assert.match(r.content, /^Done: inserted the FAKE 1\.0 coverage table T1 \(6 items\) after line 4, with its caption below it; now lines \d+–\d+; the document has \d+ lines\./);
   assert.ok(r.content.includes('\nFAKE 1.0: 3 of 6 items covered, 1 partly, 1 missing, 1 not checked. Missing: 4 Registration.\n'));
   assert.strictEqual(r._message, 'FAKE 1.0: 3 of 6 items covered, 1 partly, 1 missing, 1 not checked.');
   assert.strictEqual(posts().length, 3); // insert, fill, caption

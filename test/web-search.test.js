@@ -1,8 +1,8 @@
 'use strict';
-// Web search for /research: request bodies, the OpenAI and Anthropic stream items, full /research turns.
+// Web search (every OpenAI / Anthropic turn with client tools, /research's report): request bodies, the OpenAI and Anthropic stream items, full /research turns.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, makeSnapFor, installDocTab } = require('./lib/sandbox');
+const { deq, load, makeSnapFor, installDocTab, turnRowTexts } = require('./lib/sandbox');
 const { sseResponse, ev, tu, msgStart, stopTool, textRound } = require('./lib/streams');
 
 let env, T, D, C2, state, PROVIDERS, sandbox, chrome, snapFor, READ_SET, wsSse, srvStart, srvResult, aBodies, hist,
@@ -20,22 +20,22 @@ before(async () => {
   await T.refreshContext({ force: true });
 });
 
-test('web search: /research request bodies (OpenAI, Anthropic new/old models), other turns and Munin unchanged', async () => {
-  // --- web search: request bodies (/research gets the tool, other turns do not; Munin unchanged)
-  READ_SET = ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user'];
+test('web search: request bodies (OpenAI, Anthropic new/old models) of /research and the other turns; Munin unchanged', async () => {
+  // --- web search: request bodies (every turn with client tools gets the tool; Munin unchanged)
+  READ_SET = ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user', 'delegate'];
   state.docFormat = 'markdown'; state.docText = '# Doc\n\nText.'; state.docModel = null; state.selection = '';
   let wreq = T.buildRequest('research', snapFor('openai', { model: 'gpt-6.1-sol' }));
   deq(wreq.body.tools.map((t) => t.name || t.type), [...READ_SET, 'web_search']); // reading tools first, then the search
   assert.ok(wreq.body.instructions.includes('You can search the web with the web_search tool') && wreq.body.instructions.includes('[title](url)'));
-  assert.strictEqual(T.buildRequest('edit', snapFor('openai')).body.tools.some((t) => t.type === 'web_search'), false);
-  assert.strictEqual(T.buildRequest('code', snapFor('openai')).body.tools.some((t) => t.type === 'web_search'), false);
+  assert.strictEqual(T.buildRequest('edit', snapFor('openai')).body.tools.some((t) => t.type === 'web_search'), true);
+  assert.strictEqual(T.buildRequest('chat', snapFor('openai')).body.tools.some((t) => t.type === 'web_search'), true);
   wreq = T.buildRequest('research', snapFor('anthropic', { model: 'claude-haiku-4-5', baseUrl: '' }));
   deq(wreq.body.tools.slice(-1), [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]); // older model: no dynamic filtering
   assert.ok(wreq.body.system[0].text.includes('You can search the web with the web_search tool'));
   wreq = T.buildRequest('research', snapFor('anthropic', { model: 'claude-opus-5-5' }));
   deq(wreq.body.tools.slice(-1), [{ type: 'web_search_20260209', name: 'web_search', max_uses: 5 }]);
-  assert.ok(!T.buildRequest('edit', snapFor('anthropic')).body.tools.some((t) => t.name === 'web_search'));
-  assert.ok(!T.buildRequest('manual', snapFor('anthropic')).body.system[0].text.includes('web_search'));
+  assert.ok(T.buildRequest('edit', snapFor('anthropic')).body.tools.some((t) => t.name === 'web_search'));
+  assert.ok(T.buildRequest('manual', snapFor('anthropic')).body.system[0].text.includes('You can search the web with the web_search tool'));
   wreq = T.buildRequest('research', snapFor('munin'));
   assert.strictEqual(wreq.kind, 'persona'); deq(Object.keys(wreq.body), ['model', 'persona', 'messages']);
   assert.ok(!wreq.body.messages[0].content.includes('web_search tool'));
@@ -69,7 +69,45 @@ test('OpenAI web search stream: rows, sources (deduplicated, http(s) only), item
   deq(C2.openaiSources([]), []);
 });
 
-test('OpenAI /research turn: activity rows and Sources list, live and from the history', async () => {
+// The Responses API's inline citation markers: U+E200 "cite" U+E202 "turn0search1" U+E201 (also navlist, several refs).
+const CITE = (body) => `${body}`;
+test('OpenAI citation markers: stripped from the streamed text, the live updates and the final text; the sources stay', async () => {
+  const S = T.stripCitationMarkers;
+  // whole spans (with the blank before them), several refs, navlist, a span cut by the end of the text, bare tokens
+  assert.strictEqual(S(`Речь о JCIM. ${CITE('citeturn291465search0')} Добавлю.`), 'Речь о JCIM. Добавлю.');
+  assert.strictEqual(S(`A fact ${CITE('citeturn0search1turn0news2')}.`), 'A fact.');
+  assert.strictEqual(S(`News: ${CITE('navlistRecent newsturn0news1,turn0news3')}\nNext.`), 'News:\nNext.');
+  assert.strictEqual(S(`Text ${CITE('imageturn0image0')}end`), 'Textend');
+  assert.strictEqual(S('So far citeturn0sea'), 'So far');
+  assert.strictEqual(S('Предполагаю, что речь о JCIM (JCIM). citeturn291465search0 Добавлю структуру…'), 'Предполагаю, что речь о JCIM (JCIM). Добавлю структуру…');
+  assert.strictEqual(S('See turn0search1 and navlistturn2news4.'), 'See and.');
+  // ordinary text is left alone
+  for (const t of ['Turn 3 left, return2search3, turn the page', 'A turn0 value', 'plain', '']) assert.strictEqual(S(t), t);
+
+  // a stream whose marker arrives split over three deltas
+  const text = `Речь о JCIM. ${CITE('citeturn291465search0')} Добавлю структуру.`;
+  const msg = { type: 'message', id: 'msg_c', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [
+    { type: 'url_citation', start_index: 13, end_index: 40, url: 'https://pubs.acs.org/journal/jcisd8', title: 'JCIM' }] }] };
+  const deltas = ['Речь о JCIM.', ' citeturn291', '465search0', ' Добавлю структуру.'];
+  const sse = deltas.map((d) => ev('response.output_text.delta', { type: 'response.output_text.delta', output_index: 0, delta: d })).join('') +
+    ev('response.completed', { type: 'response.completed', response: { status: 'completed', output: [msg], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });
+  sandbox.fetch = async () => sseResponse(sse);
+  const snap = snapFor('openai', { model: 'gpt-6.1-sol' });
+  const seen = [];
+  const r = await T.streamResponses(T.buildRequest('chat', snap), new AbortController().signal, snap, { onContent: (c) => seen.push(c) });
+  assert.strictEqual(r.content, 'Речь о JCIM. Добавлю структуру.');
+  deq(seen, ['Речь о JCIM.', 'Речь о JCIM.', 'Речь о JCIM.', 'Речь о JCIM. Добавлю структуру.']);
+  assert.ok(seen.every((c) => !/[-]|turn\d/.test(c)), 'no marker shown while it streams');
+  deq(r.sources, [{ url: 'https://pubs.acs.org/journal/jcisd8', title: 'JCIM' }]);
+  deq(r.raw.items, [msg]); // the items replayed to the API keep the API's own text
+
+  // no deltas: the text taken from the final response object is stripped too
+  sandbox.fetch = async () => sseResponse(ev('response.completed', { type: 'response.completed', response: { status: 'completed', output: [msg] } }));
+  const r2 = await T.streamResponses(T.buildRequest('chat', snap), new AbortController().signal, snap, {});
+  assert.strictEqual(r2.content, 'Речь о JCIM. Добавлю структуру.');
+});
+
+test('OpenAI /research turn: activity rows and the round\'s Sources, live and from the history', async () => {
   // --- OpenAI /research turn through sendMessage: rows and sources rendered, stored on the message
   state.settings.provider = 'openai'; state.googleConnected = false;
   chrome.tabs.sendMessage = async (id, msg) => (msg.type === 'GET_DOC_TEXT' ? { ok: true, text: '# Doc\n\nText.\n', format: 'markdown', title: 'My Doc' } : { ok: true, text: '', title: 'My Doc' });
@@ -83,13 +121,14 @@ test('OpenAI /research turn: activity rows and Sources list, live and from the h
   deq(hist[1]._toolActivity, [{ name: 'web_search', summary: 'lipid rafts 2026' }, { name: 'open_page', summary: 'https://example.org/b' }]);
   deq(hist[1]._sources, [{ url: 'https://example.org/b', title: 'Page B' }, { url: 'https://example.org/c', title: '' }]);
   assert.strictEqual(hist[1]._openaiItems, undefined); // final round: nothing to replay
-  const SOURCES_HTML = '<div class="sources-title">Sources</div><ol><li><a href="https://example.org/b" target="_blank" rel="noopener noreferrer" title="https://example.org/b">Page B</a></li>' +
+  const SOURCES_HTML = '<summary class="sources-title">Sources<span class="sources-count"> · 2</span></summary><ol><li><a href="https://example.org/b" target="_blank" rel="noopener noreferrer" title="https://example.org/b">Page B</a></li>' +
     '<li><a href="https://example.org/c" target="_blank" rel="noopener noreferrer" title="https://example.org/c">example.org</a></li></ol>'; // no title: the host
-  const srcBubbles = () => T.el.chat.children.filter((c) => c._parts && c._parts.sources);
-  deq(srcBubbles().map((b) => b._parts.sources.innerHTML), [SOURCES_HTML, SOURCES_HTML]); // live, then renderHistory at the end of the turn
+  // the Sources fold sits in the round whose search found them (here the one round, which also holds the answer)
+  const srcBubbles = () => T.el.chat.children.filter((c) => c._rounds && c._rounds.some((r) => r.parts.sources));
+  deq(srcBubbles().map((b) => b._rounds[0].parts.sources.innerHTML), [SOURCES_HTML, SOURCES_HTML]); // live, then renderHistory at the end of the turn
   deq(srcBubbles()[1]._rows.map((r) => [r.tagName, r.className, r.innerHTML]), [
-    ['div', 'activity-row', '🔍 <span class="activity-name">web_search</span>: lipid rafts 2026'],
-    ['div', 'activity-row', '🌐 <span class="activity-name">open_page</span>: https://example.org/b'],
+    ['div', 'activity-row', '<span class="activity-name">web_search</span>: lipid rafts 2026'],
+    ['div', 'activity-row', '<span class="activity-name">open_page</span>: https://example.org/b'],
   ]);
 });
 
@@ -109,7 +148,7 @@ test('Anthropic /research turn: server tool blocks replayed, pause_turn sent bac
   const aRounds = [
     msgStart + ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }) +
       ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Searching.' } }) + ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
-      srvStart(1, 'srvtoolu_1', 'lipid rafts 2026') + srvResult(2, 'srvtoolu_1', results1) + tu(3, 'toolu_rl', 'read_lines', { start: 1, end: 1 }) + stopTool,
+      srvStart(1, 'srvtoolu_1', 'lipid rafts 2026') + srvResult(2, 'srvtoolu_1', results1) + tu(3, 'toolu_rl', 'read_document', { scope: { start: 1, end: 1 }, include: ['text'], doc: null }) + stopTool,
     msgStart + srvStart(0, 'srvtoolu_2', 'lipid rafts review') + srvResult(1, 'srvtoolu_2', errResult) +
       ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'pause_turn' }, usage: { output_tokens: 4 } }) + ev('message_stop', { type: 'message_stop' }),
     msgStart + ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }) +
@@ -124,14 +163,14 @@ test('Anthropic /research turn: server tool blocks replayed, pause_turn sent bac
   T.el.input.value = '/research lipid rafts';
   await T.sendMessage();
   assert.strictEqual(aBodies.length, 3);
-  deq(aBodies[0].tools.map((t) => t.name), [...READ_SET, 'web_search']);
-  deq(aBodies[0].tools[7], { type: 'web_search_20260209', name: 'web_search', max_uses: 5 });
+  deq(aBodies[0].tools.map((t) => t.name), [...READ_SET.slice(0, -1), 'chat_title', 'models', 'search', 'delegate', 'web_search']); // chat_title: a turn of the chat
+  deq(aBodies[0].tools[10], { type: 'web_search_20260209', name: 'web_search', max_uses: 5 });
   assert.ok(aBodies[0].system[0].text.includes('You can search the web with the web_search tool'));
   const ROUND0_BLOCKS = [
     { type: 'text', text: 'Searching.' },
     { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search', input: { query: 'lipid rafts 2026' } },
     { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_1', content: results1 },
-    { type: 'tool_use', id: 'toolu_rl', name: 'read_lines', input: { start: 1, end: 1 } },
+    { type: 'tool_use', id: 'toolu_rl', name: 'read_document', input: { scope: { start: 1, end: 1 }, include: ['text'], doc: null } },
   ];
   deq(aBodies[1].messages[1], { role: 'assistant', content: ROUND0_BLOCKS }); // raw blocks replayed in the second round
   assert.strictEqual(aBodies[1].messages[2].content[0].tool_use_id, 'toolu_rl');
@@ -154,13 +193,16 @@ test('Anthropic /research turn: server tool blocks replayed, pause_turn sent bac
   T.el.chat.children.length = 0;
   T.renderHistory();
   const aBubbles = T.el.chat.children.filter((c) => c._parts);
-  deq(aBubbles.map((b) => b._rows.map((r) => r.className)), [['activity-row', 'activity-row log-row ok'], ['activity-row'], []]);
-  deq(aBubbles.map((b) => b._rows.map((r) => r.innerHTML.split('</span>')[1].split('<')[0])), [[': lipid rafts 2026', ': lines 1–1'], [': lipid rafts review (failed: max_uses_exceeded)'], []]);
-  assert.strictEqual(aBubbles[2]._parts.sources.innerHTML, '<div class="sources-title">Sources</div><ol><li><a href="https://example.org/a" target="_blank" rel="noopener noreferrer" title="https://example.org/a">Paper A</a></li></ol>');
-  assert.ok(aBubbles[2]._parts.meta.title.includes('Web searches: 2'));
+  assert.strictEqual(aBubbles.length, 1); // one bubble per turn, its rounds as stages
+  deq(aBubbles[0]._rounds.map((r) => r.rows.map((x) => x.className)), [['activity-row', 'activity-row log-row ok'], ['activity-row'], []]);
+  deq(aBubbles[0]._rounds.map((b) => b.rows.map((r) => r.innerHTML.split('</span>')[1].split('<')[0])), [[': lipid rafts 2026', ': lines 1–1'], [': lipid rafts review (failed: max_uses_exceeded)'], []]);
+  // the citations came with the final round: its Sources fold is in that round's item (rounds 1 and 2 have none)
+  deq(aBubbles[0]._rounds.map((r) => !!r.parts.sources), [false, false, true]);
+  assert.strictEqual(aBubbles[0]._rounds[2].parts.sources.innerHTML, '<summary class="sources-title">Sources<span class="sources-count"> · 1</span></summary><ol><li><a href="https://example.org/a" target="_blank" rel="noopener noreferrer" title="https://example.org/a">Paper A</a></li></ol>');
+  assert.ok(aBubbles[0]._parts.meta.dataset.tip.includes('Web searches: 2'));
   // the status line counts the searches of the turn
   C2.noteSearchActivity({ prov: PROVIDERS.anthropic, searchesDone: 1 }, [{ name: 'web_search' }, { name: 'open_page' }]);
-  assert.strictEqual(T.el.docStatus.textContent, 'Anthropic (Claude) /research is searching the web… (2 searches)');
+  assert.strictEqual(T.state.statusText.text, 'Anthropic (Claude) /research is searching the web… (2 searches)');
   deq(C2.anthropicSources([{ type: 'text', text: 'x', citations: [citation, { ...citation }, { type: 'char_location', cited_text: 'no url' }] }]), [{ url: 'https://example.org/a', title: 'Paper A' }]);
 });
 
@@ -175,14 +217,14 @@ test('pause_turn continuations stop at the tool-round limit', async () => {
   T.el.input.value = '/research forever';
   await T.sendMessage();
   assert.strictEqual(aBodies.length, 13); // the first request + 12 continuations
-  assert.ok(T.el.chat.children.some((c) => c.className.includes('notice') && c.innerHTML === 'The reply ended early (pause_turn).'));
+  assert.ok(turnRowTexts(T.el.chat).includes('The reply ended early (pause_turn).'));
 });
 
 test('search and a client tool in one Anthropic response: the search block is replayed with the tool result', async () => {
   // --- a web search and a client tool in the same Anthropic response (stop_reason tool_use): the search
   //     block goes back without a result, together with the tool result, in the next request
   const mixRounds = [
-    msgStart + srvStart(0, 'srvtoolu_m', 'membrane lipids') + tu(1, 'toolu_mx', 'read_lines', { start: 1, end: 1 }) + stopTool,
+    msgStart + srvStart(0, 'srvtoolu_m', 'membrane lipids') + tu(1, 'toolu_mx', 'read_document', { scope: { start: 1, end: 1 }, include: ['text'], doc: null }) + stopTool,
     textRound('Done.'),
   ];
   aBodies.length = 0;
@@ -194,7 +236,7 @@ test('search and a client tool in one Anthropic response: the search block is re
   assert.strictEqual(aBodies.length, 2);
   deq(aBodies[1].messages[1], { role: 'assistant', content: [
     { type: 'server_tool_use', id: 'srvtoolu_m', name: 'web_search', input: { query: 'membrane lipids' } },
-    { type: 'tool_use', id: 'toolu_mx', name: 'read_lines', input: { start: 1, end: 1 } },
+    { type: 'tool_use', id: 'toolu_mx', name: 'read_document', input: { scope: { start: 1, end: 1 }, include: ['text'], doc: null } },
   ] });
   assert.strictEqual(aBodies[1].messages[2].role, 'user'); assert.strictEqual(aBodies[1].messages[2].content[0].tool_use_id, 'toolu_mx');
   deq(state.messages[1]._toolActivity, [{ name: 'web_search', summary: 'membrane lipids' }]);

@@ -9,6 +9,7 @@ const { deq, load, installDocTab, installIdentity } = require('./lib/sandbox');
 const { sseResponse, textRound } = require('./lib/streams');
 const { fakeDocsServer, docSpec, ORIGINAL } = require('./lib/fake-docs');
 require('./lib/fake-tables'); // the requests of the Write: table row
+require('./lib/fake-comments'); // the requests of the Write: comments row
 const { webLocks } = require('./lib/shared-storage');
 const { SIGNAL_STATE } = require('./lib/selftest-bench');
 
@@ -115,12 +116,12 @@ test('parseSlashCommand: /test, with anything after it ignored', async () => {
 });
 
 const HARMLESS = ['Environment', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list', 'Completion'];
-const READING = ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'Matching'];
+const READING = ['read_document: outline', 'read_document: lines', 'find_in_document', 'get_selection', 'read_document: formatting', 'Matching'];
 const EDITS = ['Write: replace_text', 'Write: format_text', 'Write: text styles', 'Write: format_lines', 'Write: lists', 'Write: delete_lines', 'Write: undo_last_edit'];
 // The registered Docs API rows (registerSelfTestRows) after "Write: lists".
-const API_EDITS = [...EDITS.slice(0, EDITS.indexOf('Write: lists') + 1), 'Write: table', 'Write: page parts', ...EDITS.slice(EDITS.indexOf('Write: lists') + 1)];
+const API_EDITS = [...EDITS.slice(0, EDITS.indexOf('Write: lists') + 1), 'Write: table', 'Write: page parts', 'Write: comments', ...EDITS.slice(EDITS.indexOf('Write: lists') + 1)];
 const MODEL_ROWS = ['Model: write a section', 'Model: replace a phrase', 'Model: format', 'Model: heading', 'Model: replace all', 'Model: list',
-  'Model: selection', 'Model: question', 'Model: delete', 'Model: cleanup'];
+  'Model: selection', 'Model: question', 'Agent: summarize the test section', 'Model: delete', 'Model: cleanup'];
 const HANDS = ['Your turn: select text', 'Model: replace the selection', 'Your turn: make text bold', 'Your turn: typing signal'];
 const API_ROWS = [...HARMLESS, 'Empty document', 'Write: insert_after_line', ...READING, ...HANDS, ...API_EDITS, ...MODEL_ROWS, 'Multi-tab'];
 const EXPORT_ROWS = [...HARMLESS, 'Empty document', 'Write: insert_after_line', ...EDITS, 'Model: insert at the cursor', ...READING,
@@ -145,7 +146,7 @@ test('/test on a document with text: the harmless checks pass, "Empty document" 
   deq(b.posts(), [], 'no batchUpdate');
   assert.ok(!b.tabMsgs.includes('REPLACE_SELECTION'));
   assert.strictEqual(b.fake.text('t.0'), ORIGINAL.join('\n'));
-  assert.match(b.row('Environment').detail, /v9\.9\.9 · Anthropic \(Claude\) \/ claude-haiku-4-5 · API key set · Google: signed in as ann@example\.com · Mode: (Manual|Edit automatically|Plan) · Web Locks available · Chrome 140/);
+  assert.match(b.row('Environment').detail, /v9\.9\.9 · Anthropic \(Claude\) \/ claude-haiku-4-5 · API key set · Google: signed in as ann@example\.com · Mode: (Manual|Auto|Plan) · Web Locks available · Chrome 140/);
   assert.ok(!JSON.stringify(rows).includes('sk-ant-test'), 'the key is never shown');
   assert.match(b.row('Content script').detail, /^PING \d+ ms · document DOC123 · «My Doc»$/);
   assert.strictEqual(b.row('Selection').detail, '17 characters (cached)');
@@ -159,9 +160,9 @@ test('/test on a document with text: the harmless checks pass, "Empty document" 
   assert.strictEqual(b.bodies[0].tools, undefined);
   assert.strictEqual(b.bodies[0].max_tokens, 16);
   deq(b.bodies[0].messages, [{ role: 'user', content: [{ type: 'text', text: 'Reply with the single word OK.', cache_control: { type: 'ephemeral' } }] }]);
-  // nothing went into the chat history; the card is a notice with one row per check
+  // nothing went into the chat history; the card is a report box with one row per check
   assert.strictEqual(JSON.stringify(state.messages), before);
-  assert.ok(card.classList.contains('notice'));
+  assert.ok(card.classList.contains('report'));
   assert.strictEqual(card.innerHTML.split('class="st-row st-').length - 1, rows.length);
   assert.ok(card.innerHTML.includes('data-act="copy-selftest"'));
   assert.ok(card.innerHTML.includes('Send this report to the developer'));
@@ -169,17 +170,17 @@ test('/test on a document with text: the harmless checks pass, "Empty document" 
   const md = card._report;
   assert.ok(md.startsWith('## Munin self-test\n'));
   assert.ok(md.includes('- Document: «My Doc» (DOC123) · Docs tab t.0 «Main» · browser tab 7'));
-  assert.ok(md.includes('| # | Check | Result | Time | Detail |\n|---|---|---|---|---|\n| 1 | Environment | ✅ pass |'));
+  assert.ok(md.includes('| # | Check | Result | Time | Detail |\n|---|---|---|---|---|\n| 1 | Environment | pass |'));
   assert.strictEqual(md.split('\n').filter((l) => /^\| \d+ \|/.test(l)).length, rows.length);
-  assert.ok(md.includes('**Summary:** 9 passed, 0 warnings, 1 failed, 30 skipped'));
+  assert.ok(md.includes('**Summary:** 9 passed, 0 warnings, 1 failed, 32 skipped'));
   deq(b.turns, [], 'no Your-turn card on a document with text');
   assert.ok(!md.includes('- Model:'), 'no model line without the model scenarios');
   assert.ok(!Object.keys(b.env.storage).some((k) => k.startsWith('muninSelfTest:')), 'the report is not stored');
   // the progress was in the chat's live row, not in the status line, which is back to the document line
   deq(b.statuses.filter((s) => /self-test/i.test(s)), []);
   deq(b.live[0], 'Self-test running… orbits');
-  deq(b.live[1], 'Self-test: 1 of 40 · Environment orbits');
-  assert.ok(b.live.includes('Self-test: 40 of 40 · Multi-tab orbits'));
+  deq(b.live[1], 'Self-test: 1 of 42 · Environment orbits');
+  assert.ok(b.live.includes('Self-test: 42 of 42 · Multi-tab orbits'));
   assert.ok(b.live.every((t) => t.startsWith('Self-test')), 'the live row shows only the progress');
   assert.strictEqual(b.liveRow(), undefined, 'the live row is gone, the report card took its place');
   assert.strictEqual(b.liveOrb.getAttribute('data-orb'), null, 'the orb loop stopped');
@@ -212,7 +213,7 @@ test('/test: a failing export (download disabled) fails that check and the gate;
   const gate = 'the document text is unavailable: Could not get the document text (HTTP 403; download disabled).'; // no second read
   deq([s['Empty document'], b.row('Empty document').detail], ['fail', gate]);
   assert.strictEqual(b.rows().length, 31);
-  assert.strictEqual(b.row('read_lines').detail, `not run: ${gate}`);
+  assert.strictEqual(b.row('read_document: lines').detail, `not run: ${gate}`);
   assert.strictEqual(b.row('Model: insert at the cursor').detail, `not run: ${gate}`);
   assert.strictEqual(s['Model list'], 'pass');
   assert.strictEqual(s.Completion, 'pass');
@@ -244,8 +245,8 @@ test('/test on an empty document: the write cycle runs without a card, the readi
   // the Your-turn cards are skipped: the replace row with them; nothing changed, so the paragraph is not rewritten
   deq(b.turns.length, 3);
   // while a card waits, the live row says so with the listening orb
-  assert.ok(b.live.includes('Self-test: 17 of 40 · Your turn: select text · your turn (see the card below) wave'), b.live.join('\n'));
-  assert.ok(b.live.includes('Self-test: 17 of 40 · Your turn: select text orbits'));
+  assert.ok(b.live.includes('Self-test: 17 of 42 · Your turn: select text · your turn (see the card below) wave'), b.live.join('\n'));
+  assert.ok(b.live.includes('Self-test: 17 of 42 · Your turn: select text orbits'));
   deq(b.statuses.filter((x) => /self-test/i.test(x)), []);
   deq([b.row('Your turn: typing signal').status, b.row('Your turn: typing signal').detail], ['skip', 'skipped by the user']);
   deq([b.row('Your turn: select text').status, b.row('Your turn: select text').detail], ['skip', 'skipped by the user']);
@@ -255,24 +256,31 @@ test('/test on an empty document: the write cycle runs without a card, the readi
   // insert, replace_text, format_text, (the text styles: 2 format_text, 2 undos), format_lines ×2 and 2 undos, the list
   // items (insert, number, checklist, none, 3 undos, their deletion), page parts (a footer created and written, a footnote
   // created and written; two undos: the footnote text and its mark, the footer text and the footer), delete_lines, the
-  // undo line and its undo
-  const listRows = ['updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle',
-    'insertText', 'createParagraphBullets', 'deleteParagraphBullets+createParagraphBullets', 'deleteParagraphBullets+updateParagraphStyle',
-    'createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+updateParagraphStyle',
-    'deleteContentRange+updateParagraphStyle'];
+  // undo line and its undo (the first insert fills the empty paragraph, so delete_lines of both lines is the whole
+  // document: emptied without merging into a line before)
+  // (the undo of the heading style writes the line's text styles back; delete_lines of the last lines sends no named style)
+  const listRows = ['updateParagraphStyle+updateTextStyle+updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle+updateTextStyle+updateParagraphStyle+updateTextStyle',
+    'insertText+updateTextStyle+updateParagraphStyle+updateParagraphStyle', 'updateParagraphStyle+createParagraphBullets', 'deleteParagraphBullets+updateParagraphStyle+createParagraphBullets', 'deleteParagraphBullets+updateParagraphStyle',
+    'updateParagraphStyle+createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+updateParagraphStyle+createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+updateParagraphStyle',
+    'deleteContentRange'];
   // Write: table: insert and fill, add a row and fill it, a width, delete the row; undo: the row again and its text, the
   // width, the added row, the table
   const tableRows = ['insertTable', 'insertText+insertText+insertText+insertText', 'insertTableRow', 'insertText+insertText', 'updateTableColumnProperties',
     'deleteTableRow', 'insertTableRow', 'insertText+insertText', 'updateTableColumnProperties', 'deleteTableRow', 'deleteContentRange'];
   const partRows = ['createFooter', 'insertText', 'createFootnote', 'insertText', 'deleteContentRange', 'deleteContentRange', 'deleteContentRange', 'deleteFooter'];
-  deq(kinds, ['insertText', 'deleteContentRange+insertText', 'updateTextStyle', 'updateTextStyle', 'updateTextStyle', 'updateTextStyle', 'updateTextStyle', ...listRows, ...tableRows, ...partRows,
-    'deleteContentRange+updateParagraphStyle', 'insertText', 'deleteContentRange+updateParagraphStyle']);
-  assert.ok(b.posts().every((body) => body.writeControl && body.writeControl.requiredRevisionId));
+  // Write: comments: add, reply, resolve; undo: reopen, the reply deleted, the thread deleted
+  const commentRows = ['insertComment', 'addCommentReply', 'addCommentReply', 'addCommentReply', 'deleteCommentReply', 'deleteComment'];
+  // the inserts and the h2 style change (and its undo) carry the formatting sheet's text and paragraph values
+  deq(kinds, ['insertText+updateTextStyle+updateParagraphStyle+updateParagraphStyle', 'deleteContentRange+insertText', 'updateTextStyle', 'updateTextStyle', 'updateTextStyle', 'updateTextStyle', 'updateTextStyle', ...listRows, ...tableRows, ...partRows, ...commentRows,
+    'deleteContentRange', 'insertText+updateTextStyle+updateParagraphStyle', 'deleteContentRange+updateParagraphStyle']);
+  // every edit is sent with the revision it was planned on; comment changes by id need none (only add has a range)
+  const byId = ['addCommentReply', 'deleteCommentReply', 'deleteComment'];
+  assert.ok(b.posts().every((body) => (body.writeControl && body.writeControl.requiredRevisionId) || body.requests.every((q) => byId.includes(Object.keys(q)[0]))));
   assert.strictEqual(b.fake.raw('t.0'), '');
-  assert.match(b.row('Write: undo_last_edit').detail, /revision rev-1 → rev-42$/);
+  assert.match(b.row('Write: undo_last_edit').detail, /revision rev-1 → rev-48$/);
   assert.strictEqual(JSON.stringify(state.messages), before, 'the edit journal never reaches the chat');
   assert.ok(!b.card()._report.includes('Write cycle:'));
-  assert.match(b.card()._report, /\*\*Summary:\*\* 23 passed, 1 warning, 0 failed, 16 skipped/);
+  assert.match(b.card()._report, /\*\*Summary:\*\* 24 passed, 1 warning, 0 failed, 17 skipped/);
   assert.strictEqual(state.busy, false);
 });
 
@@ -295,13 +303,13 @@ test('/test: a failing write step stops the phase and the report names the lefto
   assert.strictEqual(s['Write: format_text'], 'fail');
   const fail = b.row('Write: format_text');
   assert.match(fail.detail, /format_text failed/);
-  assert.match(fail.detail, /Left in the document: line 2 «Self-test section», line 3 «The slow green turtle jumps over the lazy dog\.»\. Delete it by hand\.$/);
+  assert.match(fail.detail, /Left in the document: line 1 «Self-test section», line 2 «The slow green turtle jumps over the lazy dog\.»\. Delete it by hand\.$/);
   assert.strictEqual(b.row('Write: delete_lines').detail, 'not run: an earlier write step failed');
   assert.strictEqual(b.row('Write: undo_last_edit').detail, 'not run: an earlier write step failed');
   assert.strictEqual(s['Multi-tab'], 'pass');
   assert.strictEqual(posts, 3, 'no write after the failure');
   assert.ok(b.card().innerHTML.includes('Send this report to the developer'));
-  assert.strictEqual(b.fake.raw('t.0').split('\n').length, 3);
+  assert.strictEqual(b.fake.raw('t.0').split('\n').length, 2); // the two test lines fill the empty document
   assert.ok(!state.messages.some((m) => m._edit), 'the journal is not in the chat');
 });
 
@@ -312,11 +320,12 @@ test('/test: Stop mid-run ends it and the report lists the checks that ran', asy
   deq(rows.map((r) => r.name), ['Environment', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list']);
   assert.strictEqual(b.bodies.length, 0, 'no completion after Stop');
   assert.ok(b.card()._selfTest.stopped);
-  assert.match(b.card()._report, /stopped by the user after 7 of 40 checks/);
+  assert.match(b.card()._report, /stopped by the user after 7 of 42 checks/);
   assert.strictEqual(b.liveRow(), undefined, 'Stop: the live row is gone');
   assert.strictEqual(b.liveOrb.getAttribute('data-orb'), null, 'Stop: the orb loop stopped');
   assert.strictEqual(b.state.busy, false);
-  assert.strictEqual(b.T.el.docStatus.textContent, b.T.docStatusText());
+  assert.strictEqual(b.state.statusText.text, b.T.docStatusText()); // the document line again, not a step's text
+  assert.ok(!/…/.test(b.T.el.docStatus.textContent), 'no progress text under the title');
 });
 
 test('/test is refused while a turn runs and needs no API key', async () => {
@@ -340,16 +349,16 @@ test('Environment: the Google line names the signed-in account or the export + p
   await b.run('/test');
   let r = b.row('Environment');
   assert.strictEqual(r.status, 'pass');
-  assert.match(r.detail, / · API key set · Google: not signed in \(export \+ paste fallback\) · Mode: (Manual|Edit automatically|Plan) · Web Locks available · /);
+  assert.match(r.detail, / · API key set · Google: not signed in \(export \+ paste fallback\) · Mode: (Manual|Auto|Plan) · Web Locks available · /);
   b = await bench({ connected: true, account: null });
   await b.run('/test');
   r = b.row('Environment');
   assert.strictEqual(r.status, 'pass');
-  assert.match(r.detail, / · API key set · Google: signed in · Mode: (Manual|Edit automatically|Plan) · Web Locks available · /);
+  assert.match(r.detail, / · API key set · Google: signed in · Mode: (Manual|Auto|Plan) · Web Locks available · /);
 });
 
 test('Environment: the row names the mode of the cycler', async () => {
-  for (const [mode, label] of [['manual', 'Manual'], ['auto', 'Edit automatically'], ['plan', 'Plan']]) {
+  for (const [mode, label] of [['manual', 'Manual'], ['auto', 'Auto'], ['plan', 'Plan']]) {
     const b = await bench({ connected: false });
     b.state.applyMode = mode;
     await b.run('/test');

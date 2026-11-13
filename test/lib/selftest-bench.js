@@ -6,6 +6,7 @@ const { deq, load, installDocTab, installIdentity } = require('./sandbox');
 const { sseResponse } = require('./streams');
 const { fakeDocsServer, docSpec } = require('./fake-docs');
 require('./fake-tables'); // the table rows of the requests the Write: table row sends
+require('./fake-comments'); // the comment requests of the Write: comments row
 const { webLocks } = require('./shared-storage');
 
 const json = (obj, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => obj, text: async () => JSON.stringify(obj), headers: { get: () => '' } });
@@ -26,6 +27,7 @@ const say = (t) => cc({ choices: [{ index: 0, delta: { content: t } }] }) + cc({
 // format_lines arguments with every property null except over.
 const lines = (start, end, over) => ({ start, end, style: null, align: null, list: null, indent_start: null, indent_first_line: null, space_above: null, space_below: null, line_spacing: null, ...over });
 const headLine = (b) => b.lines().indexOf('Self-test section') + 1;
+const AGENT_TASK = 'Summarize the Self-test section in one sentence.';
 // The correct behavior per scenario: a list of rounds, each (b) => SSE text (b.lines(): the document now).
 const GOOD = {
   write: [(b) => call('insert_after_line', { line: b.lines().length, text: 'Self-test section\nThe quick brown fox jumps over the lazy dog.' }), () => say('Done.')],
@@ -36,15 +38,19 @@ const GOOD = {
   list: [(b) => call('format_lines', lines(headLine(b) + 1, headLine(b) + 2, { list: 'number' })), () => say('Done.')],
   // The turn context gives the selection by its line range only: the model reads it first.
   selection: [() => call('get_selection', {}), () => call('replace_selection', { text: 'THE SLOW GREEN TORTOISE JUMPS OVER THE LAZY DOG.' }), () => say('Done.')],
-  question: [(b) => call('read_lines', { start: 1, end: b.lines().length }), () => say('3')],
+  question: [(b) => call('read_document', { scope: { start: 1, end: b.lines().length }, include: ['text'], doc: null }), () => say('3')],
   delete: [(b) => call('delete_lines', { start: b.lines().indexOf('Self-test section') + 1, end: b.lines().length }), () => say('Deleted.')],
   insert: [() => call('replace_selection', { text: PASTE }), () => say('Inserted.')],
   questionExport: [() => call('find_in_document', { query: 'Self-test paragraph' }), (b) => say(String(b.doc.split('\n').findIndex((l) => l.startsWith('Self-test paragraph')) + 1))],
   replaceSelection: [() => call('get_selection', {}), () => call('replace_selection', { text: 'red cat' }), () => say('Replaced.')],
+  // The main model delegates; the agent (its own request, keyed agentTask by its brief) reads and reports.
+  agent: [() => call('delegate', { label: 'Summarize the test section', task: AGENT_TASK, context: null, model: null, search: false }), () => say('The agent says the section is about a fox.')],
+  agentTask: [(b) => call('read_document', { scope: { start: 1, end: b.lines().length }, include: ['text'], doc: null }), () => say('The Self-test section has one sentence about a quick brown fox.')],
 };
 
-// The simulated user of the Your-turn cards: what they do per step, then the button ('continue' / 'skip'; a
-// falsy value leaves the card waiting). opts.user overrides a step with a decision or a function (b, pending card) => decision.
+// The simulated user of the Your-turn cards: what they do per step; there is no Continue, the panel sees the change
+// itself (a falsy value leaves the card waiting; 'skip' presses Skip). opts.user overrides a step with a decision or
+// a function (b, pending card, id) => decision.
 const YOUR_TURN_STEP = (text) => (text.includes('«brown fox»') ? 'select' : text.includes('Ctrl+B') ? 'bold' : text.startsWith('Remove the test paragraph') ? 'remove'
   : text.includes('type a few letters') ? 'typing' : '?');
 // Makes the first «word» of the fake Docs document bold (the user's Ctrl+B): one revision more.
@@ -59,22 +65,20 @@ function boldInFake(fake, word) {
   }
 }
 const GOOD_USER = {
-  select: (b) => { b.selection = 'brown fox'; return 'continue'; },
-  bold: (b) => { if (b.connected) boldInFake(b.fake, 'quick'); else b.doc = b.doc.replace('quick', '**quick**'); return 'continue'; },
-  remove: (b) => { b.doc = ''; return 'continue'; },
-  // Types «abc» (three DOC_TYPED, a DOC_CHANGED from each source; the document changes), deletes it, then Continue.
-  typing: (b, p, id) => {
+  select: (b) => { b.selection = 'brown fox'; return null; },
+  bold: (b) => { if (b.connected) boldInFake(b.fake, 'quick'); else b.doc = b.doc.replace('quick', '**quick**'); return null; },
+  remove: (b) => { b.doc = ''; return null; },
+  // Types «abc» and deletes it (three DOC_TYPED, a DOC_CHANGED from each source; the document changes until the
+  // letters are gone, after the panel's read).
+  typing: (b) => {
     const before = b.doc;
     b.signal({ type: 'DOC_TYPED', dChars: 3, dWords: 0 });
     b.signal({ type: 'DOC_TYPED', dChars: 2, dWords: 0 });
     if (b.connected) b.fake.revision++; else b.doc = b.doc.replace('lazy dog.', 'lazy dog.abc');
     b.signal({ type: 'DOC_CHANGED', source: 'page', remote: false });
     b.signal({ type: 'DOC_CHANGED', source: 'input' });
-    setTimeout(() => {
-      b.signal({ type: 'DOC_TYPED', dChars: -5, dWords: 0 });
-      if (!b.connected) b.doc = before;
-      b.T.decidePreview(id, 'continue');
-    }, 80);
+    b.signal({ type: 'DOC_TYPED', dChars: -5, dWords: 0 });
+    if (!b.connected) setTimeout(() => { b.doc = before; }, 80);
     return null;
   },
 };
@@ -87,7 +91,10 @@ const GOOD_USER = {
 // opts.pasteTimes: the stub content script inserts each pasted text that many times on one line (the paste
 // dispatched to several targets), reporting that many insertion attempts.
 // opts.hash: '#tabId=7' embeds the panel in the stub tab (HOST_TAB_ID), so b.push(text) delivers SELECTION_UPDATE.
-async function bench({ hash = '', connected = true, spec = EMPTY(), script = {}, onRequest = null, selection = '', tabExportError = '', panelExportStatus = 0, pasteTimes = 1, user = {} } = {}) {
+// opts.clock: the panel's Date.now is a manual clock (b.clock.t) that only the export waits (by their ms) and the model
+// requests (100 ms each) move, so the export pacing does not depend on how fast the machine runs the test;
+// b.clock.exports: its time at each export request.
+async function bench({ hash = '', connected = true, spec = EMPTY(), script = {}, onRequest = null, selection = '', tabExportError = '', panelExportStatus = 0, pasteTimes = 1, user = {}, clock = false } = {}) {
   const env = await load({ hash });
   const { T, state, chrome, ctx } = env;
   const ident = installIdentity(env);
@@ -95,10 +102,15 @@ async function bench({ hash = '', connected = true, spec = EMPTY(), script = {},
   installDocTab(env);
   ctx.navigator.locks = webLocks();
   T.ST_MODEL.exportWaitMs = 5;
-  T.ST_MODEL.apiWaitMs = 5;
   Object.assign(T.ST_SIGNAL, { apiEveryMs: 5, exportEveryMs: 5 });
+  Object.assign(T.ST_WATCH, { everyMs: 5, exportEveryMs: 5, backoffMs: 50 });
   const b = { env, T, state, ctx, connected, fake: fakeDocsServer(spec), bodies: [], keys: [], pastes: [], doc: '', selection, statuses: [], events: [], turns: [] };
-  ctx.exportSleep = async (ms) => { b.events.push(`sleep ${ms}`); };
+  if (clock) {
+    b.clock = { t: Date.UTC(2026, 10, 1), exports: [] };
+    env.run('Date').now = () => b.clock.t;
+  }
+  ctx.exportSleep = async (ms) => { b.events.push(`sleep ${ms}`); if (b.clock) b.clock.t += ms; };
+  const exported = () => { b.events.push('export'); if (b.clock) b.clock.exports.push(b.clock.t); };
   b.push = (text) => T.onRuntimeMessage({ type: 'SELECTION_UPDATE', tabId: 7, docId: 'DOC123', text });
   // A message of the content script: through onRuntimeMessage when the panel is embedded in tab 7, else to the tap.
   b.signal = (msg) => {
@@ -113,7 +125,7 @@ async function bench({ hash = '', connected = true, spec = EMPTY(), script = {},
       case 'GET_SIGNAL_STATE': return SIGNAL_STATE;
       case 'GET_SELECTION': return { ok: true, text: b.selection };
       case 'GET_DOC_TEXT':
-        b.events.push('export');
+        exported();
         return tabExportError ? { ok: false, error: tabExportError, title: 'My Doc' } : { ok: true, text: b.exportText(), format: 'markdown', title: 'My Doc' };
       case 'REPLACE_SELECTION': {
         b.pastes.push(msg);
@@ -131,12 +143,13 @@ async function bench({ hash = '', connected = true, spec = EMPTY(), script = {},
     }
   };
   const prompts = T.ST_PROMPTS;
-  const keyOf = (text) => Object.keys(prompts).find((k) => String(text).endsWith(prompts[k])) || (String(text).includes('single word OK') ? 'probe' : '?');
+  const keyOf = (text) => Object.keys(prompts).find((k) => String(text).endsWith(prompts[k])) || (String(text).includes('single word OK') ? 'probe'
+    : String(text).includes(`${AGENT_TASK}\n\n`) ? 'agentTask' : '?');
   ctx.fetch = async (url, init = {}) => {
     const r = await b.fake.fetch(url, init);
     if (r) return r;
     if (url.includes('/export?')) {
-      b.events.push('export');
+      exported();
       if (panelExportStatus) return json({ error: 'export failed' }, panelExportStatus);
       return { ok: true, status: 200, text: async () => b.exportText(), headers: { get: () => '' } };
     }
@@ -144,6 +157,7 @@ async function bench({ hash = '', connected = true, spec = EMPTY(), script = {},
     if (url.endsWith('/chat/completions')) {
       const body = JSON.parse(init.body);
       b.bodies.push(body);
+      if (b.clock) b.clock.t += 100;
       const users = body.messages.filter((m) => m.role === 'user');
       const last = users[users.length - 1];
       const key = keyOf(typeof last.content === 'string' ? last.content : JSON.stringify(last.content));
@@ -197,13 +211,13 @@ async function bench({ hash = '', connected = true, spec = EMPTY(), script = {},
 }
 const statusOf = (rows) => Object.fromEntries(rows.map((r) => [r.name, r.status]));
 const HEAD = ['Environment', 'Content script', 'Change signal', 'Selection', 'Export read', 'Docs API read', 'Model list', 'Completion', 'Empty document'];
-const READING = ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'Matching'];
+const READING = ['read_document: outline', 'read_document: lines', 'find_in_document', 'get_selection', 'read_document: formatting', 'Matching'];
 const EDITS = ['Write: replace_text', 'Write: format_text', 'Write: text styles', 'Write: format_lines', 'Write: lists', 'Write: delete_lines', 'Write: undo_last_edit'];
 // The registered Docs API rows (registerSelfTestRows) after "Write: lists".
-const API_EDITS = [...EDITS.slice(0, EDITS.indexOf('Write: lists') + 1), 'Write: table', 'Write: page parts', ...EDITS.slice(EDITS.indexOf('Write: lists') + 1)];
+const API_EDITS = [...EDITS.slice(0, EDITS.indexOf('Write: lists') + 1), 'Write: table', 'Write: page parts', 'Write: comments', ...EDITS.slice(EDITS.indexOf('Write: lists') + 1)];
 const WRITE_ROWS = ['Write: insert_after_line', ...EDITS];
 const MODEL_ROWS = ['Model: write a section', 'Model: replace a phrase', 'Model: format', 'Model: heading', 'Model: replace all', 'Model: list',
-  'Model: selection', 'Model: question', 'Model: delete', 'Model: cleanup'];
+  'Model: selection', 'Model: question', 'Agent: summarize the test section', 'Model: delete', 'Model: cleanup'];
 const HANDS = ['Your turn: select text', 'Model: replace the selection', 'Your turn: make text bold', 'Your turn: typing signal'];
 const API_ROWS = [...HEAD, 'Write: insert_after_line', ...READING, ...HANDS, ...API_EDITS, ...MODEL_ROWS, 'Multi-tab'];
 const EXPORT_ROWS = [...HEAD, ...WRITE_ROWS, 'Model: insert at the cursor', ...READING, ...HANDS, 'Model: question', 'Your turn: remove the test text', 'Multi-tab'];

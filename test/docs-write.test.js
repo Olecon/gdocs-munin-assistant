@@ -30,9 +30,9 @@ test('replace_text: 0 / 1 / 2 matches, multi-paragraph, stripped characters, ver
   await fresh();
   // 0 matches, 2 matches, an embedded object
   w = await exec('replace_text', { old_text: 'Gamma ray', new_text: 'x' });
-  assert.ok(!w._ok && /not found in the document/.test(w.content) && /read_lines/.test(w.content));
+  assert.ok(!w._ok && /not found in the document/.test(w.content) && /read_document/.test(w.content));
   w = await exec('replace_text', { old_text: 'Alpha beta', new_text: 'x' });
-  assert.ok(!w._ok && /occurs 2 times \(lines 4, 5\)/.test(w.content) && /surrounding text/.test(w.content));
+  assert.ok(!w._ok && w.content.endsWith('old_text occurs 2 times (lines 4, 5). Add line: N to pick the occurrence on line N (one call or operation per occurrence), or call replace_all to replace every occurrence'), w.content);
   w = await exec('replace_text', { old_text: 'Image ' + OC, new_text: 'Picture' });
   assert.ok(!w._ok && /embedded object/.test(w.content));
   assert.strictEqual(fake.revision, 1); // nothing was written
@@ -40,7 +40,7 @@ test('replace_text: 0 / 1 / 2 matches, multi-paragraph, stripped characters, ver
   w = pushTool(await exec('replace_text', { old_text: 'text.', new_text: 'wor' + String.fromCharCode(7) + 'ds!' }, 'w1'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Replaced line 2');
-  assert.strictEqual(w.content, 'Done: replaced line 2.\nLines 2-2 now:\n2: Intro 😀 words!\nThe document now has 10 lines.');
+  assert.strictEqual(w.content, 'Done: replaced line 2; the document has 10 lines.'); // the text is on the card, not in the result
   deq(lastPost(), { requests: [
     { deleteContentRange: { range: { startIndex: 20, endIndex: 25, tabId: 't.0' } } },
     { insertText: { location: { index: 20, tabId: 't.0' }, text: 'words!' } },
@@ -54,7 +54,7 @@ test('replace_text: 0 / 1 / 2 matches, multi-paragraph, stripped characters, ver
   w = pushTool(await exec('replace_text', { old_text: 'gamma.\nAlpha beta delta', new_text: 'GAMMA.\nNew para\nAlpha DELTA' }, 'w2'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Replaced lines 4–5');
-  assert.ok(w.content.includes('Lines 4-6 now:\n4: Alpha beta GAMMA.\n5: New para\n6: Alpha DELTA.') && w.content.includes('now has 11 lines'));
+  assert.strictEqual(w.content, 'Done: replaced lines 4–5; now lines 4–6; the document has 11 lines.');
   deq(fake.text('t.0').split('\n').slice(3, 7), ['Alpha beta GAMMA.', 'New para', 'Alpha DELTA.', 'Cell A']);
   assert.strictEqual(T.runReadingTool('find_in_document', { query: 'new para' }, as), '1 line contains "new para":\n5: New para');
   w = await exec('replace_text', { old_text: 'DELTA.\nCell A', new_text: 'x' });
@@ -80,7 +80,6 @@ test('replace_text across heading boundaries keeps the paragraph styles (and und
   for (const id of ['u-h2', 'u-h1']) assert.ok(pushTool(await exec('undo_last_edit', {}, id))._ok);
   deq(fake.text('t.0').split('\n'), ORIGINAL); deq(fake.styles('t.0'), ORIGINAL_STYLES);
   // whole lines with their trailing newline (the paragraph after the range survives and keeps its style)
-  const styleReq = (s0, style) => ({ updateParagraphStyle: { range: { startIndex: s0, endIndex: s0 + 1, tabId: 't.0' }, paragraphStyle: { namedStyleType: style }, fields: 'namedStyleType' } });
   await fresh();
   w = pushTool(await exec('replace_text', { old_text: 'Intro 😀 text.\n', new_text: 'Intro 😀 words.\n' }, 'q1'));
   assert.ok(w._ok, w.content);
@@ -98,7 +97,8 @@ test('replace_text across heading boundaries keeps the paragraph styles (and und
   assert.ok(w._ok, w.content);
   deq(fake.text('t.0').split('\n').slice(0, 3), ['Methods', 'Alpha beta gamma.', 'Alpha beta delta.']);
   deq(fake.styles('t.0').slice(0, 3), ['HEADING_1', 'NORMAL_TEXT', 'NORMAL_TEXT']);
-  deq(lastPost().requests, [{ deleteContentRange: { range: { startIndex: 1, endIndex: 26, tabId: 't.0' } } }, styleReq(1, 'HEADING_1')]);
+  // the heading survives the delete with its style, so no namedStyleType is sent (it would clear the heading's text styles)
+  deq(lastPost().requests, [{ deleteContentRange: { range: { startIndex: 1, endIndex: 26, tabId: 't.0' } } }]);
   deq(w._edit.paras, [{ nl: -1, style: 'TITLE' }, { nl: 0, style: 'NORMAL_TEXT' }, { nl: 1, style: 'HEADING_1' }]);
   w = pushTool(await exec('undo_last_edit', {}, 'q2u'));
   assert.ok(w._ok, w.content);
@@ -118,17 +118,20 @@ test('insert_after_line (line 0, after a heading, trailing newline)', async () =
   w = pushTool(await exec('insert_after_line', { line: 3, text: 'First under Methods\n' }, 'w3'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Inserted after line 3');
-  assert.strictEqual(w.content, 'Done: inserted after line 3.\nLines 4-4 now:\n4: First under Methods\nThe document now has 11 lines.');
+  assert.strictEqual(w.content, 'Done: inserted after line 3; now line 4; the document has 11 lines.');
   deq(fake.text('t.0').split('\n').slice(2, 5), ['Methods', 'First under Methods', 'Alpha beta gamma.']);
   deq(fake.styles('t.0').slice(2, 5), ['HEADING_1', 'NORMAL_TEXT', 'NORMAL_TEXT']);
   deq(lastPost().requests, [
     { insertText: { location: { index: 33, tabId: 't.0' }, text: '\nFirst under Methods' } },
     { updateParagraphStyle: { range: { startIndex: 34, endIndex: 53, tabId: 't.0' }, paragraphStyle: { namedStyleType: 'NORMAL_TEXT' }, fields: 'namedStyleType' } },
+    // the formatting sheet (the default: body Times New Roman 12 justify space 0/0) on the new paragraph
+    { updateTextStyle: { range: { startIndex: 34, endIndex: 53, tabId: 't.0' }, textStyle: { weightedFontFamily: { fontFamily: 'Times New Roman', weight: 400 }, fontSize: { magnitude: 12, unit: 'PT' } }, fields: 'weightedFontFamily,fontSize' } },
+    { updateParagraphStyle: { range: { startIndex: 34, endIndex: 53, tabId: 't.0' }, paragraphStyle: { alignment: 'JUSTIFIED', spaceAbove: { magnitude: 0, unit: 'PT' }, spaceBelow: { magnitude: 0, unit: 'PT' } }, fields: 'alignment,spaceAbove,spaceBelow' } },
   ]);
   w = pushTool(await exec('insert_after_line', { line: 0, text: 'Draft\nDo not share\n' }, 'w4'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Inserted at the beginning');
-  assert.ok(w.content.includes('Lines 1-2 now:\n1: Draft\n2: Do not share') && w.content.includes('now has 13 lines'));
+  assert.strictEqual(w.content, 'Done: inserted at the beginning; now lines 1–2; the document has 13 lines.');
   deq(fake.styles('t.0').slice(0, 3), ['NORMAL_TEXT', 'NORMAL_TEXT', 'TITLE']);
   w = await exec('insert_after_line', { line: 99, text: 'x' });
   assert.ok(!w._ok && /from 0 to 13/.test(w.content));
@@ -139,7 +142,7 @@ test('delete_lines (body, last line, table boundary)', async () => {
   w = pushTool(await exec('delete_lines', { start: 8, end: 8 }, 'w5')); // "Alpha beta delta."
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Deleted line 8');
-  assert.strictEqual(w.content, 'Done: deleted line 8.\nLines 7-8 now:\n7: Alpha beta gamma.\n[table T1: 1 row × 2 columns, lines 8–9]\n8 [r1c1]: Cell A\nThe document now has 12 lines.');
+  assert.strictEqual(w.content, 'Done: deleted line 8; the document has 12 lines.');
   w = pushTool(await exec('delete_lines', { start: 12, end: 12 }, 'w6')); // "Last line"
   assert.ok(w._ok, w.content);
   assert.ok(fake.text('t.0').endsWith('Image ' + OC + ' done'));
@@ -153,22 +156,28 @@ test('delete_lines (body, last line, table boundary)', async () => {
 test('undo_last_edit (stack, styles restored, card updated, undo of an undo refused)', async () => {
   // --- undo: newest first, journal kept in the history, styles restored
   assert.strictEqual(D.latestUndoable()._edit.id, 'w6');
+  // an applied edit has no card: its action-log row shows it, with Undo while it is the most recent one
+  const rowFor = (tc, r) => D.activityRow(D.logEntry(tc, r));
   card = D.toolCardFor({ id: 'w6', function: { name: 'delete_lines', arguments: '{"start":12,"end":12}' } }, state.messages[state.messages.length - 1]);
-  assert.ok(card.innerHTML.includes('✅ Deleted line 12') && card.innerHTML.includes('data-act="undo-edit" data-edit="w6"') && card.innerHTML.includes('<summary>Deleted text</summary><pre>Last line</pre>'));
-  assert.strictEqual(D.editCards.get('w6'), card);
-  card = D.toolCardFor({ id: 'w5', function: { name: 'delete_lines', arguments: '{}' } }, state.messages.find((x) => x._edit && x._edit.id === 'w5'));
+  assert.strictEqual(card.nodeType, 11); // an empty fragment: it takes the pending card's place
+  card = rowFor({ id: 'w6', function: { name: 'delete_lines', arguments: '{"start":12,"end":12}' } }, state.messages[state.messages.length - 1]);
+  assert.ok(card.innerHTML.includes('<span class="log-status">Done</span><span class="log-preview"> · Last line</span>') && card.innerHTML.includes('data-act="undo-edit" data-edit="w6"') && card.innerHTML.includes('<div class="log-what">Deleted line 12</div>') && card.innerHTML.includes('<div class="log-label">Deleted text</div><pre class="log-text">Last line</pre>'));
+  card = rowFor({ id: 'w5', function: { name: 'delete_lines', arguments: '{}' } }, state.messages.find((x) => x._edit && x._edit.id === 'w5'));
   assert.ok(!card.innerHTML.includes('undo-edit')); // only the most recent edit has the button
   state.googleConnected = false;
-  card = D.toolCardFor({ id: 'w6', function: { name: 'delete_lines', arguments: '{}' } }, state.messages[state.messages.length - 1]);
+  card = rowFor({ id: 'w6', function: { name: 'delete_lines', arguments: '{}' } }, state.messages[state.messages.length - 1]);
   assert.ok(!card.innerHTML.includes('undo-edit')); // hidden when not connected
   state.googleConnected = true;
-  let replaced = null;
-  D.editCards.get('w6').replaceWith = (n) => { replaced = n; };
+  const row6 = rowFor({ id: 'w6', function: { name: 'delete_lines', arguments: '{"start":12,"end":12}' } }, state.messages[state.messages.length - 1]);
+  assert.strictEqual(D.editCards.get('w6'), row6);
+  row6.parentNode = {}; // shown in a bubble (isConnected)
   w = pushTool(await exec('undo_last_edit', {}, 'u1'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Undid: Deleted line 12');
   assert.ok(w.content.startsWith('Done: undid "Deleted line 12".') && w.content.includes('12: Last line') && w.content.includes('now has 12 lines'));
-  assert.ok(replaced && replaced.innerHTML.includes('Deleted line 12 (undone)')); // the card is updated within the turn
+  // the row is redrawn in place within the turn (its bubble keeps the element)
+  assert.strictEqual(D.editCards.get('w6'), row6);
+  assert.ok(row6.className.includes('undone') && row6.innerHTML.includes('<span class="log-status">Undone</span>') && !row6.innerHTML.includes('undo-edit'), row6.innerHTML);
   w = await exec('insert_after_line', { line: 1, text: 'x' }, null, true); // same response as the undo: refused
   assert.ok(!w._ok && /line numbers changed after the previous edit/.test(w.content) && w.content.includes('12: Last line'));
   for (const id of ['u2', 'u3', 'u4']) { w = pushTool(await exec('undo_last_edit', {}, id)); assert.ok(w._ok, w.content); }
@@ -184,7 +193,7 @@ test('a second line-number write in the same response is refused (also after a r
   w = pushTool(await exec('delete_lines', { start: 4, end: 4 }, 'p1'));
   assert.ok(w._ok);
   w = await exec('delete_lines', { start: 9, end: 9 }, 'p2', true); // the model meant old line 9 ("Image ... done")
-  assert.ok(!w._ok && /line numbers changed after the previous edit in this response/.test(w.content) && /re-read with read_lines/.test(w.content));
+  assert.ok(!w._ok && /line numbers changed after the previous edit in this response/.test(w.content) && /re-read with read_document/.test(w.content));
   assert.ok(w.content.includes('3: Methods\n4: Alpha beta delta.'));
   assert.ok(fake.text('t.0').includes('Image ' + OC + ' done') && fake.text('t.0').includes('Details'));
   w = await exec('replace_text', { old_text: 'Last line', new_text: 'Final line' }, 'p3', true); // text-based: allowed
@@ -214,7 +223,7 @@ test('soft line breaks: mark in the output, newline or mark accepted in old_text
   w = pushTool(await exec('replace_text', { old_text: 'Alpha\nbeta', new_text: 'One' + MARK + 'two' }, 's1'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(fake.text('t.0').split('\n')[1], 'One' + VT + 'two gamma.');
-  assert.ok(w.content.includes('2: One' + MARK + 'two gamma.'));
+  assert.strictEqual(w._cardText, 'One' + MARK + 'two'); // the card shows the mark; the result names the line only
   w = pushTool(await exec('replace_text', { old_text: 'One' + MARK + 'two', new_text: 'Three' }, 's2'));
   assert.ok(w._ok && fake.text('t.0').split('\n')[1] === 'Three gamma.', w.content);
 });
@@ -239,7 +248,7 @@ test('suggestions: flagged, noted, writes refused', async () => {
 test('delete_lines of the last line takes the newline of the line before: refused when that line has suggestions', async () => {
   await fresh(docSpec({ items: [{ p: 'Title', style: 'TITLE' }, { p: 'Suggested words here', suggest: true }, { p: 'Plain line' }] }));
   const r = await exec('delete_lines', { start: 3, end: 3 });
-  assert.strictEqual(r.content, 'Error: deleting line 3 also removes the end of line 2, which contains suggested changes (suggesting mode); accept or reject them in Google Docs first');
+  assert.strictEqual(r.content, 'Error: deleting line 3 also removes the end of line 2, which contains suggested changes (suggesting mode); accept or reject them first (the comment tool, or in Google Docs)');
   assert.strictEqual(r._message, 'delete_lines: the line has suggested changes');
   assert.strictEqual(fake.revision, 1); // nothing sent
   assert.strictEqual(fake.text('t.0'), 'Title\nSuggested words here\nPlain line');
@@ -276,26 +285,21 @@ test('replace_selection via the API; paste only when nothing was applied', async
   assert.strictEqual(state.selection, '');
   state.selection = 'Alpha beta'; // twice in the document: pasted as before
   w = pushTool(await exec('replace_selection', { text: 'Omega' }, 'rs2'));
-  assert.ok(w._ok && !w._edit && JSON.parse(w.content).ok === true && JSON.parse(w.content).note === T.PASTE_DONE_NOTE);
+  assert.ok(w._ok && !w._edit && w.content === T.PASTE_DONE_NOTE);
   deq(pasted, ['Omega']);
   assert.strictEqual(as.pasteDone, true);
-  // the API path is not limited by the paste: the selection is found exactly once, replaced through the API again
+  // after a paste every replace_selection is refused, the API path too: the snapshot predates the paste, so a selection
+  // found in it may be the text that was just pasted over
   state.selection = 'beta epsilon';
-  w = pushTool(await exec('replace_selection', { text: 'beta kappa' }, 'rs2a'));
-  assert.ok(w._ok && w._edit && w._message === 'Replaced the selection (line 5)', w.content);
+  w = await exec('replace_selection', { text: 'beta kappa' }, 'rs2a');
+  assert.ok(!w._ok && w.content === T.PASTE_AGAIN_TEXT && w._message === T.PASTE_AGAIN_CARD, w.content);
+  assert.ok(fake.text('t.0').includes('Alpha beta epsilon.') && !fake.text('t.0').includes('kappa'));
   deq(pasted, ['Omega']);
-  w = pushTool(await exec('undo_last_edit', {}, 'rs2a-u'));
-  assert.ok(w._ok && fake.text('t.0').includes('Alpha beta epsilon.'), w.content);
   // a second paste in the same turn is refused without touching the document
   state.selection = 'Alpha beta';
   w = await exec('replace_selection', { text: 'Omega again' }, 'rs2b');
   assert.ok(!w._ok && w.content === T.PASTE_AGAIN_TEXT && w._message === T.PASTE_AGAIN_CARD, w.content);
   deq(pasted, ['Omega']);
-  // and so is the paste fallback of a failed API edit in that turn
-  state.selection = 'beta epsilon';
-  fake.failNext = { network: true, apply: false };
-  w = await exec('replace_selection', { text: 'beta iota' }, 'rs2c');
-  assert.ok(!w._ok && w.content === T.PASTE_AGAIN_TEXT, w.content); deq(pasted, ['Omega']);
   as.pasteDone = false; // the next checks: a new turn
   w = pushTool(await exec('undo_last_edit', {}, 'rs-u')); // the API replacement is undoable
   assert.ok(w._ok && fake.text('t.0').includes('Alpha beta delta.'), w.content);
@@ -309,7 +313,7 @@ test('replace_selection via the API; paste only when nothing was applied', async
   state.selection = 'beta delta';
   fake.failNext = { network: true, apply: false };
   w = await exec('replace_selection', { text: 'beta eta' }, 'rs4');
-  assert.ok(w._ok && JSON.parse(w.content).note === T.PASTE_DONE_NOTE); deq(pasted, ['Omega', 'beta eta']);
+  assert.ok(w._ok && w.content === T.PASTE_DONE_NOTE); deq(pasted, ['Omega', 'beta eta']);
   as.pasteDone = false; // the next check: a new turn
   assert.ok(!fake.text('t.0').includes('beta eta'));
   // network failure after the edit was applied: recognized as done, not pasted again
@@ -335,14 +339,15 @@ test('replace_all: errors, one back-to-front batch, same-response use, undo and 
   assert.ok(!w._ok && /within paragraphs only/.test(w.content));
   w = await exec('replace_all', { old_text: 'Image ' + OC, new_text: 'Picture' });
   assert.ok(!w._ok && /embedded object/.test(w.content) && /replace_all cannot re-create/.test(w.content));
+  // the same text: an ok "No change" (no error for the repeat guard), nothing sent
   w = await exec('replace_all', { old_text: 'Alpha beta', new_text: 'Alpha beta' });
-  assert.ok(!w._ok && /nothing to change/.test(w.content));
+  deq([w._ok, w.content, w._message], [true, 'No change: all 2 occurrences of «Alpha beta» already read that.', 'No change']);
   assert.strictEqual(fake.revision, 1); assert.strictEqual(postCount(), 0);
   w = pushTool(await exec('replace_all', { old_text: 'Alpha beta', new_text: 'Omega' }, 'ra1'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(postCount(), 1); // one atomic batch
   assert.strictEqual(w._message, 'Replaced 2 × "Alpha beta"');
-  assert.strictEqual(w.content, 'Done: replaced 2 occurrences on lines 4, 5.\nLines 4, 5 now:\n4: Omega gamma.\n5: Omega delta.\nThe document now has 10 lines.');
+  assert.strictEqual(w.content, 'Done: replaced 2 occurrences on lines 4, 5; the document has 10 lines.');
   deq(lastPost(), { requests: [
     { deleteContentRange: { range: { startIndex: 52, endIndex: 62, tabId: 't.0' } } },
     { insertText: { location: { index: 52, tabId: 't.0' }, text: 'Omega' } },
@@ -353,12 +358,12 @@ test('replace_all: errors, one back-to-front batch, same-response use, undo and 
   const { anchor: raAnchor, ...raEdit } = w._edit;
   assert.ok(raAnchor);
   deq(raEdit, { id: 'ra1', docId: 'DOC123', tabId: 't.0', kind: 'replace-all', index: 34, text: '', restore: 'Alpha beta', paras: [], find: 'Omega', replace: 'Alpha beta', count: 2, title: 'Replaced 2 × "Alpha beta"', undone: false });
-  card = D.toolCardFor({ id: 'ra1', function: { name: 'replace_all', arguments: '{}' } }, w);
-  assert.ok(card.innerHTML.includes('<summary>New text</summary><pre>Omega</pre>') && card.innerHTML.includes('data-act="undo-edit" data-edit="ra1"'));
+  card = D.activityRow(D.logEntry({ id: 'ra1', function: { name: 'replace_all', arguments: '{}' } }, w));
+  assert.ok(card.innerHTML.includes('<div class="log-label">New text</div><pre class="log-text">Omega</pre>') && card.innerHTML.includes('data-act="undo-edit" data-edit="ra1"'));
   assert.strictEqual(vm.runInContext('toolCallSummary', sandbox)('replace_all', { old_text: 'lipid raft', new_text: 'membrane raft' }), '"lipid raft" → "membrane raft"');
   // text-based: allowed after an edit in the same response
   w = pushTool(await exec('replace_all', { old_text: 'delta', new_text: 'epsilon' }, 'ra2', true));
-  assert.ok(w._ok && w.content.startsWith('Done: replaced 1 occurrence on line 5.\nLines 5 now:\n5: Omega epsilon.'), w.content);
+  assert.ok(w._ok && w.content === 'Done: replaced 1 occurrence on line 5; the document has 10 lines.', w.content);
   w = pushTool(await exec('undo_last_edit', {}, 'ra2u'));
   assert.ok(w._ok && w._message === 'Undid: Replaced 1 × "delta"', w.content);
   assert.ok(w.content.startsWith('Done: undid replace_all: 1 occurrence of "epsilon" changed back to "delta".\nLines 5 now:\n5: Omega delta.'), w.content);
@@ -390,7 +395,7 @@ test('replace_all: errors, one back-to-front batch, same-response use, undo and 
   // overlapping matches are taken left to right, without overlap
   await fresh(docSpec({ items: [{ p: 'aaa x aa' }, { p: 'End' }] }));
   w = pushTool(await exec('replace_all', { old_text: 'aa', new_text: 'b' }, 'rd1'));
-  assert.ok(w._ok && /replaced 2 occurrences on line 1\./.test(w.content), w.content);
+  assert.ok(w._ok && /replaced 2 occurrences on line 1;/.test(w.content), w.content);
   assert.strictEqual(fake.text('t.0').split('\n')[0], 'ba x b');
   // an occurrence on a line with suggested changes: nothing replaced
   await fresh(docSpec({ items: [{ p: 'Title', style: 'TITLE' }, { p: 'Suggested words here', suggest: true }, { p: 'Plain words' }] }));
@@ -430,33 +435,32 @@ test('inline formatting: runs (UTF-16 offsets, merged), read_formatting, format_
     `${FNOTE}\nLines 2-4 of 8:\n2: **abcde**fgh*ij*kl\n3: Hi 😀 **bold** *it* ***__both__*** [link](https://x.org).\n4: ***Merged*** text`);
   assert.ok(T.runReadingTool('read_formatting', { start: 7, end: 7 }, as).endsWith('\n7: Sugg here  [contains suggested changes]'));
   assert.ok(FNOTE.includes('not document text') && FNOTE.includes('old_text'));
-  w = await T.executeTool({ id: 'rf1', function: { name: 'read_formatting', arguments: '{"start":2,"end":3}' } }, 'edit', as);
-  assert.ok(w._ok && w._reading && w._message === 'lines 2–3' && w.content.startsWith(FNOTE));
-  w = await T.executeTool({ id: 'rf2', function: { name: 'read_formatting', arguments: '{"start":1,"end":1,"doc":"doc2"}' } }, 'edit', as);
-  assert.strictEqual(w.content, 'Error: read_formatting works only on the main document (omit doc or pass null).');
+  w = await T.executeTool({ id: 'rf1', function: { name: 'read_document', arguments: '{"scope":{"start":2,"end":3},"include":["formatting"],"doc":null}' } }, 'edit', as);
+  assert.ok(w._ok && w._reading && w._message === 'lines 2–3 + formatting' && w.content.startsWith(FNOTE));
+  w = await T.executeTool({ id: 'rf2', function: { name: 'read_document', arguments: '{"scope":{"start":1,"end":1},"include":["formatting"],"doc":"doc2"}' } }, 'edit', as);
+  assert.ok(/^Error: no document "doc2" is open in this chat/.test(w.content), w.content);
   assert.strictEqual(T.runReadingTool('read_formatting', { start: 1, end: 1 }, { docText: '# A', docFormat: 'markdown', model: null, lines: null, selection: '' }),
     'Error: formatting is only available when the document is read through the Google Docs API.');
-  const mdSnap = T.takeSnapshot(); Object.assign(mdSnap, { docText: '# A', docFormat: 'markdown' });
-  assert.ok(!T.toolsFor('edit', mdSnap).some((t) => t.function.name === 'read_formatting'));
-  assert.ok(T.toolsFor('manual', as).some((t) => t.function.name === 'read_formatting'));
+  assert.ok(!T.toolsFor('manual', as).some((t) => t.function.name === 'read_formatting'));
   const bigModel = D.buildLineModel(fakeDocsServer({ documentId: 'DOCB', title: 'Big', tabs: [{ id: 't.0', title: 'Main',
     items: Array.from({ length: 350 }, (_, i) => ({ p: 'Line ' + i, fmt: [[0, 4, { bold: true }]] })) }] }).render(true), null, 'DOCB');
   const bigOut = T.runReadingTool('read_formatting', { start: 1, end: 350 }, { docText: bigModel.text, docFormat: 'docs-api', model: bigModel, lines: null, selection: '' });
-  assert.ok(bigOut.includes('\nLines 1-300 of 350:\n1: **Line** 0\n') && bigOut.endsWith('\n300: **Line** 299\n[Stopped at line 300 (limit per call). Call read_formatting(301, 350) to continue.]'));
+  assert.ok(bigOut.includes('\nLines 1-300 of 350:\n1: **Line** 0\n') && bigOut.endsWith('\n300: **Line** 299\n[Stopped at line 300 (limit per call). Call read_document with scope {"start":301,"end":350} to continue.]'));
   // prompt: the reading-tool line, the writing-tool line and the rule
   const fsys = T.buildRequest('edit', as).body.system[0].text;
-  // the notation is described once, in read_formatting's definition; the prompt only states the shared limits
-  assert.ok(T.TOOL_DEFS.read_formatting.function.description.includes('**bold**, *italic*, __underline__, [text](url) for links, {text}(font= size= color= bg=)') && !fsys.includes('{text}(font='));
-  assert.ok(fsys.includes('read_lines and read_formatting return at most') && fsys.includes('lists and alignment are not shown (read_formatting shows them)'));
+  // the notation is described once, in the formatting result's note (FORMAT_NOTE); the prompt only states the shared limits
+  assert.ok(T.FORMAT_NOTE.includes('**bold** *italic* __underline__ [text](url) {text}(font= size= color= bg=)') && !fsys.includes('{text}(font=') && !T.TOOL_DEFS.read_document.function.description.includes('{text}(font='));
+  assert.ok(fsys.includes('read_document returns at most') && !fsys.includes('include "formatting"')); // read_document's definition says what it shows
   assert.ok(!fsys.includes('- format_text(') && !fsys.includes('- format_lines('));
-  assert.ok(fsys.includes('Pass PLAIN TEXT only: no Markdown (no #, **, -, 1. or backticks)') && fsys.includes('To format, use format_text for words and format_lines for whole lines') && fsys.includes('then call format_lines on them'));
-  assert.ok(!T.buildRequest('edit', mdSnap).body.system[0].text.includes('read_formatting'));
-  assert.ok(T.buildRequest('manual', as).body.system[0].text.includes('read_lines and read_formatting return at most'));
-  deq(T.TOOL_DEFS.format_text.function.parameters.required, ['old_text', 'bold', 'italic', 'underline', 'font', 'size', 'color', 'highlight', 'link']);
+  assert.ok(fsys.includes('Pass PLAIN TEXT (no Markdown, quotes or comments)') && fsys.includes('insert_after_line with style (h1-h6 apply to every line; a heading with its text: outline)') && fsys.includes('Formatting: format_text for words, format_lines for whole lines') && fsys.includes('A list: insert plain lines, then format_lines list'));
+  const mdSnap = T.takeSnapshot(); Object.assign(mdSnap, { docText: '# A', docFormat: 'markdown' });
+  assert.ok(!T.buildRequest('edit', mdSnap).body.system[0].text.includes('Use include "comments"'));
+  assert.ok(T.buildRequest('manual', as).body.system[0].text.includes('read_document returns at most'));
+  deq(T.TOOL_DEFS.format_text.function.parameters.required, ['old_text', 'line', 'all', 'bold', 'italic', 'underline', 'font', 'size', 'color', 'highlight', 'script', 'link']);
   deq(T.TOOL_DEFS.format_text.function.parameters.properties.bold.anyOf, [{ type: 'boolean' }, { type: 'null' }]);
   // format_text refusals: nothing written
   w = await exec('format_text', { old_text: 'Merged', bold: null, italic: null, underline: null });
-  assert.ok(!w._ok && /pass at least one property that is not null \(bold, italic, underline, font, size, color, highlight, link\)/.test(w.content), w.content);
+  assert.ok(!w._ok && /pass at least one property that is not null \(bold, italic, underline, font, size, color, highlight, script, link\)/.test(w.content), w.content);
   w = await exec('format_text', { old_text: 'Repeat x', bold: true, italic: null, underline: null });
   assert.ok(!w._ok && /occurs 2 times \(lines 5, 6\)/.test(w.content) && w._message === 'format_text: the text occurs 2 times', w.content);
   w = await exec('format_text', { old_text: 'Nowhere', bold: true, italic: null, underline: null });
@@ -478,25 +482,24 @@ test('inline formatting: runs (UTF-16 offsets, merged), read_formatting, format_
   assert.ok(w._ok, w.content);
   deq(lastPost(), { requests: [{ updateTextStyle: { range: { startIndex: 52, endIndex: 63, tabId: 't.0' }, textStyle: { bold: true, underline: false }, fields: 'bold,underline' } }],
     writeControl: { requiredRevisionId: 'rev-1' } });
-  assert.strictEqual(w.content, `Done: formatted lines 4–5 (bold on, underline off).\n${T.formatNote(as.model)}\nLines 4-5 now:\n4: ***Merged*** **text**\n5: **Repeat** x\nThe document now has 8 lines.`);
+  assert.strictEqual(w.content, 'Done: formatted lines 4–5 (bold on, underline off); the document has 8 lines.'); // it took: no lines
   assert.strictEqual(w._message, 'Formatted lines 4–5');
-  deq(fake.fmt('t.0').slice(3, 6), [[[0, 6, { bold: true, italic: true }], [7, 11, { bold: true }]], [[0, 6, { bold: true }]], []]);
+  // Docs stores the font the text shows with a bold write; the undo resets it
+  deq(fake.fmt('t.0').slice(3, 6), [[[0, 6, { bold: true, italic: true }], [7, 11, { bold: true, font: 'Arial' }]], [[0, 6, { bold: true, font: 'Arial' }]], []]);
   assert.strictEqual(fake.text('t.0'), as.model.text); // text unchanged
   const { anchor: fAnchor, ...fEdit } = w._edit;
   assert.ok(fAnchor && fAnchor.revision === 'rev-2');
   deq(fEdit, { id: 'f1', docId: 'DOC123', tabId: 't.0', kind: 'format', index: 52, end: 63, text: 'text\nRepeat', restore: '', paras: [],
-    requests: [{ updateTextStyle: { range: { startIndex: 52, endIndex: 63, tabId: 't.0' }, textStyle: {}, fields: 'bold,underline' } }], title: 'Formatted lines 4–5', undone: false });
+    requests: [{ updateTextStyle: { range: { startIndex: 52, endIndex: 63, tabId: 't.0' }, textStyle: {}, fields: 'bold,underline,weightedFontFamily' } }], title: 'Formatted lines 4–5', undone: false });
   deq(JSON.parse(JSON.stringify(w._edit)), w._edit); // plain JSON for the journal
-  card = D.toolCardFor({ id: 'f1', function: { name: 'format_text', arguments: '{}' } }, w);
-  assert.ok(card.innerHTML.includes('✅ Formatted lines 4–5') && card.innerHTML.includes('<summary>Formatted text</summary><pre>text\nRepeat</pre>') && card.innerHTML.includes('data-edit="f1"'));
+  card = D.activityRow(D.logEntry({ id: 'f1', function: { name: 'format_text', arguments: '{}' } }, w));
+  assert.ok(card.innerHTML.includes('<div class="log-what">Formatted lines 4–5</div>') && card.innerHTML.includes('<div class="log-label">Formatted text</div><pre class="log-text">text\nRepeat</pre>') && card.innerHTML.includes('data-edit="f1"'));
   assert.strictEqual(vm.runInContext('toolCallSummary', sandbox)('format_text', { old_text: 'Alpha beta', bold: true, italic: null, underline: false }), '"Alpha beta" (bold on, underline off)');
   assert.strictEqual(vm.runInContext('toolCallSummary', sandbox)('format_text', { old_text: 'Alpha', bold: 'yes', italic: null, underline: null, font: 'Arial', size: '14pt', color: null, highlight: 'none', link: '' }),
     '"Alpha" (bold on, font Arial, size 14pt, highlight none, link removed)');
-  assert.strictEqual(vm.runInContext('activityIcon', sandbox)('format_text'), '🖌️');
-  assert.strictEqual(vm.runInContext('activityIcon', sandbox)('read_formatting'), '🎨');
   // text-based: allowed after an edit in the same response; an embedded object in the range is fine
   w = pushTool(await exec('format_text', { old_text: 'Image ' + OC + ' done', bold: null, italic: true, underline: null }, 'f2', true));
-  assert.ok(w._ok && w.content.includes('\n8: *Image ' + OC + ' done*\n'), w.content);
+  assert.ok(w._ok && w.content === 'Done: formatted line 8 (italic on); the document has 8 lines.', w.content);
   w = pushTool(await exec('undo_last_edit', {}, 'f2u'));
   assert.ok(w._ok && w.content.startsWith(`Done: undid formatting of line 8.\n${FNOTE}\nLines 8-8 now:\n8: Image ${OC} done`), w.content);
   w = pushTool(await exec('undo_last_edit', {}, 'f1u'));
@@ -507,15 +510,20 @@ test('inline formatting: runs (UTF-16 offsets, merged), read_formatting, format_
   // partial range over mixed formatting: undo restores the exact prior state; untouched attributes stay
   w = pushTool(await exec('format_text', { old_text: 'cdefghijk', bold: true, italic: null, underline: null }, 'f3'));
   assert.ok(w._ok, w.content);
-  deq(fake.fmt('t.0')[1], [[0, 8, { bold: true }], [8, 10, { italic: true, bold: true }], [10, 11, { bold: true }]]);
+  deq(fake.fmt('t.0')[1], [[0, 2, { bold: true }], [2, 8, { bold: true, font: 'Arial' }], [8, 10, { italic: true, bold: true, font: 'Arial' }], [10, 11, { bold: true, font: 'Arial' }]]);
   deq(w._edit.requests, [
-    { updateTextStyle: { range: { startIndex: 9, endIndex: 12, tabId: 't.0' }, textStyle: { bold: true }, fields: 'bold' } },
-    { updateTextStyle: { range: { startIndex: 12, endIndex: 18, tabId: 't.0' }, textStyle: {}, fields: 'bold' } },
+    { updateTextStyle: { range: { startIndex: 9, endIndex: 12, tabId: 't.0' }, textStyle: { bold: true }, fields: 'bold,weightedFontFamily' } },
+    { updateTextStyle: { range: { startIndex: 12, endIndex: 18, tabId: 't.0' }, textStyle: {}, fields: 'bold,weightedFontFamily' } },
   ]);
-  assert.ok(w.content.includes('\n2: **abcdefgh*ij*k**l\n'), w.content);
+  // the bold stored fonts: the formatting view reads Normal text's font first (as read_document does) and leaves it out
+  const plainView = T.runReadingTool('read_formatting', { start: 2, end: 2 }, as);
+  assert.ok(plainView.endsWith('\n2: **ab**{**cdefgh*ij*k**}(font=Arial)l'), plainView);
+  assert.ok(await T.knowUnmarkedFont(as));
+  assert.ok(T.runReadingTool('read_formatting', { start: 2, end: 2 }, as).endsWith('\n2: **abcdefgh*ij*k**l'), w.content);
   w = pushTool(await exec('undo_last_edit', {}, 'f3u'));
   assert.ok(w._ok, w.content);
-  deq(fake.fmt('t.0')[1], [[0, 5, { bold: true }], [8, 10, { italic: true }]]);
+  // the bold put back on "cde" stores the font it shows, as every bold write in Docs does (the fixture's bold has none)
+  deq(fake.fmt('t.0')[1], [[0, 2, { bold: true }], [2, 5, { bold: true, font: 'Arial' }], [8, 10, { italic: true }]]);
   assert.ok(T.runReadingTool('read_formatting', { start: 2, end: 2 }, as).endsWith('\n2: **abcde**fgh*ij*kl'));
   // a paragraph typed above shifts the indices: the edit is found again by its anchor and undone there
   // (formerly refused; see the anchor relocation in docs-undo.js)
@@ -545,7 +553,7 @@ test('trimming: only the middle is deleted / inserted; pure insertion and deleti
   w = pushTool(await exec('replace_text', { old_text: 'Alpha beta gamma.', new_text: 'Alpha BETA gamma.' }, 't1'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Replaced line 4');
-  assert.strictEqual(w.content, 'Done: replaced line 4.\nLines 4-4 now:\n4: Alpha BETA gamma.\nThe document now has 10 lines.');
+  assert.strictEqual(w.content, 'Done: replaced line 4; the document has 10 lines.');
   deq(lastPost().requests, [del(40, 44), ins(40, 'BETA')]);
   assert.strictEqual(w._edit.index, 40); assert.strictEqual(w._edit.restore, 'beta'); assert.strictEqual(w._edit.text, 'BETA');
   assert.strictEqual(w._cardText, 'Alpha BETA gamma.'); // the card still shows the whole new text
@@ -567,11 +575,11 @@ test('trimming: only the middle is deleted / inserted; pure insertion and deleti
 test('trimming across paragraph boundaries keeps the paragraph styles (merge, split; undo)', async () => {
   await fresh();
   // merge "Intro 😀 text." with the heading "Methods": only the newline becomes a space; the merged
-  // paragraph keeps the first line's style
+  // paragraph keeps the first line's style (Docs keeps it: no namedStyleType, which would clear the line's text styles)
   w = pushTool(await exec('replace_text', { old_text: 'text.\nMethods', new_text: 'text. Methods' }, 'b1'));
   assert.ok(w._ok, w.content);
   assert.strictEqual(w._message, 'Replaced lines 2–3');
-  deq(lastPost().requests, [del(25, 26), ins(25, ' '), pstyle(25, 'NORMAL_TEXT')]);
+  deq(lastPost().requests, [del(25, 26), ins(25, ' ')]);
   deq(fake.text('t.0').split('\n').slice(1, 3), ['Intro 😀 text. Methods', 'Alpha beta gamma.']);
   deq(fake.styles('t.0').slice(0, 3), ['TITLE', 'NORMAL_TEXT', 'NORMAL_TEXT']);
   deq(w._edit.paras, [{ nl: -1, style: 'NORMAL_TEXT' }, { nl: 0, style: 'HEADING_1' }]);
@@ -580,18 +588,27 @@ test('trimming across paragraph boundaries keeps the paragraph styles (merge, sp
   // split a line: only the space becomes a newline; both halves keep the line's style
   w = pushTool(await exec('replace_text', { old_text: 'Methods\nAlpha beta gamma.', new_text: 'Methods\nAlpha beta\ngamma.' }, 'b2'));
   assert.ok(w._ok, w.content);
-  deq(lastPost().requests, [del(44, 45), ins(44, '\n'), pstyle(44, 'NORMAL_TEXT'), pstyle(45, 'NORMAL_TEXT')]);
+  deq(lastPost().requests, [del(44, 45), ins(44, '\n')]); // the new paragraph copies the line's style
   deq(fake.text('t.0').split('\n').slice(2, 6), ['Methods', 'Alpha beta', 'gamma.', 'Alpha beta delta.']);
   deq(fake.styles('t.0').slice(2, 6), ['HEADING_1', 'NORMAL_TEXT', 'NORMAL_TEXT', 'NORMAL_TEXT']);
-  assert.ok(w.content.includes('Lines 3-5 now:\n3: Methods\n4: Alpha beta\n5: gamma.'), w.content);
+  assert.ok(w.content.includes('; now lines 3–5; the document has'), w.content);
   assert.ok(pushTool(await exec('undo_last_edit', {}, 'b2u'))._ok);
+  deq(fake.text('t.0').split('\n'), ORIGINAL); deq(fake.styles('t.0'), ORIGINAL_STYLES);
+  // the undo of a split merges the halves again and sets no style either: the merged paragraph keeps the first half's
+  w = pushTool(await exec('replace_text', { old_text: 'Alpha beta delta.', new_text: 'Alpha beta\ndelta.' }, 'b2b'));
+  assert.ok(w._ok, w.content);
+  deq(lastPost().requests, [del(62, 63), ins(62, '\n')]);
+  assert.ok(pushTool(await exec('undo_last_edit', {}, 'b2bu'))._ok);
+  deq(lastPost().requests, [del(62, 63), ins(62, ' ')]);
   deq(fake.text('t.0').split('\n'), ORIGINAL); deq(fake.styles('t.0'), ORIGINAL_STYLES);
   // a whole line removed with the trimmed edges: "Methods\n" is deleted, the next line keeps its style
   w = pushTool(await exec('replace_text', { old_text: 'text.\nMethods\nAlpha', new_text: 'text.\nAlpha' }, 'b3'));
   assert.ok(w._ok, w.content);
-  deq(lastPost().requests, [del(26, 34), pstyle(26, 'NORMAL_TEXT')]);
+  deq(lastPost().requests, [del(26, 34)]);
   deq(fake.styles('t.0').slice(0, 3), ['TITLE', 'NORMAL_TEXT', 'NORMAL_TEXT']);
+  // the undo re-inserts "Methods\n" before "Alpha": the new paragraph copies Alpha's style, so only Methods is set
   assert.ok(pushTool(await exec('undo_last_edit', {}, 'b3u'))._ok);
+  deq(lastPost().requests, [ins(26, 'Methods\n'), pstyle(26, 'HEADING_1')]);
   deq(fake.text('t.0').split('\n'), ORIGINAL); deq(fake.styles('t.0'), ORIGINAL_STYLES);
 });
 
@@ -609,7 +626,11 @@ test('trimming: a link inside the deleted part is reported; replace_all replaces
   // the linked word itself: the note
   w = pushTool(await exec('replace_text', { old_text: 'the docs here', new_text: 'the manual here' }, 'l2'));
   assert.ok(w._ok, w.content);
-  assert.ok(w.content.endsWith('\nNote: the replaced text contained a link (https://ex.com/docs); it was removed and cannot be restored by format_text.'), w.content);
+  assert.ok(w.content.endsWith('\nNote: the replaced text contained a link (https://ex.com/docs); if the new text should keep it, set it with format_text link.'), w.content);
+  // the way back the note names: format_text takes the URL
+  w = pushTool(await exec('format_text', { old_text: 'manual', link: 'https://ex.com/docs' }, 'l2f'));
+  assert.ok(w._ok, w.content);
+  deq(fake.fmt('t.0')[1], [[9, 15, { color: '#1155CC', link: 'https://ex.com/docs', underline: true }]]); // with the link look
   // replace_all: per occurrence only the changed word, back to front
   w = pushTool(await exec('replace_all', { old_text: 'Alpha beta', new_text: 'Alpha Beta' }, 'l3'));
   assert.ok(w._ok, w.content);
@@ -648,7 +669,7 @@ test('format_text: flags sent as strings (Qwen-style tool-call parsers) are read
 
 test('doc: "null" as a string means the main document', async () => {
   await fresh();
-  w = await T.executeTool({ id: 'dn1', function: { name: 'read_lines', arguments: '{"start":1,"end":1,"doc":"null"}' } }, 'edit', as);
+  w = await T.executeTool({ id: 'dn1', function: { name: 'read_document', arguments: '{"scope":{"start":1,"end":1},"include":["text"],"doc":"null"}' } }, 'edit', as);
   assert.ok(w._ok && /^Lines 1-1 of /.test(w.content), w.content);
 });
 

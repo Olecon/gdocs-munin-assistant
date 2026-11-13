@@ -6,7 +6,7 @@
 
 const state = {
   settings: defaultSettings(), // see loadSettings
-  applyMode: 'manual', // 'manual' | 'auto' (Edit automatically) | 'plan' (see APPLY_MODES); Manual until the user switches
+  applyMode: 'manual', // 'manual' (edits, each asks first) | 'auto' (edits; asks only what Undo cannot take back) | 'plan' (see APPLY_MODES); Manual until the user switches
   themeFollowsSystem: true, // no theme stored (see THEME_KEY)
   tabId: null,
   docId: null,
@@ -16,11 +16,12 @@ const state = {
   docModel: null, // line model of the document when docFormat is 'docs-api' (see buildLineModel)
   googleConnected: false, // signed in with Google in the settings (the Docs API is used)
   googleAccount: null, // the signed-in Google account { email, name } (null: unknown or not signed in)
-  apiWarned: false, // the "Docs API failed, using the export" notice was shown (reset after a success)
+  apiWarned: false, // the "Docs API failed, using the export" row was shown (reset after a success)
   docsApiFailed: false, // the Docs API failed in this turn (export fallback): not called again until the next turn
   undoing: false, // an Undo button click is being applied
   chatWait: false, // a turn waits for the chat lock another tab holds (see holdChatLock)
   docError: '',
+  statusText: { text: '', warn: false }, // the last setStatus text: recorded, not shown (src/dom.js)
   selection: '',
   pendingSelection: null, // SELECTION_UPDATE received while a request was running
   chats: [], // chat metas of the current document, newest first
@@ -42,8 +43,11 @@ const state = {
   pinnedTabId: null, // tab used by the running request (does not change when the user switches tabs)
   applying: null, // Promise of the replacement currently being applied to the document
   openaiNoSummary: false, // set when the OpenAI account cannot receive reasoning summaries
-  modelLists: {}, // provider id -> model IDs from GET /models (cached in storage)
+  modelLists: {}, // account id -> model IDs from GET /models (cached in storage: modelsKey)
   docInstructions: '', // standing instructions of the current document (see DOC_INSTRUCTIONS_MAX)
+  mainInstructions: '', // the main instructions, for every document (MAIN_INSTRUCTIONS_KEY; same cap)
+  docFiles: [], // the current document's attached files: [{alias, title, lines, pages?, size, addedAt}] (attachments.js)
   compactionFailedChat: null, // chat id whose summary request failed (no new attempt until a chat switch / reload)
   bgCompaction: null, // { docId, chatId, abort, done }: the compaction running in the background after a turn (backgroundCompact)
+  agents: [], // the open document's agent registry (agents.js: muninAgents:<docId>), the rows of the agent map
 };

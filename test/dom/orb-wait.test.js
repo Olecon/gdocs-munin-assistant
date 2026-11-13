@@ -2,7 +2,8 @@
 // The orb before the first chunk (turn.js liveAnswer().start()): the live answer bubble is made when the request
 // starts, empty and streaming, so its orb shows while the first token is awaited; the first chunks stream into that
 // same bubble. A failure or Stop before any chunk leaves no empty bubble behind, also in a /side turn (which has no
-// final re-render; the ring that showed stays as one frozen frame in the Stopped notice or the error row), and a
+// final re-render: endAssistantBubble ends it; the ring that showed stays as one frozen frame in its status line or
+// the error row), and a
 // Munin persona turn's waiting bubble is replaced by the stored reply.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -60,11 +61,14 @@ test('the bubble and its orb exist before the first chunk; the text then streams
   const orb = bubble.querySelector('canvas.orb');
   assert.ok(orb.dataset.orb, 'the orb runs');
   assert.ok(!orb.classList.contains('hidden'));
-  assert.ok(bubble.classList.contains('typing'));
+  assert.strictEqual(bubble.querySelector('.thinking-label').textContent, 'Working…');
+  assert.ok(!bubble.classList.contains('typing'), 'no cursor before the text');
   assert.strictEqual(bubble.querySelector('.md').textContent, '', 'no text yet');
   stream.push(msgStart + textStart + textDelta('Hi there.'));
   await waitFor(() => bubble.querySelector('.md').textContent === 'Hi there.', 'the text');
   assert.strictEqual(bubbles().length, 1, 'the same bubble');
+  assert.strictEqual(bubble.querySelector('.thinking-label').textContent, 'Waiting…');
+  assert.ok(bubble.classList.contains('typing'));
   stream.push(textEnd);
   stream.end();
   await waitFor(() => !state.busy, 'the end of the turn');
@@ -72,7 +76,7 @@ test('the bubble and its orb exist before the first chunk; the text then streams
   assert.strictEqual($$('canvas.orb').length, 0);
 });
 
-test('Stop before the first chunk in a /side turn: the waiting bubble goes', async () => {
+test('Stop before the first chunk in a /side turn: the waiting bubble goes, a label-only bubble says "Stopped after Ns"', async () => {
   const stream = liveStream();
   env.ctx.fetch = abortable(stream);
   await send('/side what is this?');
@@ -81,24 +85,27 @@ test('Stop before the first chunk in a /side turn: the waiting bubble goes', asy
   click(el.action); // Stop
   await waitFor(() => !state.busy, 'the stop');
   await tick(10);
-  assert.strictEqual(bubbles().length, 0, 'no empty bubble left');
-  // the ring that was showing stays as the turn's one frozen frame, in the Stopped notice (render.js freezeTurnOrb)
-  const left = $$('canvas.orb');
-  assert.strictEqual(left.length, 1);
-  assert.strictEqual(left[0].dataset.orbFrozen, 'true');
-  assert.ok(left[0].parentElement.classList.contains('notice'));
+  assert.strictEqual(bubbles().length, 1, 'one bubble: the stopped label');
+  const b = bubbles()[0];
+  assert.match(b.querySelector('.thinking > summary').textContent, /^Stopped after \d+s$/);
+  assert.ok(b.querySelector('.thinking').classList.contains('no-body'), 'nothing to open');
+  assert.strictEqual(b.querySelector('.md').textContent, '');
+  assert.ok(!b.classList.contains('typing'));
+  // a stopped turn keeps no frozen frame of the orb
+  assert.strictEqual($$('canvas.orb').length, 0);
 });
 
 test('a failure before the first chunk: no empty bubble, the error is shown', async () => {
   const stream = liveStream();
   env.ctx.fetch = abortable(stream);
+  const before = bubbles().length; // the side thread goes on: the stopped question above stays
   await send('/side and this?');
   await waitFor(() => stream.reads > 0, 'the request');
-  await waitFor(() => bubbles().length === 1, 'the waiting bubble');
+  await waitFor(() => bubbles().length === before + 1, 'the waiting bubble');
   stream.fail(new TypeError('Failed to fetch'));
   await waitFor(() => !state.busy, 'the failure');
   await tick(10);
-  assert.strictEqual(bubbles().length, 0);
+  assert.strictEqual(bubbles().length, before, 'an error is not a stop: no label-only bubble');
   assert.ok($$('.msg.error').length >= 1);
   // an error before any reply: the frozen frame goes into the error row
   const orbs = $$('.msg.error').pop().querySelectorAll('canvas.orb');
@@ -107,6 +114,7 @@ test('a failure before the first chunk: no empty bubble, the error is shown', as
 });
 
 test('a Munin persona turn: the waiting bubble shows, then the stored reply replaces it', async () => {
+  const mainBubbles = () => $$('.msg.assistant:not(.side)'); // the side questions above stay until the re-render
   state.settings.provider = 'munin';
   Object.assign(state.settings.providers.munin, { apiKey: 'k-test' });
   try {
@@ -118,14 +126,14 @@ test('a Munin persona turn: the waiting bubble shows, then the stored reply repl
     };
     await send('/chat tell me');
     await waitFor(() => stream.reads > 0, 'the request');
-    await waitFor(() => bubbles().length === 1 && bubbles()[0].querySelector('canvas.orb'), 'the waiting bubble');
+    await waitFor(() => mainBubbles().length === 1 && mainBubbles()[0].querySelector('canvas.orb'), 'the waiting bubble');
     const pev = (name, data) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
     stream.push(pev('token', { content: 'Persona answer.' }) + pev('done', { finish_reason: 'stop' }));
     stream.end();
     await waitFor(() => !state.busy, 'the end of the turn');
     await tick(10);
-    assert.strictEqual(bubbles().length, 1);
-    assert.strictEqual(bubbles()[0].querySelector('.md').textContent.trim(), 'Persona answer.');
+    assert.strictEqual(mainBubbles().length, 1);
+    assert.strictEqual(mainBubbles()[0].querySelector('.md').textContent.trim(), 'Persona answer.');
     assert.strictEqual($$('canvas.orb').length, 0);
   } finally {
     state.settings.provider = 'anthropic';

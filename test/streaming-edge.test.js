@@ -4,7 +4,7 @@
 // Responses and Chat Completions kinds, and the summary request of a compaction on transient errors.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, makeSnapFor, installDocTab, waitFor, tabExportOnly } = require('./lib/sandbox');
+const { deq, load, makeSnapFor, installDocTab, waitFor, tabExportOnly, turnRowTexts } = require('./lib/sandbox');
 const { sseResponse, ev, textRound } = require('./lib/streams');
 const { liveStream, failingStream } = require('./lib/live-stream');
 
@@ -80,12 +80,12 @@ test('a turn whose stream breaks keeps the partial answer in the history and sho
   assert.strictEqual(state.busy, false);
   deq(state.messages.map((m) => [m.role, m.content]), [['user', 'Tell me'], ['assistant', 'Half an answer']]);
   deq(storage[`muninChatHistory:DOC123:${state.chatId}`].map((m) => m.content), ['Tell me', 'Half an answer']); // persisted
-  assert.ok(chatTexts('error').includes('network error'));
+  assert.ok(/network error/i.test(chatTexts('error')), chatTexts('error'));
   // one bubble for the partial answer after the re-render
-  assert.strictEqual(T.el.chat.children.filter((c) => c.className === 'msg assistant').length, 1);
+  assert.strictEqual(T.el.chat.children.filter((c) => String(c.className).replace(' has-rail', '') === 'msg assistant').length, 1);
 });
 
-test('Stop mid-stream (OpenAI): the partial answer is kept, "Stopped." is shown, nothing retried', async () => {
+test('Stop mid-stream (OpenAI): the partial answer is kept, "Stopped after Ns" under it, nothing retried', async () => {
   state.settings.provider = 'openai';
   Object.assign(state.settings.providers.openai, { apiKey: 'sk-x', model: 'gpt-6.1-sol' });
   await T.createChat();
@@ -106,7 +106,7 @@ test('Stop mid-stream (OpenAI): the partial answer is kept, "Stopped." is shown,
   await turn;
   assert.strictEqual(calls, 1);
   deq(state.messages.map((m) => [m.role, m.content]), [['user', 'Go'], ['assistant', 'Half an answer']]);
-  assert.ok(chatTexts('notice').includes('Stopped.'));
+  assert.ok(T.el.chat.children.some((c) => c._parts && /^Stopped after /.test(c._parts.label.textContent)));
   assert.strictEqual(chatTexts('error').length, 0);
   assert.strictEqual(state.abort, null);
 });
@@ -164,15 +164,17 @@ test('Munin persona turn through sendMessage: activity, reasoning and usage stor
   T.el.input.value = '/research rafts';
   await T.sendMessage();
   const last = state.messages[state.messages.length - 1];
-  deq({ ...state.messages[0], _docFacts: undefined }, { role: 'user', content: 'rafts', _persona: 'research' }); // _docFacts: feat/context
-  deq(last, { role: 'assistant', content: 'Found **two** papers.', _reasoning: 'Hmm.', _toolActivity: [{ name: 'scholar_search', summary: 'rafts' }], _usage: { total_tokens: 30, prompt_tokens: 20, completion_tokens: 10 } });
+  deq({ ...state.messages[0], _docFacts: undefined }, { role: 'user', content: 'rafts', _persona: 'research' }); // _docFacts: feat/context; no _model: a persona turn has no turn context
+  assert.ok(last._thoughtMs >= 1, 'the reasoning time is stored (the Thinking label)');
+  assert.ok(last._workedMs >= 1, 'a server tool ran: the working time is stored ("Worked for Ns")');
+  deq({ ...last, _thoughtMs: undefined, _workedMs: undefined }, { role: 'assistant', content: 'Found **two** papers.', _reasoning: 'Hmm.', _thoughtMs: undefined, _workedMs: undefined, _toolActivity: [{ name: 'scholar_search', summary: 'rafts' }], _usage: { total_tokens: 30, prompt_tokens: 20, completion_tokens: 10 } });
   // the stream is cut: the partial persona answer is kept and the error shown
   T.el.chat.children.length = 0;
   sandbox.fetch = async () => sseResponse(pev('token', { content: 'Partial persona' }));
   T.el.input.value = '/chat more';
   await T.sendMessage();
   assert.strictEqual(state.messages[state.messages.length - 1].content, 'Partial persona');
-  assert.ok(chatTexts('error').includes('The persona response stream was cut off'));
+  assert.ok(chatTexts('error').includes('The persona response stream was cut off.'));
 });
 
 test('runStream retries before the stream starts for kind "responses" and "chat" too', async () => {
@@ -249,7 +251,7 @@ test('compaction: the summary request is retried on a transient error and then s
       const summary = state.messages.find((m) => m._summary);
       assert.ok(summary && summary.content.endsWith('Summary text.'), failure);
       assert.strictEqual(state.compactionFailedChat, null);
-      assert.ok(!chatTexts('notice').some((t) => t.startsWith('Could not summarize')));
+      assert.ok(!turnRowTexts(T.el.chat).some((t) => t.startsWith('Could not summarize')));
     }
     // a summary stream that breaks after it started: no retry, the turn goes on with trimming
     await T.createChat();
@@ -267,7 +269,7 @@ test('compaction: the summary request is retried on a transient error and then s
     deq(kinds, ['summary', 'turn']);
     assert.ok(!state.messages.some((m) => m._summary || m._compacted));
     assert.strictEqual(state.compactionFailedChat, state.chatId);
-    assert.ok(chatTexts('notice').some((t) => t.startsWith('Could not summarize the earlier conversation (network error)')));
+    assert.ok(turnRowTexts(T.el.chat).some((t) => t.startsWith('Could not summarize the earlier conversation (network error)')));
     assert.strictEqual(state.messages[state.messages.length - 1].content, 'Answer.');
   } finally {
     PROVIDERS.anthropic.contextTokens = saved;

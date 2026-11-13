@@ -28,7 +28,7 @@ function listFiles(root) {
   const files = [
     ...TOP_FILES.filter((f) => fs.existsSync(path.join(root, f))),
     ...walk(root, 'src', (n) => n.endsWith('.js'), true),
-    ...walk(root, 'vendor', (n) => /\.(?:js|txt|LICENSE)$/.test(n), false), // vendored code and its notices
+    ...walk(root, 'vendor', (n) => /\.(?:m?js|txt|LICENSE)$/.test(n), false), // vendored code (pdf.js: .mjs) and its notices
     ...walk(root, 'icons', (n) => n.endsWith('.png'), false),
   ];
   // Code-unit order, independent of the locale.

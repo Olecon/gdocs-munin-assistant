@@ -14,8 +14,9 @@ let env, T, state, el, z;
 let asked = [];
 let grant = true;
 let granted = false;
-const cards = () => [...el.chat.querySelectorAll('.tool-card.preview.access')];
-const openCard = () => cards().find((c) => !c.classList.contains('decided')) || null;
+// The access cards: waiting (a boxed card with buttons) and answered (one row, gate.js answerCard).
+const cards = () => [...el.chat.querySelectorAll('.tool-card.preview.access, .answered-row.access')];
+const openCard = () => cards().find((c) => c.classList.contains('tool-card') && !c.classList.contains('decided')) || null;
 const call = (id, name = 'find_reference', args = { query: 'smith 2020' }) => ({ id, type: 'function', function: { name, arguments: JSON.stringify(args) } });
 function snap(extra = {}) {
   const s = T.takeSnapshot();
@@ -31,6 +32,7 @@ function reset() {
   granted = false;
   z.calls.length = 0;
   el.chat.textContent = '';
+  T.refsDeclined.clear(); // a Not now holds for the chat: every test starts without one
 }
 
 before(async () => {
@@ -50,8 +52,9 @@ test('the card: its text and buttons; Allow asks Chrome for the three origins, s
   const p = T.executeTool(call('r1'), 'manual', snap(), {});
   await waitFor(() => openCard(), 'the access card');
   const card = openCard();
+  // words, not a DOI: only the Zotero library is asked, so only Zotero is named
   assert.strictEqual(card.querySelector('.pv-note').textContent,
-    'The assistant wants to look up references through Zotero (on this computer), Crossref and OpenAlex. To find works to cite.');
+    'The assistant wants to look up references through Zotero (on this computer). To find works to cite.');
   deq([...card.querySelectorAll('button')].map((b) => b.textContent), ['Allow', 'Not now']);
   assert.strictEqual(T.pendingPreviews.size, 1);
   click(card.querySelector('button[data-access="allow"]'));
@@ -59,28 +62,79 @@ test('the card: its text and buttons; Allow asks Chrome for the three origins, s
   const r = await p;
   assert.ok(r._ok && r.content.startsWith('1 Zotero item for "smith 2020"'), r.content);
   deq([state.settings.references, env.storage.muninReferences, T.pendingPreviews.size], [true, true, 0]);
+  assert.strictEqual(card.querySelector('summary').textContent,
+    'References · Allowed · The assistant wants to look up references through Zotero (on…'); // the request clipped (cardPreview)
+  assert.strictEqual(card.querySelector('.log-body .log-what').textContent, 'Zotero');
+  assert.ok(card.querySelector('.log-body .log-asked').textContent.endsWith('To find works to cite.'));
   // granted: no card in a later turn
   const r2 = await T.executeTool(call('r2'), 'manual', snap(), {});
   assert.ok(r2._ok, r2.content);
   deq([asked.length, openCard()], [1, null]);
 });
 
-test('Not now: the model-facing refusal; a second call in the same turn gets it without a card; the next turn asks again', async () => {
+test('Not now: the model-facing refusal; a second call in the same turn gets it without a card; so do later turns of the chat until a message asks for a lookup', async () => {
   reset();
   const s = snap();
   const p = T.executeTool(call('n1'), 'manual', s, {});
   await waitFor(() => openCard(), 'the access card');
   click(openCard().querySelector('button[data-access="later"]'));
   const r = await p;
-  deq([r.content, r._ok, asked.length, z.calls.length], ['The user did not allow reference lookups in this message.', false, 0, 0]);
+  deq([r.content, r._ok, asked.length, z.calls.length], ['Reference lookups were not allowed. Call find_reference or cite again only if the user asks for a lookup; a citation the user gives or wants as plain text needs none: type it.', false, 0, 0]);
+  // the card stays as its answered row: "Not now", the request in its fold, no buttons
+  deq([cards().length, cards()[0].classList.contains('answered-row'), cards()[0].querySelector('.log-status').textContent, cards()[0].querySelectorAll('button').length], [1, true, 'Not now', 0]);
+  deq(r._answered.map((a) => [a.kind, a.decision]), [['access', 'reject']]);
   assert.strictEqual(r.content, T.REFS_DENIED_TEXT);
   const again = await T.executeTool(call('n2', 'check_references', {}), 'manual', s, {});
-  deq([again.content, T.pendingPreviews.size, cards().filter((c) => !c.classList.contains('decided')).length], [T.REFS_DENIED_TEXT, 0, 0]);
-  const p3 = T.executeTool(call('n3'), 'manual', snap(), {});
-  await waitFor(() => openCard(), 'the card of the next turn');
+  deq([again.content, T.pendingPreviews.size, cards().filter((c) => !c.classList.contains('answered-row')).length], [T.REFS_DENIED_TEXT, 0, 0]);
+  // later turns of the chat: no card while the newest message does not ask for a lookup itself
+  const turn = (text) => snap({ chatCtx: { docId: state.docId, chatId: state.chatId, messages: [{ role: 'user', content: text }] } });
+  for (const text of ['Как [doi]', 'Добавь сам цитаты', 'Почему?', 'Put them in as plain text [doi].', 'Почему ты вызываешь Zotero?!']) { // a source named in a complaint is no request
+    const r2 = await T.executeTool(call('n3'), 'manual', turn(text), {});
+    deq([text, r2.content, T.pendingPreviews.size], [text, T.REFS_DENIED_TEXT, 0]);
+  }
+  // another chat asks
+  const other = T.executeTool(call('n4'), 'manual', snap({ chatCtx: { docId: state.docId, chatId: 'other-chat', messages: [{ role: 'user', content: 'Add a citation.' }] } }), {});
+  await waitFor(() => openCard(), 'the card of another chat');
+  click(openCard().querySelector('button[data-access="later"]'));
+  assert.strictEqual((await other).content, T.REFS_DENIED_TEXT);
+  // a message that asks for a lookup shows the card again; Allow ends the refusal
+  const p3 = T.executeTool(call('n5'), 'manual', turn('Look up the references in Zotero, please.'), {});
+  await waitFor(() => openCard(), 'the card of a turn that asks');
   click(openCard().querySelector('button[data-access="later"]'));
   assert.strictEqual((await p3).content, T.REFS_DENIED_TEXT);
   assert.strictEqual(state.settings.references, false);
+  const pz = T.executeTool(call('n5z'), 'manual', turn('найди в Zotero'), {});
+  await waitFor(() => openCard(), 'the card of "найди в Zotero"');
+  click(openCard().querySelector('button[data-access="later"]'));
+  assert.strictEqual((await pz).content, T.REFS_DENIED_TEXT);
+  const p4 = T.executeTool(call('n6'), 'manual', turn('Найди DOI этой статьи'), {});
+  await waitFor(() => openCard(), 'the card of a Russian request');
+  click(openCard().querySelector('button[data-access="allow"]'));
+  assert.ok((await p4)._ok);
+  assert.ok(!T.refsDeclined.size || ![...T.refsDeclined].some((k) => k.endsWith(`\u0000${state.chatId}`)));
+});
+
+test('the card names the sources the call asks: a DOI only Crossref, check_references Crossref and OpenAlex, cite by its ids', async () => {
+  reset();
+  const named = async (c) => {
+    const p = T.executeTool(c, 'manual', snap(), {});
+    await waitFor(() => openCard(), 'the access card');
+    const card = openCard();
+    const text = card.querySelector('.pv-note').textContent;
+    click(card.querySelector('button[data-access="later"]'));
+    await p;
+    T.refsDeclined.clear();
+    return text;
+  };
+  assert.strictEqual(await named(call('s1', 'find_reference', { query: 'doi:10.1038/nphys1234' })), 'The assistant wants to look up references through Crossref. To find works to cite.');
+  assert.strictEqual(await named(call('s2', 'check_references', {})), 'The assistant wants to look up references through Crossref and OpenAlex. To check the reference list.');
+  deq([T.citeSources({ action: 'insert', ids: ['doi:10.1000/x'] }), T.citeSources({ action: 'insert', ids: ['zotero:ABCD1234', 'doi:10.1000/x'] }),
+    T.citeSources({ action: 'refresh', ids: null })], [['Crossref'], ['Zotero', 'Crossref'], ['Zotero', 'Crossref', 'OpenAlex']]);
+  deq([T.asksLookup('check the references against Crossref'), T.asksLookup('проверь ссылки'), T.asksLookup('Find papers on rafts'),
+    T.asksLookup('find it in Zotero'), T.asksLookup('проверь по Crossref'), T.asksLookup('найди в Zotero'),
+    T.asksLookup('Как [doi]'), T.asksLookup('Внеси их в документ'), T.asksLookup('add the citations as text'),
+    T.asksLookup('Почему ты вызываешь Zotero?!'), T.asksLookup('I do not use Zotero or Crossref.')],
+  [true, true, true, true, true, true, false, false, false, false, false]);
 });
 
 test('Chrome refuses: the refusal, nothing stored; Stop rejects the card; a quiet turn never asks', async () => {
@@ -141,7 +195,7 @@ test('the keyword gate: without the grant offered only when the message or the d
   for (const text of ['Add a citation after the first sentence.', 'добавь ссылку на источник', 'Check my bibliography', 'Find the DOI of this paper', 'Оформи список литературы']) {
     const { tools, head } = await names(text);
     assert.ok(tools.includes('find_reference'), text);
-    assert.ok(head.includes('- find_reference(query)'), text);
+    assert.ok(!head.includes('find_reference'), text); // no prompt line: its definition describes it
   }
   let { tools, head } = await names('Shorten the introduction.');
   assert.ok(!tools.includes('find_reference') && !tools.includes('check_references'), tools.join());

@@ -29,7 +29,7 @@ test('after a turn: reading results stubbed with their size, replay payloads dro
     ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'S' } }) +
     ev('content_block_stop', { type: 'content_block_stop', index: 0 });
   const bodies = recordFetch(env, [
-    msgStart + think + tu(1, 'toolu_s1', 'read_lines', { start: 1, end: 62, doc: null }) + stopTool,
+    msgStart + think + tu(1, 'toolu_s1', 'read_document', { scope: { start: 1, end: 62 }, include: ['text'], doc: null }) + stopTool,
     msgStart + tu(0, 'toolu_s2', 'find_in_document', { query: 'words', doc: null }) + stopTool,
     textRound('Read.'),
   ]);
@@ -42,7 +42,7 @@ test('after a turn: reading results stubbed with their size, replay payloads dro
   // after the turn
   const h = state.messages;
   deq(h.map((m) => m.role), ['user', 'assistant', 'tool', 'assistant', 'tool', 'assistant']);
-  assert.strictEqual(h[2].content, '[read_lines 1–62: content omitted after the turn; re-read if needed]');
+  assert.strictEqual(h[2].content, '[read_document lines 1–62: content omitted after the turn; re-read if needed]');
   assert.strictEqual(h[2]._omittedChars, full.length);
   assert.strictEqual(h[4].content, '[find_in_document "words": content omitted after the turn; re-read if needed]');
   assert.ok(h[4]._omittedChars > 200);
@@ -57,14 +57,14 @@ test('after a turn: reading results stubbed with their size, replay payloads dro
   const rows = T.el.chat.children.filter((c) => c._rows && c._rows.length).flatMap((b) => b._rows);
   assert.strictEqual(rows.length, 2);
   assert.ok(rows[0].innerHTML.includes(`<div class="log-label">Result (omitted, was ${full.length.toLocaleString('en-US')} characters)</div>` +
-    '<pre>[read_lines 1–62: content omitted after the turn; re-read if needed]</pre>'));
+    '<pre>[read_document lines 1–62: content omitted after the turn; re-read if needed]</pre>'));
   deq(T.logEntry(h[1].tool_calls[0], h[2]).omitted, full.length);
   // the next turn sends the stubs (and the model is told it may re-read)
   const next = recordFetch(env, [textRound('OK.')]);
   await send(env, 'and now?');
   const sent = next[0].messages.flatMap((m) => m.content).filter((c) => c.type === 'tool_result').map((c) => c.content);
-  deq(sent, ['[read_lines 1–62: content omitted after the turn; re-read if needed]', '[find_in_document "words": content omitted after the turn; re-read if needed]']);
-  assert.ok(next[0].system[0].text.includes('Results of reading tools from earlier messages are replaced by a short note'));
+  deq(sent, ['[read_document lines 1–62: content omitted after the turn; re-read if needed]', '[find_in_document "words": content omitted after the turn; re-read if needed]']);
+  assert.ok(!next[0].system[0].text.includes('content omitted')); // the stub itself says "re-read if needed"
 });
 
 test('slimHistory: edits and journals untouched, short and compacted results kept, open_document keeps its first line, idempotent', () => {
@@ -86,13 +86,79 @@ test('slimHistory: edits and journals untouched, short and compacted results kep
   assert.strictEqual(msgs[2].content, '[read_lines 3–9 (doc2): content omitted after the turn; re-read if needed]');
   assert.strictEqual(msgs[2]._omittedChars, 500);
   assert.strictEqual(msgs[3].content, editResult); deq(msgs[3]._edit, { id: 'b', ops: [{ kind: 'replace' }] }); // edits untouched
-  assert.strictEqual(msgs[4].content, 'Opened as doc2. Title: "Ref". 120 lines, 9,000 characters.\n[The rest of this result was omitted after the turn; call get_outline with this alias if needed.]');
+  assert.strictEqual(msgs[4].content, 'Opened as doc2. Title: "Ref". 120 lines, 9,000 characters.\n[The rest of this result was omitted after the turn; read_document with this alias reads it again if needed.]');
   assert.strictEqual(msgs[5].content, 'The document has no headings (5 lines).'); // short: kept
   assert.strictEqual(msgs[6].content, 'F'.repeat(300)); // compacted: never sent, kept as compaction left it
   assert.strictEqual(msgs[0]._context, '<document title="D">\nOutline\n</document>'); // user messages untouched
   const once = JSON.stringify(msgs);
   assert.strictEqual(T.slimHistory(msgs), 0); // idempotent
   assert.strictEqual(JSON.stringify(msgs), once);
+});
+
+test('lookup digests: kept in the history (_digest); Munin gets only the newest five of the older turns, older ones as the plain stub; OpenAI gets all; old stubs stay as they were', async () => {
+  const PAPERS = Array.from({ length: 6 }, (_, i) => ({ doi: `10.1/p${i}`, title: `Paper ${i} on spin labels`, authors: ['A. B'], year: 2020 + i, journal: 'J', abstract: 'a'.repeat(300) }));
+  const turn = (k) => [
+    { role: 'user', content: `question ${k}` },
+    { role: 'assistant', content: null, tool_calls: [call(`s${k}`, 'search', { query: `topic ${k}`, where: 'database', top_k: null })] },
+    { role: 'tool', tool_call_id: `s${k}`, content: T.formatPapers(`topic ${k}`, PAPERS).text, _ok: true, _reading: true },
+    { role: 'assistant', content: `Answer ${k}.` },
+  ];
+  // a chat stored before digests: its stub stays as it is
+  const old = [{ role: 'user', content: 'old' }, { role: 'assistant', content: null, tool_calls: [call('s0', 'search', { query: 'old', where: 'web', top_k: null })] },
+    { role: 'tool', tool_call_id: 's0', content: '[search: content omitted after the turn; re-read if needed]', _ok: true, _reading: true, _omittedChars: 2000 },
+    { role: 'assistant', content: 'Old answer.' }];
+  const msgs = [...old, ...[1, 2, 3, 4, 5, 6, 7].flatMap(turn)];
+  assert.strictEqual(T.slimHistory(msgs), 7);
+  const tools = () => msgs.filter((m) => m.role === 'tool');
+  assert.strictEqual(tools()[0].content, '[search: content omitted after the turn; re-read if needed]');
+  assert.ok(tools()[0]._digest === undefined && tools().slice(1).every((m) => m._digest && m.content.startsWith('[search database «topic ')), JSON.stringify(tools()[1]));
+  assert.ok(tools()[1].content.endsWith('\n1 more and the abstracts omitted after the turn]'), tools()[1].content);
+  const stored = JSON.stringify(msgs);
+  // Munin (no prompt cache): the newest five digests of the older turns, the two before them as the plain stub
+  useProvider(env, 'munin');
+  await T.createChat();
+  state.messages.push(...msgs);
+  await T.saveHistory();
+  const bodies = recordFetch(env, [`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'OK.' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`]);
+  await send(env, 'and now?');
+  const sent = bodies[0].messages.filter((m) => m.role === 'tool').map((m) => m.content);
+  deq(sent.slice(0, 3), ['[search: content omitted after the turn; re-read if needed]', '[search: content omitted after the turn; re-read if needed]', '[search: content omitted after the turn; re-read if needed]']);
+  assert.ok(sent.slice(3).every((c) => c.startsWith('[search database «topic ')) && sent.length === 8, JSON.stringify(sent));
+  assert.strictEqual(sent[3], msgs[14].content); // topic 3: the oldest digest still sent
+  // the budget's per-message sizes (fitMessages) count the same request as is built: the stubs, not the digests
+  const hist = T.activeHistory(state.messages);
+  const built = T.buildApiMessages(true, hist, '', { shortOld: true }).slice(1);
+  assert.strictEqual(T.sentSizes(true, hist, { shortOld: true }).reduce((a, b) => a + b, 0), built.reduce((n, m) => n + T.messageChars(m), 0));
+  assert.ok(T.sentSizes(true, hist, { shortOld: true }).reduce((a, b) => a + b, 0) < T.sentSizes(true, hist, { shortOld: false }).reduce((a, b) => a + b, 0));
+  assert.strictEqual(JSON.stringify(state.messages.slice(0, msgs.length)), stored); // the stored history keeps every digest
+  // OpenAI (a prompt cache: older turns are sent as they were): every digest
+  useProvider(env, 'openai', { model: 'gpt-6.1-sol' });
+  await T.createChat();
+  state.messages.push(...JSON.parse(stored));
+  await T.saveHistory();
+  const oa = recordFetch(env, [require('./lib/context').oaText('OK.')]);
+  await send(env, 'and now?');
+  const outs = oa[0].input.filter((i) => i.type === 'function_call_output').map((i) => i.output);
+  assert.strictEqual(outs.filter((o) => o.startsWith('[search database «topic ')).length, 7);
+});
+
+test('a registered digest (registry.js): used when shorter than the result; one that throws, is empty or is longer gives the plain stub', () => {
+  let digest = () => { throw new Error('boom'); };
+  T.registerTools({ type: 'function', function: { name: 'probe_lookup', description: 'x', parameters: { type: 'object', properties: {} } } },
+    { offer: () => false, run: () => '', reading: true, digest: (name, args, content, why) => digest(name, args, content, why) });
+  const fn = { name: 'probe_lookup', arguments: '{"q":"x"}' };
+  const plain = '[probe_lookup: content omitted after the turn; re-read if needed]';
+  const warn = console.warn;
+  console.warn = () => {};
+  assert.strictEqual(T.readingStub(fn, 'x'.repeat(300), 'after the turn'), plain);
+  console.warn = warn;
+  digest = () => '';
+  assert.strictEqual(T.readingStub(fn, 'x'.repeat(300), 'after the turn'), plain);
+  digest = (name, args, content, why) => `[probe_lookup ${args.q}: ${content.length} characters, ${why}]`;
+  assert.strictEqual(T.readingStub(fn, 'x'.repeat(300), 'to fit the context window'), '[probe_lookup x: 300 characters, to fit the context window]');
+  assert.strictEqual(T.readingStub(fn, 'x'.repeat(300), 'after the turn', { plain: true }), plain);
+  digest = () => 'd'.repeat(400);
+  assert.strictEqual(T.readingStub(fn, 'x'.repeat(300), 'after the turn'), plain);
 });
 
 test('chat load: an old chat is slimmed when it is read from storage', async () => {

@@ -2,10 +2,10 @@
 // The document export without the Docs API (readExport, fetchDocTextFromPanel, fetchDocText): the panel's own
 // export first and the content script's GET_DOC_TEXT as the fallback, the memory of a route that failed with a
 // network error, an empty Markdown export, HTTP 429 (waits, Retry-After, the rate-limit message, no format=txt
-// after a 429), Stop during a wait and the turn's notice.
+// after a 429), Stop during a wait and the turn's row.
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, installDocTab } = require('./lib/sandbox');
+const { deq, load, installDocTab, turnRowTexts } = require('./lib/sandbox');
 const { sseResponse, textRound } = require('./lib/streams');
 
 const MD = '# Title\n\nBody \\- text.\n';
@@ -154,15 +154,23 @@ test('HTTP 429 from the content script\'s export: the same waits and retries', a
 test('Stop during a 429 wait ends the read at once with an AbortError', async () => {
   const b = await bench({ panel: () => resp(429, 'Too many') });
   b.ctx.exportSleep = b.realSleep; // the real, abortable wait (2 s)
+  // the panel's timers of 1 s or more: started and run out (a wait that ended by its time, not by the Stop)
+  const long = { started: [], fired: [] };
+  const setT = b.ctx.setTimeout;
+  b.ctx.setTimeout = (fn, ms, ...a) => {
+    if (ms < 1000) return setT(fn, ms, ...a);
+    long.started.push(ms);
+    return setT((...x) => { long.fired.push(ms); fn(...x); }, ms, ...a);
+  };
   const ac = new AbortController();
-  const t0 = Date.now();
   const p = b.T.readExport(b.tab, () => {}, { signal: ac.signal });
   setTimeout(() => ac.abort(), 20);
   await assert.rejects(p, { name: 'AbortError' });
-  assert.ok(Date.now() - t0 < 1000);
+  b.ctx.setTimeout = setT;
+  deq(long, { started: [2000], fired: [] }); // the 2 s wait began and the Stop ended it, not its time
 });
 
-test('a turn on a rate-limited export: the notice says so and the answer still comes', async () => {
+test('a turn on a rate-limited export: the row of the turn says so and the answer still comes', async () => {
   const b = await bench({ panel: () => resp(429, 'Too many') });
   const { T, state } = b;
   state.settings.provider = 'anthropic';
@@ -173,7 +181,7 @@ test('a turn on a rate-limited export: the notice says so and the answer still c
   T.el.input.value = 'Hello';
   await T.sendMessage();
   deq(b.log, ['panel md', 'sleep 2000', 'panel md', 'sleep 5000', 'panel md']);
-  const notices = T.el.chat.children.filter((c) => c && c.className && String(c.className).includes('notice')).map((c) => c.innerHTML);
-  assert.ok(notices.some((t) => t === 'Could not get the document text: the Google export is rate-limited (HTTP 429); wait a minute and try again. Answering without the document context.'), notices.join(' | '));
+  const rows = turnRowTexts(T.el.chat);
+  assert.ok(rows.some((t) => t === 'Could not get the document text: the Google export is rate-limited (HTTP 429); wait a minute and try again. Answering without the document context.'), rows.join(' | '));
   assert.strictEqual(b.bodies.length, 1);
 });

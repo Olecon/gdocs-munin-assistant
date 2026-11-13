@@ -1,14 +1,14 @@
 'use strict';
 // Module prose-lint.js: a deterministic check of the text a write puts into the document (no model call):
-// proseTells (the tell lists of src/prose-lists.js: chat residue, staging, tails, run-ups, stock words, Russian
+// proseTells (the tell lists of src/prose-lists.js: chat residue, Markdown, staging, tails, run-ups, stock words, Russian
 // fillers, hedges, wordiness, redundancy; and the dash rate), claimDrift (numbers, citations and qualifiers an
 // edit loses), and proseCheck, registered as a beforeWrite hook (registry.js): lost numbers or
 // citations refuse the write once, the rest become notes on the tool result. Pure functions, also loaded by
 // development/tools/prose-score.js.
-/* global countWords, docStyleStats, PROSE_TELL_ORDER, PROSE_TELLS, registerTurnHook, sentenceSpans, STYLE_SAMPLE_CHARS,
-   textLang, Typograf */
+/* global countWords, docStyleStats, driftQualifiers, MARKERS_NOTE, PROSE_TELL_ORDER, PROSE_TELLS, registerTurnHook, sentenceSpans, STYLE_SAMPLE_CHARS,
+   stripMarkers, textLang, Typograf */
 /* exported PROSE_TOOLS, proseTells, claimItems, claimDrift, proseCheck, proseWords, proseDashes, typographyIssues,
-   typographyNote, typoHabits, typographicDashes, numberValue, NUM_STAT, NUM_CMP, CMP_NORM */
+   typographyNote, typoHabits, typographicDashes, numberValue, NUM_STAT, NUM_CMP, CMP_NORM, writeTexts, turnUserText */
 
 // ---- The tells -------------------------------------------------------------------------------------------
 // The lists live in src/prose-lists.js (PROSE_TELLS, PROSE_TELL_ORDER). Every entry becomes a whole-word regex
@@ -201,7 +201,7 @@ const UNITS = 'mg|µg|μg|ng|kg|g|ml|mL|µl|μl|l|L|nm|µm|μm|mm|cm|km|m|ms|min
 const NUM_STAT = '(?:[pP](?:[- ]values?)?|[nNrRtFd]|[rR]²|χ²|χ2|OR|HR|CI)';
 const NUM_CMP = '<=|>=|[=<>≤≥≈~]';
 const NUMBER_RE = new RegExp(`(?<![\\p{L}\\p{N}.,])(?:(?<stat>${NUM_STAT})\\s*(?<cmp>${NUM_CMP})\\s*)?(?<num>[-−]?\\d{1,3}(?:[\\u00a0\\u202f\\u2009]\\d{3})+(?:[.,]\\d+)?(?!\\d|[.,]\\d)|[-−]?\\d+(?:[.,]\\d+)*)(?<suf>\\s?%|\\s?(?:${UNITS})(?![\\p{L}\\p{N}]))?`, 'gu');
-// Hedges and qualifiers an edit must keep (W11): [regex source, key].
+// Hedges and qualifiers an edit must keep (W9): [regex source, key].
 const QUALIFIERS = [
   ['may(?!\\s+\\d)', 'may'], ['might', 'might'], ['could', 'could'], ['suggest(?:s|ed|ing)?', 'suggests'],
   ['appear(?:s|ed)?', 'appears'], ['preliminar(?:y|ily)', 'preliminary'], ['in this sample', 'in this sample'],
@@ -279,8 +279,9 @@ function lostItems(oldList, newList) {
 }
 
 // The numbers old has and new lost: the same key (value, percent, comparator) and the same unit, or a unit on one
-// side only ("10 min" → "10 minutes"); "37 °C" → "37 K" is lost.
-function lostNumbers(oldList, newList) {
+// side only ("10 min" → "10 minutes"); "37 °C" → "37 K" is lost. lostNumberItems: the items, each loss (in old's order);
+// lostNumbers: their texts, each once.
+function lostNumberItems(oldList, newList) {
   const pool = newList.slice();
   const rest = [];
   for (const it of oldList) {
@@ -290,15 +291,88 @@ function lostNumbers(oldList, newList) {
   const out = [];
   for (const it of rest) {
     const j = pool.findIndex((y) => y.key === it.key && (!y.unit || !it.unit));
-    if (j >= 0) pool.splice(j, 1); else if (!out.includes(it.text)) out.push(it.text);
+    if (j >= 0) pool.splice(j, 1); else out.push(it);
+  }
+  return out;
+}
+const lostNumbers = (oldList, newList) => [...new Set(lostNumberItems(oldList, newList).map((it) => it.text))];
+
+// The numbers a correction replaces: in one replace (pairs: [{ oldText, newText }]), a lost number with a new number of
+// the same kind (unit, percent) in its place whose value the user's message names (named: values). "Mine shows 0.74 and
+// 1.01" lets 0.47 → 0.74 and 1.10 → 1.01 through; one named number stands in for one lost number (paired in text order),
+// so a second drop with nothing named in its place is still refused. Returns key|unit -> count.
+const numberSlot = (it) => `${it.key}|${it.unit}`;
+function correctedNumbers(pairs, named) {
+  const out = new Map();
+  if (!named.size) return out;
+  for (const { oldText, newText } of pairs) {
+    const a = claimItems(foldScriptDigits(oldText)).numbers;
+    const b = claimItems(foldScriptDigits(newText)).numbers;
+    const gained = lostNumberItems(b, a).filter((it) => named.has(it.value));
+    for (const it of lostNumberItems(a, b)) {
+      const j = gained.findIndex((g) => g.unit === it.unit && g.value.endsWith('%') === it.value.endsWith('%'));
+      if (j < 0) continue;
+      gained.splice(j, 1);
+      out.set(numberSlot(it), (out.get(numberSlot(it)) || 0) + 1);
+    }
   }
   return out;
 }
 
+// "2.3 Molecular dynamics" → "2.4 Molecular dynamics": a section number typed at the start of a line names a place, not a
+// value (provenance.js leaves such numbers out as well; the shape is headings.js numberParts'), so renumbering or removing
+// it drops nothing. It counts as one when a line of the document starts with the replaced line and with that number, the
+// number has no unit, percent or comparator, and that line is a heading or the rest of it stays as it was and starts with
+// a capital letter ("12 samples were …" → "14 samples were …" is still checked). Returns key|unit -> count, as
+// correctedNumbers.
+const SECTION_NUM_RE = /^(\d{1,2}(?:\.\d{1,2})*)\.?(?:[ \t\xa0]+|$)/;
+const MD_HEAD_RE = /^#{1,6}[ \t]+/; // an exported heading's marker
+const unmarked = (line) => String(line).trim().replace(MD_HEAD_RE, '');
+const sectionRest = (line) => { const t = unmarked(line); const m = SECTION_NUM_RE.exec(t); return { num: m ? m[1] : '', rest: (m ? t.slice(m[0].length) : t).trim() }; };
+// The document's lines as the write found them: the Docs API model's, else the exported text's.
+function sectionDocLines(snap) {
+  const m = snap && snap.model;
+  if (m && Array.isArray(m.lines)) return m.lines;
+  const text = snap ? (snap.promptView && snap.promptView.docText) || snap.docText : '';
+  return String(text || '').split('\n').map((t) => ({ text: t, heading: MD_HEAD_RE.test(t.trim()) }));
+}
+function renumberedNumbers(pairs, snap) {
+  const out = new Map();
+  const lines = sectionDocLines(snap);
+  for (const { oldText, newText } of pairs) {
+    const rests = String(newText).split('\n').map((l) => sectionRest(l).rest);
+    for (const raw of String(oldText).split('\n')) {
+      const { num, rest } = sectionRest(raw);
+      if (!num) continue;
+      const head = unmarked(raw);
+      const doc = lines.find((l) => { const t = unmarked(l.text); return t.startsWith(head) && sectionRest(t).num === num; });
+      if (!doc) continue;
+      const first = claimItems(foldScriptDigits(unmarked(doc.text))).numbers[0];
+      if (!first || first.text !== num || first.unit || first.cmp || first.value.endsWith('%')) continue;
+      if (!doc.heading) {
+        const j = /^\p{Lu}/u.test(sectionRest(doc.text).rest) ? rests.indexOf(rest) : -1;
+        if (j < 0) continue;
+        rests.splice(j, 1);
+      }
+      const it = claimItems(foldScriptDigits(head)).numbers[0];
+      if (it) out.set(numberSlot(it), (out.get(numberSlot(it)) || 0) + 1);
+    }
+  }
+  return out;
+}
+
+// Superscript and subscript digits are digits in another form: "1Institute" → "¹ Institute" drops nothing. A run that
+// stands alone (a footnote or affiliation marker) is folded to ASCII on both sides before comparing; a run right after a
+// letter, a digit or a raised sign is part of a word, a power or a unit (H₂O, 10⁵, s⁻¹) and stays uncounted, as an ASCII
+// digit glued to a letter is.
+const SCRIPT_DIGITS = '⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉';
+const SCRIPT_RUN_RE = /(?<![\p{L}\p{N}⁺⁻₊₋])[⁰¹²³⁴-⁹₀-₉]+/gu;
+const foldScriptDigits = (text) => String(text || '').replace(SCRIPT_RUN_RE, (run) => [...run].map((c) => SCRIPT_DIGITS.indexOf(c) % 10).join(''));
+
 // The numbers, citations and qualifiers oldText has and newText lost: { numbers, citations, qualifiers } (texts).
 function claimDrift(oldText, newText) {
-  const a = claimItems(oldText);
-  const b = claimItems(newText);
+  const a = claimItems(foldScriptDigits(oldText));
+  const b = claimItems(foldScriptDigits(newText));
   return {
     numbers: lostNumbers(a.numbers, b.numbers),
     citations: lostItems(a.citations, b.citations),
@@ -309,7 +383,7 @@ function claimDrift(oldText, newText) {
 // ---- The beforeWrite hook --------------------------------------------------------------------------------------
 // The writing tools that carry new text; delete_lines, format_*, table, page_parts, cite and remember are not
 // checked.
-const PROSE_TOOLS = ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection'];
+const PROSE_TOOLS = ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection', 'edit_document'];
 const PROSE_MAX_NOTES = 5;
 const KEEP_RATIO = 0.4; // a new text shorter than this share of the old one is an intentional cut: no refusal
 const str = (v) => (typeof v === 'string' ? v : '');
@@ -317,10 +391,13 @@ const str = (v) => (typeof v === 'string' ? v : '');
 // The old and the new text of a write (old is '' for an insert). replace_all: one occurrence (they are all the
 // same old_text).
 function writeTexts(name, plan, args, snap) {
-  if (name === 'insert_after_line') return { oldText: '', newText: str(args.text) };
+  if (plan && plan.batchTexts) return plan.batchTexts; // edit_document: its replaced and new texts
+  if (name === 'insert_after_line') return { oldText: '', newText: plan && typeof plan.insertedText === 'string' ? plan.insertedText : str(args.text) }; // inserts, outline: the text sent
   if (name === 'replace_selection') return { oldText: str(snap && snap.selection) || str(plan && plan.journal && plan.journal.restore), newText: str(args.text) };
   if (name === 'replace_section') return { oldText: str(plan && plan.section && plan.section.removed), newText: str(args.new_text) };
-  return { oldText: str(args.old_text), newText: str(args.new_text) };
+  // Markers found around old_text are dropped from new_text too (docs-write.js): check what goes in.
+  const stripped = typeof MARKERS_NOTE === 'string' && plan && Array.isArray(plan.notes) && plan.notes.includes(MARKERS_NOTE);
+  return { oldText: str(args.old_text), newText: stripped ? stripMarkers(str(args.new_text)) || str(args.new_text) : str(args.new_text) };
 }
 
 // The user's text of this turn (its last user message that is not an automatic continuation), or ''.
@@ -330,22 +407,17 @@ function turnUserText(snap) {
   return '';
 }
 
-// A short stable hash of a call (name and arguments), for the per-turn set of refused calls.
-function callHash(name, args) {
-  const s = name + '\u0000' + JSON.stringify(args || {});
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return (h >>> 0).toString(36) + ':' + s.length;
-}
-
 const listText = (items) => items.join(', ');
 
 // beforeWrite(name, plan, args, snap) -> null | { notes, refuse }.
 // Refuse: the new text loses numbers or citations of the old one and keeps at least KEEP_RATIO of its length
 // (a big cut is deliberate). Items the user's message of this turn names are not counted (the user asked to
-// change them), nor citations the References store tracks (the gate card asks about those). The refused call's hash goes into snap.proseRefused (per turn: the snapshot is new every turn);
-// the identical call again (same tool, same arguments) passes: the model was told to keep the items or to tell
-// the user it removed them on purpose, and a second identical call is that decision.
+// change them), nor numbers replaced in place by one the user names (correctedNumbers: the user gave the right value),
+// nor typed section numbers (renumberedNumbers), nor citations the References store tracks (the gate card asks about
+// those). The refusal names the items, which go into snap.proseRefused (per turn: the snapshot is new every turn); a later
+// write that drops only items named before passes, whatever tool carries it: the model was told to keep them or to tell
+// the user, and sending the edit again is that decision (keyed on the call, a retry through another tool met the same
+// refusal again).
 // Notes: lost qualifiers, and the tells of the new text that the old text does not have already (the author's
 // own wording is not flagged); at most PROSE_MAX_NOTES.
 function proseCheck(name, plan, args, snap) {
@@ -359,19 +431,29 @@ function proseCheck(name, plan, args, snap) {
     const asked = claimItems(turnUserText(snap));
     // A number the user names counts by value: "make it p = 0.01" allows dropping "p < 0.01".
     const named = new Set([...asked.numbers.map((it) => it.value), ...asked.citations.map((it) => it.key)]);
-    const keyed = claimItems(oldText);
+    const keyed = claimItems(foldScriptDigits(oldText)); // the texts claimDrift names
     const keyOf = new Map([...keyed.numbers.map((it) => [it.text, it.value]), ...keyed.citations.map((it) => [it.text, it.key])]);
-    // A removed citation the References store tracks (plan.citations) already asks on the gate card: the user decides.
-    const tracked = !!(plan && Array.isArray(plan.citations) && plan.citations.length);
-    const lost = [...drift.numbers, ...(tracked ? [] : drift.citations)].filter((t) => !named.has(keyOf.get(t)));
-    if (lost.length && newText.length >= KEEP_RATIO * oldText.length) {
-      const hash = callHash(name, args);
-      if (!snap.proseRefused) snap.proseRefused = new Set();
-      if (!snap.proseRefused.has(hash)) {
-        snap.proseRefused.add(hash);
-        refuse = `the new text drops ${listText(lost)}. Keep them, or tell the user you removed them on purpose and call the tool again.`;
-      }
+    // The lost numbers less those a correction replaces (counted, so one of two equal numbers can still be lost).
+    const pairs = plan && plan.batchTexts ? plan.batchTexts.pairs || [] : [{ oldText, newText }];
+    const exempt = [correctedNumbers(pairs, new Set(asked.numbers.map((it) => it.value))), renumberedNumbers(pairs, snap)];
+    const numbers = [...new Set(lostNumberItems(keyed.numbers, claimItems(foldScriptDigits(newText)).numbers).filter((it) => {
+      const pool = exempt.find((p) => p.get(numberSlot(it)));
+      if (pool) pool.set(numberSlot(it), pool.get(numberSlot(it)) - 1);
+      return !pool;
+    }).map((it) => it.text))];
+    // A removed citation the References store tracks (plan.citations) asks on the gate card in Manual: the user decides.
+    // Auto shows no card, so it is checked like any citation.
+    const tracked = !!(snap && snap.askEdits && plan && Array.isArray(plan.citations) && plan.citations.length);
+    const lost = [...numbers, ...(tracked ? [] : drift.citations)].filter((t) => !named.has(keyOf.get(t)));
+    const told = snap.proseRefused || (snap.proseRefused = new Set());
+    const fresh = lost.filter((t) => !told.has(t));
+    if (fresh.length && newText.length >= KEEP_RATIO * oldText.length) {
+      for (const t of fresh) told.add(t);
+      refuse = `the new text drops ${listText(fresh)}. Keep ${fresh.length === 1 ? 'it' : 'them'} or, if that is intended, tell the user and send the edit again: it will pass.`;
     }
+    // A qualifier that src/text-checks.js quotes in its meaning-drift pair ("may reduce" → "reduces") is noted there.
+    const quoted = typeof driftQualifiers === 'function' ? new Set(driftQualifiers(oldText, newText)) : new Set();
+    drift.qualifiers = drift.qualifiers.filter((q) => !quoted.has(q));
     if (drift.qualifiers.length) {
       notes.push(`the new text drops the qualifier${drift.qualifiers.length === 1 ? '' : 's'} ${drift.qualifiers.map((q) => `'${q}'`).join(', ')}; keep ${drift.qualifiers.length === 1 ? 'it' : 'them'} unless the evidence changed.`);
     }

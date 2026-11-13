@@ -29,6 +29,34 @@ function recordFetch(env, rounds) {
   return bodies;
 }
 
+// A fetch that answers each provider from its own list of rounds, by the request URL's host, for turns that use two
+// providers (agents): rounds = { openai: [...], anthropic: [...], munin: [...] }, each round the SSE text, or a function
+// (body, init) => SSE text | a response object (it may also throw, e.g. an AbortError); the last round repeats. Returns
+// { bodies: { openai, anthropic, munin } (the JSON bodies in order), fetch }; other URLs go to other(url, init) (the
+// fake Docs server: docsBench's routeDocs wraps this fetch the other way round) or throw. hosts: more URL prefixes by
+// name, for accounts with their own server (a Munin account's URL): { lab: 'https://lab.example.org/' } routes those
+// requests to rounds.lab and bodies.lab.
+const PROVIDER_HOSTS = { openai: 'https://api.openai.com/', anthropic: 'https://api.anthropic.com/', munin: 'https://api.muninai.org/' };
+function providerRouter(rounds, other = null, hosts = {}) {
+  const all = { ...PROVIDER_HOSTS, ...hosts };
+  const bodies = Object.fromEntries(Object.keys(all).map((k) => [k, []]));
+  const fetch = async (url, init) => {
+    const id = Object.keys(all).find((k) => String(url).startsWith(all[k]));
+    if (!id) {
+      if (other) return other(url, init);
+      throw new Error('unexpected fetch ' + url);
+    }
+    const b = JSON.parse(init.body);
+    bodies[id].push(b);
+    const list = rounds[id] || [];
+    if (!list.length) throw new Error(`no ${id} rounds for ${url}`);
+    const r = list[Math.min(bodies[id].length - 1, list.length - 1)];
+    const out = typeof r === 'function' ? await r(b, init) : r;
+    return typeof out === 'string' ? sseResponse(out) : out;
+  };
+  return { bodies, fetch };
+}
+
 // Selects the provider (with an API key) for the next turns; Auto mode, no Google account.
 function useProvider(env, prov, extra = {}) {
   const { state } = env;
@@ -68,4 +96,4 @@ function breakpoints(body) {
   return out;
 }
 
-module.exports = { docBench, recordFetch, useProvider, send, oaTool, oaText, muTool, muText, stripCache, breakpoints };
+module.exports = { docBench, recordFetch, providerRouter, useProvider, send, oaTool, oaText, muTool, muText, stripCache, breakpoints };

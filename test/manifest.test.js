@@ -36,8 +36,9 @@ test('manifest: version from package.json, the key, permissions', async () => {
   deq(manifest.web_accessible_resources.map((r) => r.resources), [['sidepanel.html', 'icons/*.png']]);
 });
 
-test('manifest: Zotero, Crossref and OpenAlex are optional hosts, asked for by the References switch', () => {
+test('manifest: Zotero, Crossref and OpenAlex are optional hosts, asked for by the References switch; any host for an account\'s own server', () => {
   const manifest = readJson('manifest.json');
-  deq(manifest.optional_host_permissions, ['http://localhost:23119/*', 'https://api.crossref.org/*', 'https://api.openalex.org/*']);
-  assert.ok(!manifest.host_permissions.some((h) => /23119|crossref|openalex/.test(h)));
+  // http(s)://*/*: a custom (or Munin's other) server is asked for by Check provider after Chrome blocked it (settings.js)
+  deq(manifest.optional_host_permissions, ['http://localhost:23119/*', 'https://api.crossref.org/*', 'https://api.openalex.org/*', 'http://*/*', 'https://*/*']);
+  assert.ok(!manifest.host_permissions.some((h) => /23119|crossref|openalex|^https?:\/\/\*\//.test(h)));
 });

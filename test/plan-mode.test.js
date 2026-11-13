@@ -1,6 +1,7 @@
 'use strict';
-// Plan mode (applyMode 'plan', turn mode 'plan'): a read-only turn like Manual (the reading tools, no writing tool, no
-// remember, no draft or revise), whose instructions carry TOOLS_PLAN_RULES (not the Manual rules, no remember note);
+// Plan mode (applyMode 'plan', turn mode 'plan'): it only reads, like the read-only chat turn (the reading tools, no
+// writing tool, no remember, no draft or revise), whose instructions carry TOOLS_PLAN_RULES (not TOOLS_MANUAL_RULES, no
+// remember note);
 // writes and remember are refused if called anyway; a finished Plan answer is marked _plan, a Manual or Auto one is not.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
@@ -26,16 +27,16 @@ before(async () => {
   Object.assign(state.settings.providers.anthropic, { apiKey: 'k-T' });
 });
 
-test('Plan offers the reading tools of Manual without remember; no writing, draft or revise tool', async () => {
+test('Plan offers the reading tools of the read-only chat turn without remember; no writing, draft or revise tool', async () => {
   await fresh();
   const plan = names('plan');
   deq(plan, names('manual').filter((n) => n !== 'remember'));
   for (const n of [...T.WRITE_TOOLS, T.REPLACE_TOOL.function.name, 'remember', 'draft', 'revise_section']) assert.ok(!plan.includes(n), n);
-  assert.ok(names('edit').includes('draft') && names('edit').includes('revise_section')); // offered in Edit automatically
-  assert.ok(plan.includes('read_lines') && plan.includes('ask_user') && plan.includes('open_document'));
+  assert.ok(names('edit').includes('draft') && names('edit').includes('revise_section')); // offered in Auto
+  assert.ok(plan.includes('read_document') && plan.includes('ask_user') && plan.includes('open_document'));
 });
 
-test('Plan instructions: TOOLS_PLAN_RULES, not the Manual rules, no remember note; static and short', async () => {
+test('Plan instructions: TOOLS_PLAN_RULES, not the read-only chat turn\'s rules, no remember note; static and short', async () => {
   await fresh();
   const head = T.buildSystemParts('plan', 1e5, as).head;
   assert.ok(head.includes(T.TOOLS_PLAN_RULES));
@@ -55,7 +56,7 @@ test('writes and remember called in Plan anyway are refused; the document stays 
   const before0 = fake.text('t.0');
   const w = await T.executeTool(call('replace_text', { old_text: 'Alpha beta gamma.', new_text: 'Changed.', doc: null }), 'plan', as, {});
   assert.strictEqual(w._ok, false);
-  assert.match(w.content, /^Error: the document cannot be modified in this mode/);
+  assert.match(w.content, /^Error: the document cannot be modified here/);
   const r = await T.executeTool(call('remember', { action: 'add', text: 'Always use British spelling.' }), 'plan', as, {});
   assert.strictEqual(r._ok, false);
   assert.match(r.content, /^Error: remember is not available in Plan mode/);
@@ -65,7 +66,7 @@ test('writes and remember called in Plan anyway are refused; the document stays 
 test('a Plan turn: reading tools only in the request, the answer is marked _plan; a Manual answer is not', async () => {
   await fresh();
   const bodies = [];
-  const rounds = [msgStart + tu(0, 'toolu_r', 'read_lines', { start: 1, end: 4, doc: null }) + stopTool, textRound('1. Line 4: shorten the sentence, because it repeats line 3.')];
+  const rounds = [msgStart + tu(0, 'toolu_r', 'read_document', { scope: { start: 1, end: 4 }, include: ['text'], doc: null }) + stopTool, textRound('1. Line 4: shorten the sentence, because it repeats line 3.')];
   env.ctx.fetch = routeDocs(async (url, init) => { bodies.push(JSON.parse(init.body)); return sseResponse(rounds[bodies.length - 1] || textRound('ok')); });
   state.applyMode = 'plan';
   await T.createChat();

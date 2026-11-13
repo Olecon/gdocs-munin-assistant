@@ -10,10 +10,16 @@ const path = require('path');
 const vm = require('vm');
 const { ROOT, SCRIPTS } = require('./lib/sandbox');
 
-// The module alone in a fresh context; noSegmenter: as in an old jsdom without Intl.Segmenter.
-function loadSegments({ noSegmenter = false } = {}) {
+// The module alone in a fresh context; noSegmenter: as in an old jsdom without Intl.Segmenter; segmented: an array
+// that gets every string handed to an Intl.Segmenter's segment().
+function loadSegments({ noSegmenter = false, segmented = null } = {}) {
   const ctx = vm.createContext({});
   if (noSegmenter) vm.runInContext('delete Intl.Segmenter', ctx);
+  if (segmented) {
+    const proto = vm.runInContext('Intl.Segmenter.prototype', ctx);
+    const segment = proto.segment;
+    proto.segment = function (s) { segmented.push(String(s)); return segment.call(this, s); };
+  }
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/text-segments.js'), 'utf8'), ctx, { filename: 'src/text-segments.js' });
   return new Proxy({}, { get: (_, name) => vm.runInContext(String(name), ctx) });
 }
@@ -84,6 +90,20 @@ test('word counts: word-like segments; hyphenated words, numbers and Cyrillic co
   assert.strictEqual(S.countWords('Мы измерили 3,5 единицы — дважды.'), 5);
   assert.strictEqual(S.countWords('At 37 °C, H2O (n = 24).'), 6); // At 37 C H2O n 24
   assert.strictEqual(S.countWords(''), 0);
+});
+
+test('word counts across lines: no word spans a line break, a hyphen at a line end joins nothing; a long text stays fast', () => {
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(S.textWords('one well-\nknown fact\n\nself-made\r\nend'))),
+    ['one', 'well', 'known', 'fact', 'self-made', 'end']);
+  // V8's segment iterator slows down quadratically with the string (a 6,000-line text at once took 27 s): the
+  // segmenter gets the text line by line, each line once (counted, not timed: a busy machine does not change it)
+  const long = Array.from({ length: 6000 }, (_, i) => `Sentence number ${i + 1} of the long results section is here.`).join('\n');
+  const segmented = [];
+  const W = loadSegments({ segmented });
+  assert.strictEqual(W.countWords(long), 6000 * 10);
+  assert.strictEqual(segmented.length, 6000, 'one segment() call per line');
+  assert.ok(segmented.every((s) => !s.includes('\n')), 'no segmented string spans a line');
+  assert.strictEqual(segmented.join('\n'), long, 'each line once, in order');
 });
 
 test('without Intl.Segmenter the regex fallback still splits sentences and counts words', () => {

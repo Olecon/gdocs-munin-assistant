@@ -348,7 +348,7 @@ function renderDocChanges(prev, text, opts = {}) {
       while (k < body.length && (!k || (k < limits.lines && c + body[k].length <= limits.chars))) { c += body[k].length + 1; k++; }
       out.push(...body.slice(0, k));
       const after = b.end + 1;
-      out.push(`[Stopped inside the change at current lines ${b.pos}-${b.end} (limit per call). Read the current text with read_lines(${b.pos}, ${b.end})${after <= hi ? `, then call document_changes with lines "${after}-${hi}"` : ''}.]`);
+      out.push(`[Stopped inside the change at current lines ${b.pos}-${b.end} (limit per call). Read the current text with read_document, scope {"start":${b.pos},"end":${b.end}}${after <= hi ? `, then call document_changes with lines "${after}-${hi}"` : ''}.]`);
       return `${head}${legend(out)}\n${out.join('\n')}`;
     }
     out.push(...body);
@@ -419,8 +419,6 @@ registerTools([DOC_CHANGES_DEF], {
   reading: true,
   run: (name, args, snap) => docChangesResult(args, snap),
   summary: (name, args) => docChangesSummary(args),
-  icon: '🕓',
-  prompt: [{ section: 'reading', line: '- document_changes(lines): what changed in the document since the end of your previous session (removed/added lines). Use it when the user asks what changed or what collaborators did.' }],
   docNote: docHistoryNote,
 });
 registerTurnHook('finish', (userMsg, snap) => saveDocText(snap));

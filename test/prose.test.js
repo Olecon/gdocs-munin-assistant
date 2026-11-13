@@ -28,16 +28,28 @@ before(async () => {
 test('writing rules: one block in Auto (both rule sets), Manual and persona instructions; the structure rule is softened', () => {
   const W = T.WRITING_RULES;
   assert.ok(W.startsWith('Writing (document text and chat answers):\nW1. Write like this document\'s author on a good day'));
-  assert.ok(W.length > 1800 && W.length < 2400, String(W.length)); // about 450–600 tokens
-  assert.strictEqual(W.split('\n').length, 18); // the title and W1..W17
+  assert.ok(W.length > 1800 && W.length < 2600, String(W.length)); // about 450–650 tokens (W11 carries the [[?]] rule)
+  assert.strictEqual(W.split('\n').length, 16); // the title and W1..W15
+  // merged lines keep their examples: W5 (run-ups, sayings, tails), W9 (claim strength and rewrites), W15 (tools, HTTP codes)
+  assert.ok(W.includes('\nW5. No run-ups ("It is worth noting that", "Importantly,"; "In order to" → "To"), deep-sounding sayings ("at its core", "the real question is") or ", highlighting/ensuring/reflecting …" tails'));
+  assert.ok(W.includes('\nW15. Never explain your tools or their parameters to the user, and give no HTTP codes or server messages: say what happened in plain words.'));
+  // the document subset (revise_section): the rules about the text, without the chat rules and W9's chat clause
+  const D = T.DOCUMENT_WRITING_RULES;
+  assert.strictEqual(D.split('\n').length, 13);
+  for (const s of ['Reread new text once', 'In chat, give the answer', 'Never explain your tools', 'say in the chat']) assert.ok(!D.includes(s), s);
+  assert.ok(D.includes('unless the request removes that content. Asked to rewrite') && D.includes('\nW11. Add no facts'));
   for (const [name, text] of [['TOOLS_EDIT_RULES', T.TOOLS_EDIT_RULES], ['apiEditRules', T.apiEditRules([])], ['TOOLS_MANUAL_RULES', T.TOOLS_MANUAL_RULES],
     ['persona', T.personaInstructions('chat', false, true)], ['Munin persona', T.personaInstructions('research', false)]]) {
     assert.ok(text.endsWith(`\n\n${W}`), name);
     assert.ok(!text.includes('tone, and paragraph structure'), name);
   }
-  for (const text of [T.TOOLS_EDIT_RULES, T.apiEditRules([]), T.TOOLS_MANUAL_RULES]) {
-    assert.ok(text.includes('its meaning and terminology; keep its paragraph structure unless the user asks you to rewrite or shorten it.'));
-  }
+  // the scope rule is a core rule of every tools-mode head, said once, not in each mode's rules
+  // the document's own term wins over a variant, and sound wording stays (writing eval, stage 1: improve requests kept the
+  // drifted term and reworded the author's sound sentences)
+  for (const mode of ['edit', 'manual', 'plan']) assert.ok(T.coreRules(mode).includes('its meaning and the document\'s terms (a variant of one goes back to it); keep wording that is not wrong, and the paragraph structure unless the user asks you to rewrite or shorten it.'), mode);
+  for (const text of [T.TOOLS_EDIT_RULES, T.apiEditRules([]), T.TOOLS_MANUAL_RULES]) assert.ok(!text.includes('Change only what the user asked for'));
+  // "keep every number" and "shorten" meet in W9: the request may remove content, and the answer says what was dropped
+  assert.ok(W.includes('unless the request removes that content; then say in the chat what was dropped.') && W.includes('keep every supported claim the request does not remove.'));
   assert.ok(W.includes('"является"') && W.includes('is consistent with → is associated with → predicts → leads to → causes'));
   assert.ok(!/\$\{|\d{2,} words/.test(W)); // static: no per-turn values
 });
@@ -52,17 +64,18 @@ test('writing rules reach the requests of every provider and mode, once', () => 
   }
 });
 
-test('the remember note offers a style profile line, under 80 tokens', () => {
-  assert.ok(T.REMEMBER_NOTE.endsWith(T.STYLE_PROFILE_NOTE));
-  assert.ok(T.STYLE_PROFILE_NOTE.includes('"learn my style"') && T.STYLE_PROFILE_NOTE.includes('replacing an earlier style line'));
-  assert.ok(T.STYLE_PROFILE_NOTE.length / 4 < 80);
+test('the style profile is in remember\'s definition; the head keeps one remember sentence', () => {
+  const d = T.TOOL_DEFS.remember.function.description;
+  assert.ok(d.includes('"learn my style"') && d.includes('replacing an earlier style line') && d.includes('never on your own initiative'));
+  assert.strictEqual(T.REMEMBER_NOTE, 'If a request sounds like a standing rule but does not say so, ask whether it goes to DOC.md or MAIN.md; never mention these files otherwise.');
 });
 
 test('docStyleStats: sentence length, dashes and quotes in English and Russian; the 400-word threshold', () => {
-  deq(T.docStyleStats(EN), { words: 451, sentenceWords: 10, dashesPer1000: 33.3, quotes: '"straight"' });
-  deq(T.docStyleStats(RU), { words: 480, sentenceWords: 8, dashesPer1000: 41.7, quotes: '«guillemets»' });
+  deq(T.docStyleStats(EN), { words: 451, sentenceWords: 10, dashesPer1000: 33.3, hedgesPer100: 0, passivePercent: 0, quotes: '"straight"' });
+  // Russian: no passive rate (the -ся verbs and short participles are too ambiguous)
+  deq(T.docStyleStats(RU), { words: 480, sentenceWords: 8, dashesPer1000: 41.7, hedgesPer100: 0, passivePercent: null, quotes: '«guillemets»' });
   assert.strictEqual(T.docStyleStats(tenWords.repeat(39) + 'One two three four five six seven eight nine.'), null); // 399 words
-  deq(T.docStyleStats(tenWords.repeat(40)), { words: 400, sentenceWords: 10, dashesPer1000: 0, quotes: null });
+  deq(T.docStyleStats(tenWords.repeat(40)), { words: 400, sentenceWords: 10, dashesPer1000: 0, hedgesPer100: 0, passivePercent: 0, quotes: null });
   assert.strictEqual(T.docStyleStats('word '.repeat(500)), null); // no sentences: a list, not prose
   assert.strictEqual(T.docStyleStats(tenWords.repeat(40) + '“a” “b” "c"').quotes, '“curly”');
   // a range or a hyphenated word is not a dash; a spaced hyphen or en dash is
@@ -73,7 +86,7 @@ test('docStyleStats: sentence length, dashes and quotes in English and Russian; 
 
 test('the style line: in the turn context of tools turns (bold only with the Docs API), once in Munin persona turns', () => {
   state.docText = EN; state.docFormat = 'markdown'; state.docModel = null;
-  const line = 'Style of the document: average sentence 10 words; dashes 33.3 per 1,000 words; quotes "straight".';
+  const line = 'Style of the document: average sentence 10 words; dashes 33.3 per 1,000 words; hedges 0/100 words; passive 0%; quotes "straight".';
   const ctx = T.buildTurnContext('edit', snapFor('anthropic'));
   assert.ok(ctx.includes(`</document>\n${line}\nCurrent selection`), ctx);
   assert.ok(!T.shortContext(ctx).includes('Style of the document')); // Munin's older turns drop it
@@ -112,7 +125,7 @@ test('Munin persona turns: no system message; the instructions open the newest u
     assert.ok(last.startsWith('<instructions>\nThe user is working on a Google Docs document'));
     assert.ok(last.endsWith('</instructions>\n\nsecond question'));
     assert.ok(last.includes('<document title="Paper"') && last.includes('The cells grew in the dish'));
-    assert.ok(last.includes(T.UNTRUSTED_DATA_NOTE) && last.includes('<document_instructions>\nUse British English.'));
+    assert.ok(last.includes(T.UNTRUSTED_DATA_NOTE) && last.includes('<DOC.md>\nUse British English.'));
     assert.ok(last.includes('Current selection in the document:'));
     // the stored history is not changed
     assert.strictEqual(state.messages[2].content, 'second question');
@@ -124,16 +137,29 @@ test('Munin persona turns: no system message; the instructions open the newest u
   } finally { state.docInstructions = ''; }
 });
 
-test('Munin sampling, reply limit and reasoning effort; nothing for OpenAI and Anthropic', () => {
+test('Munin sampling per round, reply limit and reasoning effort; nothing for OpenAI and Anthropic', () => {
   state.docText = EN;
   state.messages = [{ role: 'user', content: 'Fix it' }];
+  const sampling = (b) => [b.temperature, b.top_p, b.top_k, b.presence_penalty];
+  // a request that offers the writing tools copies document text: no presence penalty, a lower temperature
   const body = T.buildRequest('edit', snapFor('munin')).body;
+  assert.ok(body.tools.some((t) => t.function.name === 'replace_selection' || t.function.name === 'replace_text'));
   assert.strictEqual(body.max_tokens, 8192);
-  deq([body.temperature, body.top_p, body.top_k, body.presence_penalty], [0.7, 0.95, 20, 1.0]);
+  deq(sampling(body), [0.6, 0.95, 20, 0]);
   deq(body.chat_template_kwargs, { reasoning_effort: 'low' });
-  // a request without tools (the self-test probe) samples the same way but sets no reasoning effort
+  // Manual and Plan (reading tools only): the tools profile too (old_text, scopes copy document text)
+  for (const mode of ['manual', 'plan']) {
+    const ro = T.buildRequest(mode, snapFor('munin')).body;
+    assert.ok(ro.tools.length > 0);
+    deq(sampling(ro), [0.6, 0.95, 20, 0], mode);
+  }
+  // a request without tools (the wrap-up, the self-test probe): the prose profile, an explicit low effort
   const probe = T.buildRequest('edit', snapFor('munin'), { history: [{ role: 'user', content: 'OK?' }], noTools: true, maxTokens: 1024 }).body;
-  assert.strictEqual(probe.temperature, 0.7); assert.strictEqual(probe.chat_template_kwargs, undefined);
+  deq(sampling(probe), [0.7, 0.95, 20, 1.0]); deq(probe.chat_template_kwargs, { reasoning_effort: 'low' });
+  // the profiles themselves
+  deq(T.samplingFields(env.PROVIDERS.munin, 'tools'), { temperature: 0.6, top_p: 0.95, top_k: 20, presence_penalty: 0 });
+  deq(T.samplingFields(env.PROVIDERS.munin, 'summary'), { temperature: 0.3, top_p: 0.95, top_k: 20, presence_penalty: 0 });
+  deq(T.samplingFields(env.PROVIDERS.munin), { temperature: 0.7, top_p: 0.95, top_k: 20, presence_penalty: 1.0 });
   // the persona pipeline takes none of these
   const persona = T.buildRequest('chat', snapFor('munin')).body;
   for (const k of ['temperature', 'top_p', 'top_k', 'presence_penalty', 'chat_template_kwargs', 'max_tokens']) assert.strictEqual(persona[k], undefined, k);

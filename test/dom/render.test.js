@@ -130,3 +130,12 @@ test('block structure: headings, lists, quotes, rules, paragraphs, fenced code w
   deq(u.codes,['x\ny']);
   assert.strictEqual(T.renderMarkdown('').html, '');
 });
+
+test('a numbered list that resumes after a paragraph keeps its numbers (start="N")', () => {
+  const d = md('1. a\n2. b\n\nnote\n\n3. c\n4. d');
+  const ols = d.querySelectorAll('ol');
+  assert.strictEqual(ols.length, 2);
+  assert.strictEqual(ols[0].getAttribute('start'), null);
+  assert.strictEqual(ols[1].getAttribute('start'), '3');
+  assert.deepStrictEqual([...ols[1].querySelectorAll('li')].map((n) => n.textContent), ['c', 'd']);
+});

@@ -1,26 +1,27 @@
 'use strict';
 // Module provenance.js: where the numbers and references of new text come from (no model call).
 // - beforeWrite: a write that brings a number, DOI or citation marker found nowhere in the document, the user's
-//   message of this turn, this turn's tool results (find_reference, cite, web search, reads) or the document
-//   instructions is refused once; the identical retry passes (the model was told to use the item only if the user
+//   messages of the chat, the chat's answers that carried web search, this turn's tool results (find_reference, cite,
+//   web search, reads) or the document instructions is refused once; the identical retry passes (the model was told to use the item only if the user
 //   gave it, else to write the placeholder [[?]]). Years, small integers and the numbers of places (line, section,
 //   figure, table, page; heading numbers) are not checked.
 // - Number ripple: a replace that changes a number (48 → 52, same unit) records the pair; at 'finish' the final text
-//   is searched for the old value and a notice says which lines still have it.
-// - At 'finish': the [[?]] placeholders left in the document after an editing turn (sticky notice), and an answer that
-//   claims a check ("verified", "checked against Crossref", "проверил по", "сверил с") no tool call of the turn made.
+//   is searched for the old value and a row of the turn says which lines still have it.
+// - At 'finish': an answer that claims a check ("verified", "checked against Crossref", "проверил по", "сверил с") no
+//   tool call of the turn made. The [[?]] placeholders left in the document get no row: the model names what is
+//   missing in its answer.
 // claimItems (prose-lint.js) finds the numbers and citations.
-/* global addNotice, apiEditing, claimItems, CMP_NORM, NUM_CMP, NUM_STAT, numberValue, registerPromptLine, registerTurnHook, state */
-/* exported PROV_TOOLS, PROV_PLACEHOLDER, PROV_PROMPT_LINE, provItems, provenanceCheck, rippleNumbers, ripplePairs, rippleNotice,
-   placeholderCount, claimedCheck, provFinish */
+/* global addTurnRow, claimItems, journalEntries, turnStartIndex, CMP_NORM, NUM_CMP, NUM_STAT, numberValue, registerTurnHook, state */
+/* exported PROV_TOOLS, PROV_PLACEHOLDER, provItems, provenanceCheck, rippleNumbers, ripplePairs, rippleNotice,
+   claimedCheck, provFinish */
 
-const PROV_TOOLS = ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection'];
+const PROV_TOOLS = ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection', 'edit_document'];
 const PROV_PLACEHOLDER = '[[?]]';
 const PROV_SMALL_INT = 12; // integers up to this are counts and list numbers, not claims
 const PROV_NEAR = 300; // characters between a surname and its year in a source (a reference entry, a search result)
 const PROV_MAX_LIST = 8; // items named in a refusal
 const RIPPLE_MAX_LINES = 5; // lines named per changed number
-const PROV_PROMPT_LINE = '- A number, DOI or reference you cannot find in the document, the user\'s message or a tool result is unknown: write [[?]] in its place and tell the user what is missing.';
+// The placeholder rule itself is W11 of the writing rules (prompts.js), said once for every mode: no prompt line here.
 
 // Numbers that name a place, not a claim: "line 12", "Fig. 3", "Table 2", "Eq. (4)", "section 2.1", "p. 45",
 // "рис. 3", "табл. 2", "раздел 2.1", "с. 45", and heading or item numbers at the start of a line ("2.1 Methods").
@@ -79,10 +80,12 @@ function provCached(snap, slot, text) {
 }
 
 const provStr = (v) => (typeof v === 'string' ? v : '');
-// The messages of this turn: from its user message (the last one that is not an automatic continuation) on.
+// The messages of this turn: from its user message (the last one that is not an automatic continuation) on; inside an
+// agent (agents.js) also the agent's own rounds, whose results are its sources.
 function provTurnMessages(snap) {
   const msgs = (snap && snap.chatCtx && snap.chatCtx.messages) || state.messages || [];
-  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'user' && !msgs[i]._auto) return msgs.slice(i);
+  const own = snap && Array.isArray(snap.agentMessages) ? snap.agentMessages.slice(1) : [];
+  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'user' && !msgs[i]._auto) return msgs.slice(i).concat(own);
   return [];
 }
 // The text of this turn's results: tool results (not the refusals of the checks, which name the unknown items), and
@@ -91,22 +94,37 @@ function provResultsText(turn) {
   const out = [];
   for (const m of turn.slice(1)) {
     if (m.role === 'tool') { if (!provStr(m.content).startsWith('Refused by a check')) out.push(provStr(m.content)); }
-    else if (m.role === 'assistant' && ((m._toolActivity && m._toolActivity.length) || (m._sources && m._sources.length))) {
+    else if (m.role === 'assistant' && provSearched(m)) {
       out.push(provStr(m.content), JSON.stringify(m._anthropicBlocks || m._openaiItems || []), JSON.stringify(m._sources || []));
     }
   }
   return out.join('\n');
 }
 
-// The sources of a write: the document (as the turn started, and as this turn's edits left it), the user's message,
-// this turn's results and the document instructions.
+const provSearched = (m) => !!((m._toolActivity && m._toolActivity.length) || (m._sources && m._sources.length));
+// The chat's own sources: every message the user wrote (not the panel's automatic ones, _auto, nor a summary, which the
+// model wrote), and the answers that carried server-side web search (their text and sources; the raw blocks are gone
+// after their turn). Another answer is the model's own text, not a source.
+function provChatText(snap) {
+  const msgs = (snap && snap.chatCtx && snap.chatCtx.messages) || state.messages || [];
+  const out = [];
+  for (const m of msgs) {
+    if (!m) continue;
+    if (m.role === 'user' && !m._auto && !m._summary) out.push(provStr(m.content));
+    else if (m.role === 'assistant' && provSearched(m)) out.push(provStr(m.content), JSON.stringify(m._sources || []));
+  }
+  return out.join('\n');
+}
+
+// The sources of a write: the document (as the turn started, and as this turn's edits left it), the user's messages and
+// the search-backed answers of the chat, this turn's results, the document's and the main instructions.
 function provSources(snap) {
   const turn = provTurnMessages(snap);
-  const user = turn.length ? provStr(turn[0].content) : '';
   return [
     provCached(snap, 'provStart', snap.promptView ? snap.promptView.docText : null),
     provCached(snap, 'provNow', snap.docText),
-    provIndex(user + '\n' + provResultsText(turn) + '\n' + provStr(snap.docInstructions)),
+    provCached(snap, 'provChat', provChatText(snap)),
+    provIndex(provResultsText(turn) + '\n' + provStr(snap.docInstructions) + '\n' + provStr(snap.mainInstructions)),
   ].filter(Boolean);
 }
 
@@ -128,7 +146,8 @@ function provKnown(it, sources) {
 
 // The old and the new text of a write (old is '' for an insert; replace_all: one occurrence).
 function provTexts(name, plan, args, snap) {
-  if (name === 'insert_after_line') return { oldText: '', newText: provStr(args.text) };
+  if (plan && plan.batchTexts) return plan.batchTexts; // edit_document: its replaced and new texts
+  if (name === 'insert_after_line') return { oldText: '', newText: plan && typeof plan.insertedRaw === 'string' ? plan.insertedRaw : provStr(args.text) }; // inserts: their texts as sent by the model (an outline's # marks name the headings)
   if (name === 'replace_selection') return { oldText: provStr(snap.selection) || provStr(plan && plan.journal && plan.journal.restore), newText: provStr(args.text) };
   if (name === 'replace_section') return { oldText: provStr(plan && plan.section && plan.section.removed), newText: provStr(args.new_text) };
   return { oldText: provStr(args.old_text), newText: provStr(args.new_text) };
@@ -145,7 +164,7 @@ function provHash(name, args) {
 // beforeWrite(name, plan, args, snap) -> null | { refuse }. The first call with unknown items is refused; its hash goes
 // into snap.provRefused (per turn), and the identical call again passes: the model was told to use the items only if
 // the user gave them, and a second identical call is that decision. A write that passes records its changed numbers
-// for the ripple notice.
+// for the ripple row.
 function provenanceCheck(name, plan, args, snap) {
   if (!PROV_TOOLS.includes(name) || !snap) return null;
   const { oldText, newText } = provTexts(name, plan, args || {}, snap);
@@ -160,7 +179,7 @@ function provenanceCheck(name, plan, args, snap) {
       if (!snap.provRefused.has(hash)) {
         snap.provRefused.add(hash);
         const list = unknown.slice(0, PROV_MAX_LIST).join(', ') + (unknown.length > PROV_MAX_LIST ? ` and ${unknown.length - PROV_MAX_LIST} more` : '');
-        return { refuse: `these are not in the document, your message or this turn's results: ${list}. Use them only if the user gave them (then call the tool again unchanged); otherwise write the placeholder ${PROV_PLACEHOLDER} in their place and say what is missing.` };
+        return { refuse: `these are not in the document, the user's messages or this turn's results: ${list}. If the user gave them, call the tool again unchanged; otherwise write the placeholder ${PROV_PLACEHOLDER} in their place and say what is missing.` };
       }
     }
   }
@@ -238,7 +257,7 @@ function provHeadings(snap, text) {
   return heads;
 }
 
-// The notice of one changed number, or '' when the final text no longer has the old value (or lacks the new one: the
+// The row of one changed number, or '' when the final text no longer has the old value (or lacks the new one: the
 // write did not happen).
 function rippleNotice(pair, text, heads) {
   const lines = text.split('\n');
@@ -254,17 +273,14 @@ function rippleNotice(pair, text, heads) {
   return `${list[0].toUpperCase()}${list.slice(1)} still ${hits.length === 1 ? 'says' : 'say'} ${pair.oldText}.`;
 }
 
-// ---- Finish: placeholders and claimed checks -------------------------------------------------------------------
-function placeholderCount(text) {
-  return String(text || '').split(PROV_PLACEHOLDER).length - 1;
-}
+// ---- Finish: claimed checks -------------------------------------------------------------------
 
-// Claims of a check in an answer: a check against a reference source needs find_reference, cite or a web search; a
+// Claims of a check in an answer: a check against a reference source needs find_reference, cite, search (Munin) or a web search; a
 // plain "verified" / "checked" needs any tool call that reads or writes (a write's result re-reads its lines).
 const CLAIM_SOURCE_RE = /(?:verified|checked|confirmed|cross-?checked|looked up)(?:\s+[\p{L}\p{N}.'-]+){0,4}?\s+(?:against|with|in|on|via|through|using)\s+(?:the\s+)?(?:crossref|zotero|pubmed|doi\.org|google scholar|scopus|web of science|the web|online sources)|(?:провер|свер)\p{L}*(?:\s+[\p{L}\p{N}.-]+){0,4}?\s+(?:по|с|в|через)\s+(?:crossref|zotero|pubmed|doi|google scholar|scopus|интернет|источник)/iu;
 const CLAIM_ANY_RE = /(?<![\p{L}])(?:verified|double-checked|cross-checked|checked against|провер(?:ил|ила|или|ено|ены)\s+(?:по|в|с)(?![\p{L}])|свер(?:ил|ила|или|ено)\s+с(?![\p{L}]))/iu;
 const NOT_A_CHECK = ['ask_user', 'remember', 'draft'];
-const REFERENCE_CHECKS = ['find_reference', 'cite'];
+const REFERENCE_CHECKS = ['find_reference', 'cite', 'search'];
 // What the final answer of a turn claims and whether a tool call backs it: 'source' | 'any' | null (no unbacked claim).
 function claimedCheck(turn) {
   let answer = '';
@@ -282,17 +298,16 @@ function claimedCheck(turn) {
   return null;
 }
 
-// The notices of a finished turn: [text] (placeholders, changed numbers still elsewhere, an unbacked check claim).
+// The rows of a finished turn: [text] (changed numbers still elsewhere, an unbacked check claim).
 function provFinish(userMsg, snap, chatCtx) {
   const out = [];
   const msgs = (chatCtx && chatCtx.messages) || [];
-  const from = userMsg ? msgs.indexOf(userMsg) : -1;
+  const from = userMsg ? turnStartIndex(msgs, userMsg) : -1; // with the agents' reports delivered by this turn
   const turn = from >= 0 ? msgs.slice(from) : [];
-  const edited = !!snap.pasteDone || turn.some((m) => m.role === 'tool' && m._ok && m._edit);
+  const edited = !!snap.pasteDone || journalEntries(turn).some((m) => m && m.role === 'tool' && m._ok && m._edit && m._edit.kind !== 'remember'); // an agent's edits too; a remember is no document edit
   const text = provFinalText(snap);
   if (text != null && edited) {
-    const n = placeholderCount(text);
-    if (n) out.push(`${n} placeholder${n === 1 ? '' : 's'} ${PROV_PLACEHOLDER} ${n === 1 ? 'remains' : 'remain'} in the document.`);
+    // No row for the [[?]] placeholders left (owner's decision): the model names what is missing in its answer.
     if (snap.ripple && snap.ripple.pairs.length) {
       const heads = provHeadings(snap, text);
       for (const p of snap.ripple.pairs) { const t = rippleNotice(p, text, heads); if (t) out.push(t); }
@@ -302,18 +317,11 @@ function provFinish(userMsg, snap, chatCtx) {
   return out;
 }
 
-// Runs fn once the panel is no longer busy with a turn (the turn's final re-render drops notices).
-function provWhenIdle(fn, tries = 1200) {
-  if (!state.busy) { fn(); return; }
-  if (tries > 0) setTimeout(() => provWhenIdle(fn, tries - 1), 50);
-}
-
 registerTurnHook('beforeWrite', provenanceCheck);
-registerPromptLine({ section: 'edit', line: PROV_PROMPT_LINE, when: (mode, snap) => !!snap && apiEditing(mode, snap), names: 'provenance' });
 registerTurnHook('finish', (userMsg, snap, chatCtx) => {
   if (!snap || !snap.docId) return;
-  const notices = provFinish(userMsg, snap, chatCtx);
-  if (!notices.length) return;
-  const docId = snap.docId;
-  provWhenIdle(() => { if (state.docId === docId) for (const t of notices) addNotice(t, { sticky: true }); });
+  const rows = provFinish(userMsg, snap, chatCtx);
+  const msgs = (chatCtx && chatCtx.messages) || [];
+  // Rows of the turn, stored on its last message: the turn saves and draws them.
+  if (msgs.length) for (const t of rows) addTurnRow(t, { at: msgs[msgs.length - 1] });
 });

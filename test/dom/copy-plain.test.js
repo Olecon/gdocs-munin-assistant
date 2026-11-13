@@ -46,7 +46,7 @@ test('copy inside an answer: HTML keeps structure and drops styles, classes, but
   assert.ok(r.prevented);
   // the code block's language label ("js") is panel UI: left out, so the plain text is rebuilt from the cleaned copy
   assert.match(r.text, /js/);
-  assert.strictEqual(r.data['text/plain'], 'Intro with bold words here.\n\nfirst item\nsecond link\n\nconst x = 1;\n\nThe');
+  assert.strictEqual(r.data['text/plain'], 'Intro with bold words here.\n\n- first item\n- second link\n\nconst x = 1;\n\nThe');
   const html = r.data['text/html'];
   assert.match(html, /<strong>bold words<\/strong>/);
   assert.match(html, /<ul><li>first item<\/li>/);
@@ -61,8 +61,20 @@ test('without panel UI in the selection the plain text is the browser\'s own sel
   const from = textIn(md, 'Intro'); const to = textIn(md, 'second');
   const r = copy(md, [from, 6], [to, 4]);
   assert.ok(r.prevented);
-  assert.strictEqual(r.data['text/plain'], r.text);
+  // a list in the selection: the plain text carries the markers the browser's selection text lacks
+  assert.match(r.data['text/plain'], /^with bold words here\.\n\n- first item\n- seco$/);
   assert.match(r.data['text/html'], /<strong>bold words<\/strong>.*<ul><li>first item<\/li><li>seco<\/li><\/ul>/);
+});
+
+test('a numbered list keeps its numbers in the copied text, also when it resumes after a paragraph', () => {
+  el.chat.innerHTML = '';
+  const b = T.addAssistantBubble();
+  T.updateAssistantBubble(b, { text: '1. First\n2. Second\n\nA note.\n\n3. Third' });
+  const md = b.querySelector('.md');
+  assert.strictEqual(md.querySelectorAll('ol')[1].getAttribute('start'), '3');
+  const from = textIn(md, 'First'); const to = textIn(md, 'Third');
+  const r = copy(md, [from, 0], [to, 5]);
+  assert.strictEqual(r.data['text/plain'], '1. First\n2. Second\n\nA note.\n\n3. Third');
 });
 
 test('a selection that includes the action log and the token usage line leaves that UI text out', () => {
@@ -70,7 +82,8 @@ test('a selection that includes the action log and the token usage line leaves t
   const row = b.querySelector('.activity-row');
   const meta = b.querySelector('.msg-meta');
   assert.match(meta.textContent, /tokens/);
-  const from = textIn(row, 'lines 1-40'); const to = meta.firstChild;
+  assert.ok(row.compareDocumentPosition(meta) & window.Node.DOCUMENT_POSITION_FOLLOWING); // the answer first, the action log under it
+  const from = textIn(b.querySelector('.md'), 'Intro'); const to = meta.firstChild;
   const r = copy(b, [from, 0], [to, to.textContent.length]);
   assert.ok(r.prevented);
   assert.match(r.text, /tokens/); // the browser's own text would carry it
@@ -78,7 +91,7 @@ test('a selection that includes the action log and the token usage line leaves t
     assert.doesNotMatch(r.data[type], /tokens|lines 1-40|read_document/, type);
     assert.match(r.data[type], /bold words/, type);
   }
-  assert.match(r.data['text/plain'], /^Intro with bold words here\.\n\nfirst item\nsecond link\n\nconst x = 1;\n\nThe end\.$/);
+  assert.match(r.data['text/plain'], /^Intro with bold words here\.\n\n- first item\n- second link\n\nconst x = 1;\n\nThe end\.$/);
 });
 
 test('plain text only (no element structure) sets text/plain only', () => {
@@ -103,4 +116,28 @@ test('copies outside the chat, without clipboardData or with an empty selection 
   // a selection that starts in the chat but reaches outside it is not cleaned either
   const out = copy(t.parentElement, [t, 0], [el.input.parentNode, 0]);
   assert.deepStrictEqual(out.data, {}); assert.ok(!out.prevented);
+});
+
+test('a whole timeline bubble: no footer (status, reasoning, tokens), action rows or Sources count; the round\'s text, the answer, the Sources title and links stay', () => {
+  el.chat.innerHTML = '';
+  const b = T.addAssistantBubble();
+  const done = (id, name) => ({ id, log: true, name, summary: 'lines 1-2', args: {}, result: 'ok', status: 'ok' });
+  T.updateAssistantBubble(b, { text: 'Let me read it first.', reasoning: 'Plan.', thoughtMs: 2000, activity: [done('c1', 'read_lines')] });
+  T.renderSources(b, [{ url: 'https://example.org/a', title: 'Page A' }, { url: 'https://example.org/b', title: '' }]); // round 1's search
+  T.startAssistantRound(b);
+  T.updateAssistantBubble(b, { activity: [done('c2', 'read_lines'), done('c3', 'get_outline')] });
+  T.startAssistantRound(b);
+  T.updateAssistantBubble(b, { text: 'All set.', usage: { total_tokens: 10, prompt_tokens: 8, completion_tokens: 2 } });
+  assert.strictEqual(b.querySelector('.stage-head:not(.hidden) > .stage-line').textContent, 'Actions 2');
+  assert.strictEqual(b.querySelector('.stage-text').textContent, 'Let me read it first.');
+  assert.strictEqual(b.querySelector('.msg-foot .thinking-label').textContent, 'Thought for 2s');
+  const from = b.querySelector('.activity'); const to = b.querySelector('.msg-foot .msg-meta').firstChild;
+  const r = copy(b, [from, 0], [to, to.textContent.length]);
+  assert.ok(r.prevented);
+  // the round's own text is the model's message: copied in its place, before its round's Sources (it came before the
+  // calls); the footer is chrome (its status, the reasoning under it and the token line)
+  assert.strictEqual(r.data['text/plain'], 'Let me read it first.\n\nSources\n\n1. Page A\n2. example.org\n\nAll set.');
+  for (const bad of [/Thought for/, /Plan\./, /Actions 2/, /read_lines/, /· 2/, /tokens/]) assert.doesNotMatch(r.data['text/html'], bad);
+  assert.match(r.data['text/html'], /<a href="https:\/\/example.org\/a">Page A<\/a>/);
+  assert.match(r.data['text/html'], /Let me read it first\./);
 });

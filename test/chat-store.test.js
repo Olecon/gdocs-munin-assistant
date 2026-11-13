@@ -12,9 +12,9 @@ const listKey = 'muninChats:' + DOC;
 const histKey = (id) => `muninChatHistory:${DOC}:${id}`;
 const DAY = 24 * 3600 * 1000;
 
-// A panel ("tab") on the shared storage, showing document DOC123.
-async function panel(store, locks) {
-  const env = await load();
+// A panel ("tab") on the shared storage, showing document DOC123; consts: as in load().
+async function panel(store, locks, consts = null) {
+  const env = await load({ consts });
   env.handle = store.attach(env);
   if (locks) env.ctx.navigator.locks = locks;
   installDocTab(env);
@@ -25,9 +25,9 @@ const notices = (env) => env.T.el.chat.children.map((c) => c.innerHTML);
 const storedIds = (store) => store.items[listKey].map((c) => c.id).sort();
 const user = (content) => ({ role: 'user', content });
 // Polls cond until it holds, failing after ms: a fixed short tick was flaky on a loaded machine (the change
-// event and the reload are a chain of timers). The default stays below the 250 ms poll an immediate reload
-// must not wait for.
-async function soon(cond, what, ms = 200) {
+// event and the reload are a chain of timers). ms is a generous bound, never what tells two paths apart (a test that
+// needs "at once, not after the poll" makes the poll long instead).
+async function soon(cond, what, ms) {
   const t0 = Date.now();
   while (!cond()) {
     if (Date.now() - t0 > ms) throw new Error(`not within ${ms} ms: ${what}`);
@@ -123,33 +123,36 @@ test('a chat deleted in another tab is never brought back (tombstone)', async ()
 
 test('onChanged: the switcher follows, the open chat is reloaded at once without a notice, own writes are ignored', async () => {
   const store = sharedStorage();
-  const A = await panel(store);
-  const B = await panel(store);
+  // "At once" by cause, not by a time budget a busy machine overruns: the poll that would also reload the chat
+  // (CHAT_SYNC_POLL_MS, 250 ms shipped) and the end of the status text (FOLLOW_STATUS_MS) do not come within this test
+  const NEVER = { CHAT_SYNC_POLL_MS: 3600000, FOLLOW_STATUS_MS: 3600000 };
+  const A = await panel(store, null, NEVER);
+  const B = await panel(store, null, NEVER);
   const x = A.state.chatId;
   B.state.messages.push(user('B starts'));
   await B.T.createChat();
   const w = B.state.chatId;
-  await soon(() => A.state.chats.some((c) => c.id === w), 'the switcher to follow');
+  await soon(() => A.state.chats.some((c) => c.id === w), 'the switcher to follow', 5000);
   assert.strictEqual(A.state.chatId, x); // A stays in its chat
   await B.T.switchChat(x);
   B.state.messages.push({ role: 'assistant', content: 'Answer from B' });
   await B.T.saveHistory();
-  await soon(() => A.state.messages.length === 2, 'A reloads B\'s change'); // at once, not after the 250 ms poll
+  await soon(() => A.state.messages.length === 2, 'A reloads B\'s change', 5000); // at once: not the poll (NEVER)
   deq(A.state.messages, [user('B starts'), { role: 'assistant', content: 'Answer from B' }]);
   assert.ok(!notices(A).some((n) => /another tab/.test(n))); // a status line text instead of a notice
-  assert.strictEqual(A.T.el.docStatus.textContent, 'Chat updated from another tab');
-  assert.notStrictEqual(B.T.el.docStatus.textContent, 'Chat updated from another tab'); // B's own writes
+  assert.strictEqual(A.state.statusText.text, 'Chat updated from another tab');
+  assert.notStrictEqual(B.state.statusText.text, 'Chat updated from another tab'); // B's own writes
   // A's own saves never look like another tab's
   A.T.el.chat.children.length = 0;
   A.state.messages.push(user('A continues'));
   await A.T.saveHistory();
   await A.T.saveHistory();
   A.T.setStatus('Ready');
-  await soon(() => B.state.messages.length === 3, 'B reloads A\'s change');
+  await soon(() => B.state.messages.length === 3, 'B reloads A\'s change', 5000);
   await tick(20); // A's own change events have been handled by now (they were delivered before B's)
-  assert.strictEqual(A.T.el.docStatus.textContent, 'Ready');
+  assert.strictEqual(A.state.statusText.text, 'Ready');
   deq(B.state.messages, A.state.messages); // B reloaded A's change in turn
-  assert.strictEqual(B.T.el.docStatus.textContent, 'Chat updated from another tab');
+  assert.strictEqual(B.state.statusText.text, 'Chat updated from another tab');
   assert.ok(!notices(B).some((n) => /another tab/.test(n)));
 });
 
@@ -180,7 +183,7 @@ test('no reload while a turn runs (no notice either), the reload once the panel 
   await soon(() => A.state.chatId !== gone, 'A to leave the deleted chat', 2000);
   assert.notStrictEqual(A.state.chatId, gone);
   assert.strictEqual(A.state.chatId, B.state.chatId);
-  assert.ok(notices(A).some((n) => /This chat was deleted in another tab/.test(n)));
+  assert.ok(!notices(A).some((n) => /deleted in another tab/.test(n))); // silently: the switcher shows it
 });
 
 test('normalization: tool calls without results and results without calls are dropped', async () => {
@@ -277,12 +280,12 @@ test('stale keys of removed settings are removed at startup', async () => {
   Object.assign(env.storage, { muninConfirmEdits: true, muninMotion: 'off', muninDocMode: 'full', openaiBaseUrl: 'https://proxy.example.com/v1', muninBaseUrl: 'https://api.muninai.org/v1', anthropicBaseUrl: '', openaiEffort: 'high', anthropicEffort: 'low', anthropicModel: 'claude-sonnet-5-5' });
   await env.T.loadSettings();
   for (const k of ['muninConfirmEdits', 'muninMotion', 'muninDocMode', 'openaiBaseUrl', 'muninBaseUrl', 'anthropicBaseUrl', 'openaiEffort', 'anthropicEffort']) assert.ok(!(k in env.storage), k);
-  assert.strictEqual(env.storage.anthropicModel, 'claude-sonnet-5-5');
-  assert.strictEqual(env.state.settings.providers.anthropic.model, 'claude-sonnet-5-5');
-  assert.strictEqual(env.state.settings.providers.openai.baseUrl, undefined);
+  // a model without its key is no account: nothing to migrate, the per-type key goes with the stale ones
+  assert.ok(!('anthropicModel' in env.storage) && !('muninAccounts' in env.storage));
+  assert.deepStrictEqual(env.state.settings.accounts.length, 0);
 });
 
-test('storage cleanup: orphans and documents unused for 180 days, at most once per day', async () => {
+test('storage cleanup: orphans and documents unused for 180 days (the agent registry with them), at most once per day', async () => {
   const store = sharedStorage();
   const now = Date.now();
   const old = now - 181 * DAY;
@@ -290,12 +293,12 @@ test('storage cleanup: orphans and documents unused for 180 days, at most once p
     // an old document: removed with all its chat keys (its instructions stay)
     'muninChats:OLD': [{ id: 'o1', title: 't', createdAt: old, updatedAt: old }, { id: 'o2', title: '', createdAt: old, updatedAt: old - DAY }],
     'muninChatHistory:OLD:o1': [user('old')], 'muninChatHistory:OLD:o2': [], 'muninCurrentChat:OLD': 'o1',
-    'muninChatTombstones:OLD': { o3: old }, 'muninDocInstructions:OLD': 'Keep me',
+    'muninChatTombstones:OLD': { o3: old }, 'muninDocInstructions:OLD': 'Keep me', 'muninAgents:OLD': [{ id: 'a1', status: 'ok' }],
     // a recent document with an orphan history
     'muninChats:NEW': [{ id: 'n1', title: '', createdAt: now, updatedAt: now - 10 * DAY }],
-    'muninChatHistory:NEW:n1': [user('new')], 'muninChatHistory:NEW:gone': [user('orphan')],
+    'muninChatHistory:NEW:n1': [user('new')], 'muninChatHistory:NEW:gone': [user('orphan')], 'muninAgents:NEW': [{ id: 'a1', status: 'ok' }],
     // keys of a document without a chat list
-    'muninChatHistory:GHOST:g1': [], 'muninCurrentChat:GHOST': 'g1', 'muninChatTombstones:GHOST': {},
+    'muninChatHistory:GHOST:g1': [], 'muninCurrentChat:GHOST': 'g1', 'muninChatTombstones:GHOST': {}, 'muninAgents:GHOST': [],
     // the document this panel shows is never expired, however old
     [listKey]: [{ id: 'mine', title: '', createdAt: old, updatedAt: old }], [histKey('mine')]: [user('mine')],
     muninApiKey: 'k', muninTheme: 'dark',
@@ -304,7 +307,7 @@ test('storage cleanup: orphans and documents unused for 180 days, at most once p
   await tick(20);
   assert.ok(Number.isFinite(store.items.muninStorageCleanupAt));
   deq(Object.keys(store.items).sort(), [
-    histKey('mine'), listKey, 'muninApiKey', 'muninChatHistory:NEW:n1', 'muninChats:NEW', 'muninDocInstructions:OLD', 'muninStorageCleanupAt', 'muninTheme',
+    histKey('mine'), listKey, 'muninAgents:NEW', 'muninApiKey', 'muninChatHistory:NEW:n1', 'muninChats:NEW', 'muninDocInstructions:OLD', 'muninStorageCleanupAt', 'muninTheme',
   ].sort());
   assert.strictEqual(A.state.chatId, 'mine');
   // once per day: a second run the same day does nothing

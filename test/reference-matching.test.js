@@ -109,7 +109,7 @@ test('check_references: offered with References on in Auto and Manual; the verdi
   state.settings.references = true;
   assert.ok(T.offered(tool, 'edit', snap0) && T.offered(tool, 'manual', snap0));
   assert.ok(!T.offered(tool, 'research', snap0));
-  assert.ok(T.extraPromptLines('reading', 'manual', snap0).some((l) => l.startsWith('- check_references(): ')));
+  assert.ok(!T.extraPromptLines('reading', 'manual', snap0).some((l) => l.includes('check_references'))); // its definition says when
   assert.strictEqual(T.isExtraReading('check_references', {}), true);
   env.chrome.permissions = { contains: async () => true };
   const lines = ['# Paper', '', 'Text [1] [2] [3].', '', '## References', '',
@@ -142,6 +142,79 @@ test('check_references: offered with References on in Auto and Manual; the verdi
   const big = await tool.run('check_references', {}, { ...snap, docText: many.join('\n') });
   assert.ok(big.content.split('\n')[0].endsWith('; 2 more not checked (at most 50).'), big.content.split('\n')[0]);
   assert.strictEqual(big.content.split('\n').length, 51);
+  ctx.setTimeout = timeout;
+  state.settings.references = false;
+});
+
+test('check_references after the turn: the summary line and the entries that are not matches, the worst first, capped and clipped', () => {
+  const fn = { name: 'check_references', arguments: '{}' };
+  const row = (n, verdict, text) => ({ entry: { n, surname: `Author${n}`, year: '2020', text: '', l: { line: 10 + n } }, verdict, text });
+  const results = [row(1, 'ok', 'Matches Crossref by DOI.'), row(2, 'unverified', 'Not found in OpenAlex or Crossref; check it by hand.'),
+    row(3, 'warning', 'Matches Crossref by DOI, but year 2020 here, 2021 in Crossref.'), row(4, 'ok', 'Found in OpenAlex.'),
+    row(5, 'error', 'The DOI resolves to another work: «A completely different paper about the thermodynamics of soil carbon» (Novak, 2017).'),
+    row(6, 'suspect', 'Not found in OpenAlex or Crossref, and OpenAlex does not know the journal «Soil Journal». Check that this work exists.'),
+    ...[7, 8, 9, 10].map((n) => row(n, 'unverified', 'Preprint (arXiv): not peer-reviewed, so not checked; look for a published version.')),
+    ...Array.from({ length: 20 }, (_, i) => row(11 + i, 'ok', 'Matches Crossref by DOI.'))];
+  const text = `${T.ckReferencesText(results, results.length)}\nOpenAlex is not allowed, so only Crossref was searched.`;
+  assert.strictEqual(T.readingStub(fn, text, 'after the turn'), [
+    '[check_references: 22 of 30 reference entries match Crossref or OpenAlex.',
+    '[5] Author5 (2020), line 15: Error: The DOI resolves to another work: «A completely different paper about the…',
+    '[6] Author6 (2020), line 16: Suspect: Not found in OpenAlex or Crossref, and OpenAlex does not know the journ…',
+    '[3] Author3 (2020), line 13: Warning: Matches Crossref by DOI, but year 2020 here, 2021 in Crossref.',
+    '[2] Author2 (2020), line 12: Unverified: Not found in OpenAlex or Crossref; check it by hand.',
+    '[7] Author7 (2020), line 17: Unverified: Preprint (arXiv): not peer-reviewed, so not checked; look for a publ…',
+    '[8] Author8 (2020), line 18: Unverified: Preprint (arXiv): not peer-reviewed, so not checked; look for a publ…',
+    '2 more entries that do not match, and the matching entries omitted after the turn]'].join('\n'));
+  const sizes = [T.readingStub(fn, text, 'after the turn').length, text.length];
+  assert.ok(sizes[0] < 800 && sizes[1] > 2000, String(sizes)); // under 270 tokens at 3 characters per token
+  // every entry matches: the summary line alone
+  const all = T.ckReferencesText(Array.from({ length: 12 }, (_, i) => row(i + 1, 'ok', 'Matches Crossref by DOI.')), 12);
+  assert.strictEqual(T.readingStub(fn, all, 'after the turn'), '[check_references: 12 of 12 reference entries match Crossref or OpenAlex.\nthe matching entries omitted after the turn]');
+  // no reference list (short, kept as it is by the slimming) or another text: no digest
+  assert.strictEqual(T.ckReferencesDigest('No reference list found: no entries under a heading such as "References".', 'after the turn'), '');
+});
+
+test('check_references and the lookup cache: the same list on the same lines again needs no request; a moved list, a failed lookup or a stopped run asks again', async () => {
+  const tool = T.extraTool('check_references');
+  state.settings.references = true;
+  env.chrome.permissions = { contains: async () => true };
+  T.lookupCache.clear();
+  const lines = ['# Paper', '', '## References', '', '[1] Smith J, Lee K. Lipid rafts in membranes. Cell. 2020;4:1-9. doi:10.1000/good',
+    '[2] Doe A. Soil models of carbon. Soil Journal. 2019;3:1-2.'];
+  const snap = { ...snapFor('anthropic'), docId: 'DOC1', docText: lines.join('\n'), docFormat: 'markdown', model: null, promptView: null, signal: null };
+  let asked = 0;
+  let fail = false;
+  ctx.fetch = async (url) => {
+    asked++;
+    const u = String(url);
+    if (fail && /openalex\.org\/works/.test(u)) throw new Error('Failed to fetch');
+    if (/v1\/works\/10\.1000\/good/.test(u)) return json({ title: 'Lipid rafts in membranes', author: [{ family: 'Smith' }, { family: 'Lee' }], issued: { 'date-parts': [[2020]] }, 'container-title': 'Cell', DOI: '10.1000/good' });
+    return json({ results: [], message: { items: [] } });
+  };
+  const timeout = ctx.setTimeout;
+  ctx.setTimeout = (fn, ms, ...a) => timeout(fn, ms === 300 ? 0 : ms, ...a);
+  const r1 = await tool.run('check_references', {}, snap);
+  const n = asked;
+  const r2 = await tool.run('check_references', {}, { ...snap });
+  deq([r2.content, r2._ok, asked], [r1.content, true, n]);
+  // the list two lines lower: its line numbers changed, so it is checked again
+  const moved = { ...snap, docText: ['', '', ...lines].join('\n') };
+  await tool.run('check_references', {}, moved);
+  assert.ok(asked > n);
+  // a failed lookup is not kept
+  T.lookupCache.clear(); fail = true;
+  const f = await tool.run('check_references', {}, snap);
+  assert.match(f.content, /a lookup failed \(Failed to fetch\)/);
+  fail = false; asked = 0;
+  await tool.run('check_references', {}, snap);
+  assert.ok(asked > 0);
+  // a stopped run is not kept
+  T.lookupCache.clear();
+  const abort = new AbortController();
+  ctx.fetch = async () => { abort.abort(); return json({ results: [], message: { items: [] } }); };
+  const s = await tool.run('check_references', {}, { ...snap, signal: abort.signal });
+  assert.match(s.content, /stopped after/);
+  assert.strictEqual(T.lookupCache.size, 0);
   ctx.setTimeout = timeout;
   state.settings.references = false;
 });

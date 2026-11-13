@@ -1,7 +1,7 @@
 'use strict';
 // After a /research answer on a real DOM: "Ask about" chips for the sources the answer did not use (none without
 // sources or when all are used), one click sends one /research message in the question's language through the Send
-// path, the chips are not stored and go with the next message; the key findings notice.
+// path, the chips are not stored and go with the next message; the key findings row of the turn.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { load, click, tick } = require('../lib/dom-sandbox');
@@ -24,7 +24,7 @@ function oaCited(text, sources) {
     ev('response.completed', { type: 'response.completed', response: { status: 'completed', output: [msg], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });
 }
 const chips = () => [...el.chat.querySelectorAll('.followups .followup-chip')];
-const notices = () => [...el.chat.querySelectorAll('.msg.notice')].map((n) => n.textContent);
+const notices = () => [...el.chat.querySelectorAll('.msg.assistant .note-row')].map((n) => n.textContent); // the turns' rows
 const idle = () => waitFor(() => !state.busy, 'the panel to be idle').then(() => tick(80));
 
 before(async () => {
@@ -56,7 +56,7 @@ test('chips for the unused sources only, under the answer, never stored', async 
   assert.deepStrictEqual(chips().map((c) => c.textContent), ['Ask about: Raft dynamics', 'Ask about: Cholesterol and order']);
   const box = el.chat.querySelector('.followups');
   assert.ok(box.previousElementSibling.classList.contains('assistant'), 'right under the answer');
-  assert.strictEqual(chips()[0].title, '/research What does «Raft dynamics» add to the question: How long do lipid rafts live?');
+  assert.strictEqual(chips()[0].dataset.tip, '/research What does «Raft dynamics» add to the question: How long do lipid rafts live?');
   assert.ok(!JSON.stringify(state.messages).includes('Ask about'));
   // A re-render (chat switch, reload) does not bring them back.
   T.renderHistory();
@@ -125,7 +125,7 @@ test('a Russian question gets a Russian follow-up', async () => {
   assert.strictEqual(user.content, 'Что добавляет «Raft dynamics» к вопросу: Сколько живут липидные рафты?');
 });
 
-test('the key findings notice counts the bullets without a source link', async () => {
+test('the key findings row counts the bullets without a source link, in the turn\'s bubble', async () => {
   await T.createChat();
   const answer = '## TL;DR\nRafts are small.\n\n## Key findings\n- Ordered ([a](https://example.org/a)).\n- Short-lived.\n- Small.\n\n## Details\nMore.';
   replies.push(oaCited(answer, SOURCES.slice(0, 1)));
@@ -135,5 +135,6 @@ test('the key findings notice counts the bullets without a source link', async (
   replies.push(oaCited('## Key findings\n- Ordered ([a](https://example.org/a)).', SOURCES.slice(0, 1)));
   await send(env, '/research Rafts?');
   await idle();
-  assert.ok(!notices().some((t) => /key finding/.test(t)), 'every finding linked: no notice');
+  assert.strictEqual(notices().filter((t) => /key finding/.test(t)).length, 1, 'every finding linked: no new row (the first turn keeps its own)');
+  assert.ok(!state.messages[state.messages.length - 1]._notes);
 });

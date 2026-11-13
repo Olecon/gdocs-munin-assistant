@@ -81,9 +81,12 @@ test('runStream retries 429/5xx and failed connections twice before the stream s
   deq([...R.STREAM_RETRY_DELAYS_MS], [2000, 5000]); deq([...R.STREAM_RETRY_STATUS], [429, 500, 502, 503, 504, 529]);
   const savedDelays = R.STREAM_RETRY_DELAYS_MS.slice();
   R.STREAM_RETRY_DELAYS_MS.splice(0, 2, 20, 20);
+  // The wait texts are recorded (setStatus), never shown: the line under the title keeps the document line.
   const statusSeen = [];
-  let statusText = 'Document: 5 characters';
-  Object.defineProperty(T.el.docStatus, 'textContent', { configurable: true, get: () => statusText, set: (v) => { statusText = v; statusSeen.push(v); } });
+  const setStatus = sandbox.setStatus;
+  sandbox.setStatus = (text, warn) => { statusSeen.push(text); return setStatus(text, warn); };
+  T.state.statusText = { text: 'Document: 5 characters', warn: false };
+  T.el.docStatus.textContent = 'The document line';
   let rCalls = 0;
   const errBody = (status) => sseResponse(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'busy' } }), status);
   sandbox.fetch = async () => (++rCalls === 1 ? errBody(429) : sseResponse(anthropicSse));
@@ -114,11 +117,22 @@ test('runStream retries 429/5xx and failed connections twice before the stream s
   rCalls = 0;
   const acR = new AbortController();
   sandbox.fetch = async () => { rCalls++; setTimeout(() => acR.abort(), 20); return errBody(503); };
-  const t0 = Date.now();
-  await assert.rejects(() => R.runStream(reqA, acR.signal, snapA, {}), (e) => e.status === 503);
-  assert.ok(Date.now() - t0 < 1000); assert.strictEqual(rCalls, 1);
-  assert.strictEqual(statusText, 'Document: 5 characters');
-  delete T.el.docStatus.textContent; T.el.docStatus.textContent = '';
+  // the panel's timers of 1 s or more: started and run out (a wait that ended by its time, not by the Stop)
+  const long = { started: [], fired: [] };
+  const setT = sandbox.setTimeout;
+  sandbox.setTimeout = (fn, ms, ...a) => {
+    if (ms < 1000) return setT(fn, ms, ...a);
+    long.started.push(ms);
+    return setT((...x) => { long.fired.push(ms); fn(...x); }, ms, ...a);
+  };
+  try {
+    await assert.rejects(() => R.runStream(reqA, acR.signal, snapA, {}), (e) => e.status === 503);
+  } finally { sandbox.setTimeout = setT; }
+  deq(long, { started: [2000], fired: [] }); assert.strictEqual(rCalls, 1); // the Stop ended the 2 s wait, not its time
+  assert.strictEqual(T.state.statusText.text, 'Document: 5 characters');
+  assert.ok(!/retrying/.test(T.el.docStatus.textContent), 'no retry text under the title');
+  sandbox.setStatus = setStatus;
+  T.el.docStatus.textContent = '';
 });
 
 test('streamResponses', async () => {
@@ -169,7 +183,7 @@ test('streamResponses', async () => {
     calls++;
     const b = JSON.parse(init.body);
     if (b.reasoning && b.reasoning.summary) return sseResponse(JSON.stringify({ error: { message: 'Your organization must be verified to generate reasoning summaries.', type: 'invalid_request_error' } }), 400);
-    assert.strictEqual(b.reasoning, undefined);
+    deq(b.reasoning, { effort: 'medium' }); // the summary is dropped, the effort stays
     return sseResponse(ev('response.completed', { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', id: 'm', role: 'assistant', content: [{ type: 'output_text', text: 'fine' }] }], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }));
   };
   res = await T.streamResponses(reqO, new AbortController().signal, snapO, {});
@@ -196,6 +210,28 @@ test('streamChat (Munin)', async () => {
   assert.strictEqual(res.raw, undefined);
   sandbox.fetch = async () => sseResponse(JSON.stringify({ error: { message: 'quota' } }), 429);
   await assert.rejects(() => T.streamChat(reqM, new AbortController().signal, snapM, {}), /monthly token quota of this Munin API key is used up/);
+});
+
+test('every provider delivers a tool call\'s name before its arguments are complete (the place line\'s kind word)', async () => {
+  const first = async (stream, sse, prov, opts) => {
+    let seen = null;
+    sandbox.fetch = async () => sseResponse(sse);
+    const snap = snapFor(prov, opts);
+    await stream(T.buildRequest('edit', snap), new AbortController().signal, snap, { onToolCall: (i, c) => { if (!seen) seen = { name: c.function.name, args: c.function.arguments }; } });
+    return seen;
+  };
+  deq(await first(T.streamAnthropic, anthropicSse, 'anthropic', { model: 'claude-opus-5-5', baseUrl: '' }), { name: 'replace_selection', args: '' });
+  const item = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'read_document', arguments: '', status: 'in_progress' };
+  const done = { ...item, arguments: '{"scope":"all"}', status: 'completed' };
+  const oaSse = ev('response.output_item.added', { type: 'response.output_item.added', output_index: 0, item }) +
+    ev('response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', output_index: 0, delta: '{"scope":"all"}' }) +
+    ev('response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: done }) +
+    ev('response.completed', { type: 'response.completed', response: { status: 'completed', output: [done], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+  deq(await first(T.streamResponses, oaSse, 'openai', { model: 'gpt-6.1-sol', baseUrl: '' }), { name: 'read_document', args: '' });
+  const chunk = (d, fin) => 'data: ' + JSON.stringify({ id: '1', choices: [{ index: 0, delta: d, ...(fin ? { finish_reason: fin } : {}) }] }) + '\n\n';
+  const muninSse = chunk({ tool_calls: [{ index: 0, id: 'call_a', function: { name: 'find_in_document', arguments: '' } }] }) +
+    chunk({ tool_calls: [{ index: 0, function: { name: null, arguments: '{"query":"x"}' } }] }, 'tool_calls') + 'data: [DONE]\n\n';
+  deq(await first(T.streamChat, muninSse, 'munin'), { name: 'find_in_document', args: '' });
 });
 
 test('readSseEvents CRLF', async () => {

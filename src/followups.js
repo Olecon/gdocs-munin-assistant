@@ -1,8 +1,8 @@
 'use strict';
 // Module followups.js: after a /research answer with the provider's web search (OpenAI, Anthropic): the check of the
-// report skeleton (a notice when key findings carry no source link) and the "Ask about" chips for the sources the answer
+// report skeleton (a row of the turn when key findings carry no source link) and the "Ask about" chips for the sources the answer
 // did not use. Both run on the finish hook, without a model call; the chips are never stored and go with the next turn.
-/* global addNotice, appendToChat, el, registerTurnHook, renderQueue, sendMessage, state, webSearchTurn */
+/* global addTurnRow, appendToChat, el, registerTurnHook, renderQueue, sendMessage, state, webSearchTurn */
 /* exported turnResearch, keyFindings, unlinkedFindings, unusedSources, shortSourceTitle, followupText, renderFollowups,
    clearFollowups, FOLLOWUPS_MAX */
 
@@ -106,7 +106,7 @@ function renderFollowups(chips) {
     b.type = 'button';
     b.className = 'btn small followup-chip';
     b.textContent = `Ask about: ${c.title}`;
-    b.title = c.text;
+    b.dataset.tip = c.text;
     b.addEventListener('click', () => { sendFollowup(c.text, b); });
     box.appendChild(b);
   }
@@ -150,11 +150,14 @@ registerTurnHook('finish', (userMsg, snap, chatCtx) => {
     ? unusedSources(r.text, r.sources).map((s) => { const title = shortSourceTitle(s); return { title, text: followupText(title, r.question) }; })
     : [];
   if (!missing && !chips.length) return;
+  // A row of the turn, stored on its last message (the turn saves and draws it); the chips once the turn has ended.
+  const msgs = chatCtx.messages || [];
+  if (missing && msgs.length) addTurnRow(`${missing} key finding${missing === 1 ? ' has' : 's have'} no source link.`, { at: msgs[msgs.length - 1] });
+  if (!chips.length) return;
   const { docId, chatId } = chatCtx;
   followupsWhenIdle(() => {
     if (state.docId !== docId || state.chatId !== chatId) return;
-    if (missing) addNotice(`${missing} key finding${missing === 1 ? ' has' : 's have'} no source link.`, { sticky: true });
-    if (chips.length) renderFollowups(chips);
+    renderFollowups(chips);
   });
 });
 // The next message removes the chips (they belong to the answer just given).

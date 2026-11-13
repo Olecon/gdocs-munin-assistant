@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Munin Assistant for Google Docs",
   "short_name": "Docs Munin",
-  "version": "1.1.1",
+  "version": "1.1.3",
   "description": "AI panel for Google Docs (Munin, OpenAI/ChatGPT or Anthropic/Claude API): edits the selection and answers about the document.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtllY8qC7yswA8tFO3eiUdlpaTgKKKj63/jjTHAd/s6ezEafYDMRcFd7rOFQfaK5IOwuujIIfmkRZEpr39WZfladGHM4cZ3yv12WcEnWtw3lS7wqZRpmJo49oCeHvtHQCvRJ9bxGjKqx59jFpzKvppg6mSby+gQYL2nefTErYOPojNwy+e2TVrKRYLTHj019VFdwzmlzZzW9CNIBd+X+tVZFmX1IwdjRULW0khYLpbDaOKoIe5MR/Y5MXScBtftapOltk8fDkJzVgJ9TcEruaKf6lZ4Pz0ymwy0w7PVvSoxxGduqI+iPLiQGqk4uHM6VVyaokeoqHGM0Lh4uGFv3SFwIDAQAB",
@@ -25,7 +25,9 @@
   "optional_host_permissions": [
     "http://localhost:23119/*",
     "https://api.crossref.org/*",
-    "https://api.openalex.org/*"
+    "https://api.openalex.org/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

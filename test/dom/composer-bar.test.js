@@ -36,8 +36,8 @@ test('mode menu: opens above the button with the three modes, descriptions and a
   assert.ok(menuOpen());
   assert.strictEqual(el.modeCycle.getAttribute('aria-expanded'), 'true');
   deq(menuRows().map((r) => [r.dataset.mode, r.querySelector('.mode-row-title').textContent, r.querySelector('.mode-row-desc').textContent]), [
-    ['manual', 'Manual', 'The assistant answers in the chat; you apply its text with one click.'],
-    ['auto', 'Edit automatically', 'The assistant edits the document; large or risky edits ask first.'],
+    ['manual', 'Manual', 'The assistant asks before each edit and shows the new text.'],
+    ['auto', 'Auto', 'The assistant edits the document without asking.'],
     ['plan', 'Plan', 'The assistant reads and proposes a numbered plan of edits; Do it carries it out.'],
   ]);
   deq(menuRows().map((r) => [r.getAttribute('aria-checked'), r.querySelector('.mode-check').textContent, r.classList.contains('active')]),
@@ -61,7 +61,7 @@ test('mode menu: a pick sets the mode, persists it and closes; the check follows
   deq(menuRows().map((r) => r.getAttribute('aria-checked')), ['false', 'false', 'true']);
   click(menuRows()[1]);
   await tick(5);
-  deq([state.applyMode, storage.muninApplyMode, el.modeLabel.textContent], ['auto', 'auto', 'Edit automatically']);
+  deq([state.applyMode, storage.muninApplyMode, el.modeLabel.textContent], ['auto', 'auto', 'Auto']);
   // the current mode again: closes, nothing changes
   click(el.modeCycle);
   click(menuRows()[1]);
@@ -93,7 +93,7 @@ test('mode menu: a click outside or Escape closes it; nothing while an answer ru
 });
 
 test('[/] button: lists every command, a pick goes in front of the text, a second click closes', async () => {
-  assert.strictEqual(el.cmdBtn.title, 'Commands');
+  assert.strictEqual(el.cmdBtn.dataset.tip, 'Commands');
   assert.strictEqual(el.cmdBtn.textContent, '/');
   el.input.value = '';
   el.input.blur();
@@ -101,7 +101,7 @@ test('[/] button: lists every command, a pick goes in front of the text, a secon
   assert.ok(cmdOpen());
   assert.strictEqual(document.activeElement, el.input); // the focus is in the input, so a pick inserts there
   assert.strictEqual(el.cmdBtn.getAttribute('aria-expanded'), 'true');
-  deq(cmdRows().map((r) => r.querySelector('.cmd-name').textContent), ['/research', '/code', '/chat', '/review', '/side', '/check', '/test']);
+  deq(cmdRows().map((r) => r.querySelector('.cmd-name').textContent), ['/research', '/code', '/chat', '/review', '/side', '/check', '/polish', '/test']);
   // a click in the input or a caret move keeps it; a second click on the button closes it
   click(el.input);
   document.dispatchEvent(new env.window.Event('selectionchange'));
@@ -123,7 +123,7 @@ test('[/] button: lists every command, a pick goes in front of the text, a secon
   typeInto(el.input, 'x');
   assert.ok(!cmdOpen());
   typeInto(el.input, '/');
-  assert.strictEqual(cmdRows().length, 7);
+  assert.strictEqual(cmdRows().length, 8);
   key(el.input, 'Escape');
   // the input losing the focus closes it
   typeInto(el.input, '');
@@ -137,8 +137,8 @@ test('[/] button: lists every command, a pick goes in front of the text, a secon
   el.input.value = '';
 });
 
-test('bar order: [/] button, mode button, context gauge, Send/Stop', () => {
-  deq([...document.querySelector('.input-bar').children].map((c) => c.id), ['cmdBtn', 'modeCycle', 'contextGauge', 'actionBtn']);
+test('bar order: [+] button, [/] button, mode button, the agents pill, the model label, context gauge, Send/Stop', () => {
+  deq([...document.querySelector('.input-bar').children].map((c) => c.id), ['attachBtn', 'cmdBtn', 'modeCycle', 'agentsBtn', 'chatModel', 'contextGauge', 'actionBtn']);
 });
 
 test('/code row: dimmed with "Munin only" and not pickable for OpenAI and Anthropic, active for Munin', async () => {
@@ -183,17 +183,16 @@ test('/code row: dimmed with "Munin only" and not pickable for OpenAI and Anthro
   }
 });
 
-test('CSS: the mode label is primary text; the Google account label is a framed chip without the help cursor', () => {
+test('CSS: the mode label is primary text; the Google account label is plain text without the help cursor', () => {
   assert.match(ruleBody('.mode-label'), /(^|[\s;])color:\s*var\(--fg\)/);
   assert.match(ruleBody('.mode-cycle'), /(^|[\s;])color:\s*var\(--fg\)/);
   assert.ok(!/cursor:\s*help/.test(css));
   const chip = ruleBody('.google-row .google-label');
   assert.match(chip, /cursor:\s*default/);
-  assert.match(chip, /border:\s*1px solid/);
-  assert.match(chip, /padding:/);
+  assert.ok(!/border:|background:/.test(chip), 'no frame, no background: the tooltip alone names the account');
   // the [/] button and the mode button share one height
   assert.match(ruleBody('.cmd-btn'), /height:\s*24px/);
   assert.match(ruleBody('.mode-cycle'), /height:\s*24px/);
   // the tooltip with the account stays
-  assert.strictEqual(el.googleStatus.title, 'Not signed in');
+  assert.strictEqual(el.googleStatus.dataset.tip, 'Not signed in');
 });

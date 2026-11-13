@@ -6,26 +6,27 @@
 // cycle (with the Docs API; the reading checks run on the two lines it writes) and the model scenarios (quiet
 // turns through toolLoop, verified by re-reading the document; without the Docs API a paste at the cursor, on
 // which the reading checks run), with "Your turn" steps in between (the user selects, bolds and removes text by
-// hand; Continue / Skip cards, verified by reading the document again). No confirmation card. While it runs, a live
+// hand; cards with Skip only: the panel watches the document and goes on once it sees the change). No confirmation card. While it runs, a live
 // row in the chat (stLiveStart: the orb and "Self-test: 12 of 38 · Write: table") shows the progress; the status line
-// is not used. The report card replaces it; both are notices, not part of the chat history and not stored (Copy takes
+// is not used. The report card replaces it; both are report boxes, not part of the chat history and not stored (Copy takes
 // the report's Markdown).
-/* global activeConfig, activeProvider, appendToChat, anthropicAdaptive, applyPendingSelection, buildRequest, buildTurnContext,
+/* global activeConfig, canRequest, activeProvider, appendToChat, anthropicAdaptive, applyPendingSelection, buildRequest, buildTurnContext,
    chatLockName, closePopup, confirmYourTurn, docIdFromUrl, docLines, docOutline, docsTabFromUrl, docStatusText, el,
-   escapeHtml, executeTool, exportAbortError, exportSleep, extraSelfTestRows, fetchDocModel, fetchDocText, fetchModelList, findFlexible, fmtNum,
-   FORMAT_READING_TOOL, getDocTab, hasOutline, lineList, normalizeForMatch, OBJECT_CHAR,
+   escapeHtml, executeTool, exportAbortError, exportSleep, extraSelfTestRows, fetchDocModel, fetchDocText, fetchModelList, findFlexible, fullModelId, fmtNum,
+   getDocTab, hasOutline, lineList, normalizeForMatch, OBJECT_CHAR,
    openaiReasoningModel, orbCreate, orbSetState, parseToolArgs, READING_TOOLS, readExport, refreshContext, refreshSelection, refreshSnapModel,
-   renderSelection, REPLACE_TOOL, resetDocsApiTurn, runStream, sendToTab, setBusy, setDocSignalTap, setStatus, showText,
+   renderSelection, REPLACE_TOOL, resetDocsApiTurn, runStream, sendToTab, setBusy, setDocSignalTap, setStatus, showText, showYourTurnSelection,
    snapshotDocument, state, takeSnapshot, toolLoop, useExportRead, APPLY_MODES */
-/* global docsApi, DOCS_GET_FIELDS, fetchDocRevision, LINK_COLOR */
-/* exported runSelfTest, ST_SIGNAL */
+/* global docsApi, DOCS_GET_FIELDS, fetchDocRevision, LINK_COLOR, numText, SHEET_TYPES, styleSheetFor */
+/* exported runSelfTest, ST_SIGNAL, ST_WATCH */
 
 // ---------------------------------------------------------------------------
 // Results and helpers
 // ---------------------------------------------------------------------------
 // A check returns { status: 'pass' | 'warn' | 'fail' | 'skip', detail (one line), more? (multi-line, shown
 // collapsed and in the Markdown details) }. Document text in a result is cut to ST_TEXT_CHARS.
-const ST_ICONS = { pass: '✅', warn: '⚠️', fail: '❌', skip: '➖' };
+// The row's mark: a coloured dot (CSS .mk) per status; no emoji.
+const ST_MARKS = { pass: 'ok', warn: 'warn', fail: 'fail', skip: 'skip' };
 const ST_LABELS = { pass: 'pass', warn: 'warning', fail: 'fail', skip: 'skipped' };
 const ST_TEXT_CHARS = 40;
 const ST_PROBE_PROMPT = 'Reply with the single word OK.';
@@ -43,7 +44,7 @@ const stClip = (t, n = ST_TEXT_CHARS) => {
   return s.length > n ? s.slice(0, n) + '…' : s;
 };
 const stQuote = (t) => `«${stClip(showText(t))}»`;
-// read_formatting output in a row's details: its notation header alone is about 300 characters.
+// read_document formatting output in a row's details: its notation header alone is about 300 characters.
 const ST_FORMAT_CHARS = 800;
 // The line "n: …" of a reading tool's result, or ''.
 const stLineOf = (r, n) => String(r.content || '').split('\n').find((l) => l.startsWith(`${n}: `)) || '';
@@ -55,9 +56,32 @@ let stCallSeq = 0;
 // "model response".
 function stTool(ctx, name, args, snap = ctx.snap) {
   snap.responseWrite = null;
-  if (!READING_TOOLS.includes(name) && name !== FORMAT_READING_TOOL) ctx.fresh = false; // a write: the next read must re-read
+  if (!READING_TOOLS.includes(name)) ctx.fresh = false; // a write: the next read must re-read
   const tc = { id: `selftest_${name}_${++stCallSeq}`, type: 'function', function: { name, arguments: JSON.stringify(args) } };
   return executeTool(tc, 'edit', snap, {});
+}
+// read_document of lines a..b. include ['text']: the plain lines (the read_lines of earlier versions); ['formatting']:
+// the notation (the read_formatting of earlier versions).
+const stRead = (ctx, a, b, include = ['text'], snap = ctx.snap) => stTool(ctx, 'read_document', { scope: { start: a, end: b }, include, doc: null }, snap);
+const stReadFmt = async (ctx, a, b, snap = ctx.snap) => {
+  const r = await stRead(ctx, a, b, ['formatting'], snap);
+  return r && typeof r.content === 'string' ? { ...r, content: stSheetFree(r.content, snap) } : r;
+};
+// The formatting view without the paragraph values the formatting sheet gives a line's type (under the standard sheet
+// an inserted paragraph reads [justify], a restyled heading [h2 space 14/0]), so the checks hold under any sheet. A
+// type without an alignment of its own keeps the body's (a body line made a heading stays justified).
+function stSheetFree(content, snap) {
+  const types = styleSheetFor(snap).types || {};
+  return content.split('\n').map((line) => line.replace(/^(\d+: )\[([^\]]*)\] /, (m, head, tag) => {
+    const first = tag.split(' ')[0];
+    const v = types[SHEET_TYPES[first] ? first : 'body'] || {};
+    const align = v.align || (types.body || {}).align;
+    let t = ` ${tag} `;
+    if (align && align !== 'left') t = t.replace(` ${align} `, ' ');
+    if (v.spaceAbove != null) t = t.replace(` space ${numText(v.spaceAbove)}/${numText(v.spaceBelow)} `, ' ');
+    t = t.trim();
+    return t ? `${head}[${t}] ` : head;
+  })).join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +105,7 @@ async function stEnvironment(ctx) {
   Object.assign(ctx.info, { version, chrome: chromeVersion, provider: prov.label, model: cfg.model || '(none)' });
   const detail = [`v${version}`, `${prov.label} / ${cfg.model || '(no model)'}`, cfg.apiKey ? 'API key set' : 'no API key',
     stGoogleLine(), `Mode: ${APPLY_MODES[state.applyMode] || state.applyMode}`, locks ? 'Web Locks available' : 'no Web Locks', `Chrome ${chromeVersion}`].join(' · ');
-  if (!cfg.apiKey) return stWarn(detail, `No ${prov.label} API key is set: the provider checks are skipped.`);
+  if (!canRequest(cfg)) return stWarn(detail, `No ${prov.label} API key is set: the provider checks are skipped.`);
   if (!locks) return stWarn(detail, 'navigator.locks is unavailable: tabs of one document are kept apart only within this panel.');
   return stPass(detail);
 }
@@ -97,7 +121,7 @@ async function stContentScript() {
 }
 
 // What the content script's change signal found on the page (GET_SIGNAL_STATE): the editor container its observer
-// watches (a collaborator's edits), the hidden iframe whose key and input events it listens to, and its counters since
+// watches (best effort: Docs draws the text on a canvas, so text edits rarely show there), the hidden iframe whose key and input events it listens to, and its counters since
 // the page loaded.
 async function stChangeSignal() {
   let r;
@@ -113,7 +137,7 @@ async function stChangeSignal() {
   const detail = parts.join(' · ');
   const more = `Sent: DOC_TYPED ×${n('typedSent')}, DOC_CHANGED ×${n('changedPage')} from the page and ×${n('changedInput')} from keys and input; ` +
     `the iframe was replaced ${stPlural(Number(s.iframeSwaps) || 0, 'time')}.`;
-  if (!r.editor || !r.observing) return stWarn(`${detail}: edits of other people show late`, more);
+  if (!r.editor || !r.observing) return stWarn(`${detail}: the page observer did not start (best effort; other people's edits still come from the poll)`, more);
   if (!r.iframe || !r.listening) return stWarn(`${detail}: the numbers move only when the page itself gets the keys`, more);
   return stPass(detail, more);
 }
@@ -226,7 +250,7 @@ const stContentCheck = (fn) => async (ctx) => {
 const stContentLines = (c) => (c.api ? c.snap.model.lines.map((l) => l.text) : docLines(c.snap));
 
 const stOutline = stContentCheck(async (ctx, c) => {
-  const r = await stTool(ctx, 'get_outline', {}, c.snap);
+  const r = await stTool(ctx, 'read_document', { scope: 'outline', include: null, doc: null }, c.snap);
   if (!r._ok) return stFail(stClip(r.content, 160));
   if (!hasOutline(c.snap)) return stPass('plain-text export: no outline (expected)');
   const items = docOutline(c.snap);
@@ -239,12 +263,12 @@ const stOutline = stContentCheck(async (ctx, c) => {
 
 const stReadLines = stContentCheck(async (ctx, c) => {
   const lines = stContentLines(c);
-  const r = await stTool(ctx, 'read_lines', { start: 1, end: lines.length }, c.snap);
+  const r = await stRead(ctx, 1, lines.length, ['text'], c.snap);
   if (!r._ok) return stFail(stClip(r.content, 160));
   const want = lines[c.line - 1];
   const got = r.content.split('\n').find((l) => l.startsWith(`${c.line}: `));
   if (got == null || !got.startsWith(`${c.line}: ${showText(want)}`)) {
-    return stFail(`line ${c.line} of read_lines differs from line ${c.line} of the document`, `read_lines: ${stClip(got, 80)}\ndocument: ${stClip(want, 80)}`);
+    return stFail(`line ${c.line} of read_document differs from line ${c.line} of the document`, `read_document: ${stClip(got, 80)}\ndocument: ${stClip(want, 80)}`);
   }
   const m = /^Lines 1-(\d+) of (\d+)/m.exec(r.content);
   return stPass(`lines 1–${m ? m[1] : '?'} of ${m ? m[2] : '?'}; line ${c.line} ${stQuote(want)}`);
@@ -279,7 +303,7 @@ const stGetSelection = stContentCheck(async (ctx, c) => {
 const stReadFormatting = stContentCheck(async (ctx, c) => {
   if (!c.api) return stNeedsApi();
   const from = Math.max(1, c.line - 1);
-  const r = await stTool(ctx, 'read_formatting', { start: from, end: c.line }, c.snap);
+  const r = await stReadFmt(ctx, from, c.line, c.snap);
   if (!r._ok) return stFail(stClip(r.content, 160));
   const body = r.content.split('\n').filter((l) => /^\d+: /.test(l));
   if (!body.some((l) => l.startsWith(`${c.line}: ${ST_SECTION.para}`))) return stFail(`line ${c.line} is not the plain fox paragraph`, stClip(r.content, ST_FORMAT_CHARS));
@@ -327,16 +351,16 @@ function stMatchingOn(hay, only = 0) {
 async function stModelList() {
   const prov = activeProvider();
   const cfg = activeConfig();
-  if (!cfg.apiKey) return stSkip(`no ${prov.label} API key`);
+  if (!canRequest(cfg)) return stSkip(`no ${prov.label} API key`);
   const ids = await fetchModelList(prov.id, cfg);
   const detail = `GET /models · ${stPlural(ids.length, 'model')}`;
-  if (cfg.model && !ids.includes(cfg.model)) return stWarn(`${detail} · "${cfg.model}" is not in the list`, 'Open the settings and click Check models.');
+  if (cfg.model && !ids.includes(fullModelId(cfg, cfg.model))) return stWarn(`${detail} · "${cfg.model}" is not in the list`, 'Choose another model in the model menu under the input box.');
   return stPass(detail);
 }
 
 async function stCompletion(ctx) {
   const prov = activeProvider();
-  if (!activeConfig().apiKey) return stSkip(`no ${prov.label} API key`);
+  if (!canRequest(activeConfig())) return stSkip(`no ${prov.label} API key`);
   const snap = takeSnapshot();
   snapshotDocument(snap);
   snap.signal = ctx.signal;
@@ -470,11 +494,13 @@ async function stLeftover(ctx) {
 }
 
 const stInsert = stWriteStep(async (ctx, ph) => {
-  await stWrite(ctx, 'insert_after_line', { line: ph.last, text: `${ST_SECTION.heading}\n${ST_SECTION.para}` });
-  const h = stDocLine(ctx, ph.last + 1);
-  const p = stDocLine(ctx, ph.last + 2);
-  if (!h || !p || h.text !== ST_SECTION.heading || p.text !== ST_SECTION.para) {
-    return stFail(`after the insert lines ${ph.last + 1}–${ph.last + 2} read ${stQuote(h ? h.text : '')} / ${stQuote(p ? p.text : '')}`);
+  // fill: true writes the two lines into the empty document's only paragraph: lines 1–2, no empty line before them.
+  await stWrite(ctx, 'insert_after_line', { line: ph.last, text: `${ST_SECTION.heading}\n${ST_SECTION.para}`, fill: true });
+  const n = ctx.snap.model.lines.length;
+  const h = stDocLine(ctx, n - 1);
+  const p = stDocLine(ctx, n);
+  if (n !== 2 || !h || !p || h.text !== ST_SECTION.heading || p.text !== ST_SECTION.para) {
+    return stFail(`after the insert the document has ${stPlural(n, 'line')}; lines ${n - 1}–${n} read ${stQuote(h ? h.text : '')} / ${stQuote(p ? p.text : '')}, expected lines 1–2`);
   }
   ph.head = h.line;
   ph.line = p.line;
@@ -494,7 +520,7 @@ const stReplace = stWriteStep(async (ctx, ph) => {
 
 // With the Docs API the Your-turn steps run on the write cycle's paragraph (it.shown: a card was shown or the
 // model replaced the selection), which the user or the model may have changed (red cat, a bold word). Before
-// the write cycle goes on, the panel re-reads the document and, unless read_formatting shows the original plain
+// the write cycle goes on, the panel re-reads the document and, unless read_document (formatting) shows the original plain
 // paragraph, writes it again: line ph.line deleted and inserted anew after the heading (plain text). Returns
 // the note for the row ('' when nothing was needed); throws when the two test lines are no longer there.
 async function stHandRewriteApi(ctx, ph) {
@@ -506,7 +532,7 @@ async function stHandRewriteApi(ctx, ph) {
   if (m.lines.length !== ph.line || !h || h.text !== ST_SECTION.heading) {
     throw new Error(`after the Your-turn steps lines ${ph.head}–${ph.line} are not the test lines (${stPlural(m.lines.length, 'line')}, line ${ph.head} ${stQuote(h ? h.text : '')})`);
   }
-  const f = await stTool(ctx, FORMAT_READING_TOOL, { start: ph.line, end: ph.line });
+  const f = await stReadFmt(ctx, ph.line, ph.line);
   if (f._ok && f.content.split('\n').includes(`${ph.line}: ${ST_SECTION.para}`)) return '';
   await stWrite(ctx, 'delete_lines', { start: ph.line, end: ph.line });
   await stWrite(ctx, 'insert_after_line', { line: ph.head, text: ST_SECTION.para });
@@ -517,11 +543,11 @@ async function stHandRewriteApi(ctx, ph) {
 
 const stFormat = stWriteStep(async (ctx, ph) => {
   await stWrite(ctx, 'format_text', { old_text: 'lazy dog', bold: true, italic: null, underline: null });
-  const r = await stTool(ctx, 'read_formatting', { start: ph.line, end: ph.line });
+  const r = await stReadFmt(ctx, ph.line, ph.line);
   if (!r.content.includes(`${ph.line}: The slow green turtle jumps over the **lazy dog**.`)) {
-    return stFail('read_formatting does not show «lazy dog» as bold', stClip(r.content, ST_FORMAT_CHARS));
+    return stFail('read_document (formatting) does not show «lazy dog» as bold', stClip(r.content, ST_FORMAT_CHARS));
   }
-  return stPass(`read_formatting shows line ${ph.line} with **lazy dog**`);
+  return stPass(`read_document (formatting) shows line ${ph.line} with **lazy dog**`);
 });
 
 // The format_lines arguments with every property null except over.
@@ -534,29 +560,33 @@ const ST_LINK = 'https://example.com/';
 // **lazy dog** only. Whether Docs styled the link itself (underline, link blue) is reported as a fact.
 const stTextStyles = stWriteStep(async (ctx, ph) => {
   const n = ph.line;
-  const read = async () => stLineOf(await stTool(ctx, 'read_formatting', { start: n, end: n }), n);
+  const read = async () => stLineOf(await stReadFmt(ctx, n, n), n);
   const base = `${n}: The slow green turtle jumps over the **lazy dog**.`;
   await stWrite(ctx, 'format_text', { old_text: 'lazy dog', ...ST_TEXT_NULLS, italic: true, font: 'Courier New', size: 14, color: '#FF0000', highlight: '#FFFF00' });
   const styled = `${n}: The slow green turtle jumps over the {***lazy dog***}(font=Courier New size=14 color=#FF0000 bg=#FFFF00).`;
   let got = await read();
-  if (got !== styled) return stFail('read_formatting does not show the text styles on «lazy dog»', `read_formatting: ${stClip(got, 200)}\nexpected: ${styled}`);
+  if (got !== styled) return stFail('read_document (formatting) does not show the text styles on «lazy dog»', `read_document: ${stClip(got, 200)}\nexpected: ${styled}`);
   await stWrite(ctx, 'format_text', { old_text: 'turtle', ...ST_TEXT_NULLS, link: ST_LINK });
   got = await read();
-  if (!/\[(__)?turtle(__)?\]\(https:\/\/example\.com\/\)/.test(got)) return stFail('read_formatting does not show «turtle» as a link', `read_formatting: ${stClip(got, 200)}`);
+  if (!/\[(__)?turtle(__)?\]\(https:\/\/example\.com\/\)/.test(got)) return stFail('read_document (formatting) does not show «turtle» as a link', `read_document: ${stClip(got, 200)}`);
   const run = (stDocLine(ctx, n).runs || []).find((r) => r.link === ST_LINK) || {};
   const auto = run.underline || run.color === LINK_COLOR ? `Docs styled the link itself (${[run.underline ? 'underline' : '', run.color || ''].filter(Boolean).join(', ')})` : 'Docs did not style the link';
   await stWrite(ctx, 'undo_last_edit', {});
   await stWrite(ctx, 'undo_last_edit', {});
   got = await read();
-  if (got !== base) return stFail('after two undo_last_edit the line is not back to **lazy dog** only', `read_formatting: ${stClip(got, 200)}`);
+  if (got !== base) return stFail('after two undo_last_edit the line is not back to **lazy dog** only', `read_document: ${stClip(got, 200)}`);
   return stPass(`line ${n}: {***lazy dog***}(font=Courier New size=14 color=#FF0000 bg=#FFFF00), [turtle](${ST_LINK}); undone twice · ${auto}`);
 });
+
+// A line of the formatting view without the markers the formatting sheet puts around a whole restyled paragraph
+// ("2: [h2] {**Text**}(font=Times New Roman size=14)" -> "2: [h2] Text"): a style change gets the sheet's values.
+const stWithoutSheet = (line) => String(line).replace(/^(\d+: (?:\[[^\]]*\] )?)(?:\{(\*\*)?([^{}]*?)\2\}\([^()]*\)|\*\*([^*]*)\*\*)$/, (m, head, b, a, c) => head + (a != null ? a : c));
 
 // format_lines on the heading: style h2, then alignment and spacing; undone twice (style and tag as before).
 const stFormatLines = stWriteStep(async (ctx, ph) => {
   const h = ph.head;
   const style0 = stDocLine(ctx, h).style;
-  const read = async () => stLineOf(await stTool(ctx, 'read_formatting', { start: h, end: h }), h);
+  const read = async () => stWithoutSheet(stLineOf(await stReadFmt(ctx, h, h), h));
   const steps = [
     [{ style: 'h2' }, `${h}: [h2] ${ST_SECTION.heading}`, 'HEADING_2'],
     [{ align: 'center', space_above: 12, space_below: 6, line_spacing: 1.5 }, `${h}: [h2 center space 12/6 line 1.5] ${ST_SECTION.heading}`, 'HEADING_2'],
@@ -583,7 +613,7 @@ const stLists = stWriteStep(async (ctx, ph) => {
   const a = ph.line + 1;
   const b = ph.line + 2;
   const check = async (step, tag) => {
-    const r = await stTool(ctx, 'read_formatting', { start: a, end: b });
+    const r = await stReadFmt(ctx, a, b);
     const got = [a, b].map((k) => stLineOf(r, k));
     const want = ST_ITEMS.map((t, i) => `${a + i}: ${tag ? `[${tag}] ` : ''}${t}`);
     if (got.join('\n') === want.join('\n')) return null;
@@ -657,13 +687,12 @@ async function stMultiTab() {
 // ---- The model scenarios ------------------------------------------------------------------------
 // The active provider gets literal instructions and does the work itself: each scenario is a turn through
 // toolLoop (buildRequest with the real system prompt and tools, runStream, executeTool with the edit gate),
-// in Auto mode for edits and Manual for the question, on a scratch history (state.messages points to it
+// in Auto mode for edits (no card waits: its snapshot never asks) and the read-only chat turn ('manual') for the
+// question, on a scratch history (state.messages points to it
 // while the scenario runs; runSelfTest restores the chat's history). The panel then re-reads the document
 // (Docs API model or export) and checks it; the model's own words are never trusted. Without the Docs API
 // only the paste at the cursor (replace_selection) and the question can run.
-// apiTries / apiWaitMs: Docs saves a manual edit to the server a second or two after it is made, so a
-// Docs API read right after "Continue" may not show it yet.
-const ST_MODEL = { timeoutMs: 90000, exportTries: 2, exportWaitMs: 3000, apiTries: 3, apiWaitMs: 1500 }; // tests shorten these
+const ST_MODEL = { timeoutMs: 90000, exportTries: 2, exportWaitMs: 3000 }; // tests shorten these
 const ST_NEEDS_API = 'needs a Google account (Docs API)';
 const stNeedsApi = () => stSkip(state.googleConnected ? 'needs the Docs API (the read through it failed)' : ST_NEEDS_API);
 const ST_ANSWER_CHARS = 200;
@@ -684,6 +713,7 @@ const ST_PROMPTS = {
   insert: `Insert the following paragraph into the document: '${ST_PASTE_TEXT}'`,
   questionExport: "On which line of the document is the paragraph that starts with 'Self-test paragraph'? Answer with the line number only.",
   replaceSelection: "Replace the selected text with 'red cat'. Do not change anything else.",
+  agent: 'Use delegate to have an agent summarize the Self-test section in one sentence and report it to me.',
 };
 // Lines the panel's cleanup may delete: only what the scenarios write.
 const ST_TEST_LINE_RE = /self-test|quick brown fox|turtle|tortoise|lazy dog|red cat|^Item (?:one|two)$/i;
@@ -699,7 +729,7 @@ const stSecs = (ms) => `${(ms / 1000).toFixed(1)} s`;
 function stModelPossible(ctx) {
   const mp = ctx.mp;
   mp.api = ctx.mode === 'api';
-  if (!activeConfig().apiKey) { mp.skipWhy = `not run: no ${activeProvider().label} API key`; return false; }
+  if (!canRequest(activeConfig())) { mp.skipWhy = `not run: no ${activeProvider().label} API key`; return false; }
   return true;
 }
 
@@ -792,6 +822,12 @@ async function stScenario(ctx, { prompt, mode = 'edit', selection = '' }) {
       out.error = e;
       mp.stats.requests++; // the failed request
     }
+    // Agents run in the background (agents.js): a quiet run's reports come back here, after the turn, like a report
+    // message in a chat (the self-test's Stop and the scenario's time limit stop them).
+    if (snap.agentRuns && snap.agentRuns.length) {
+      stLive(ctx, `${ctx.progress} · waiting for the agent's report…`);
+      for (const r of await Promise.allSettled(snap.agentRuns)) if (r.status === 'fulfilled' && r.value) history.push(r.value);
+    }
     const last = [...history].reverse().find((m) => m.role === 'assistant' && m.content);
     out.answer = stTrim(last ? last.content : (out.loop.final && out.loop.final.content) || '');
   } finally {
@@ -810,7 +846,7 @@ async function stScenario(ctx, { prompt, mode = 'edit', selection = '' }) {
   return out;
 }
 
-// "read_lines ×2, insert_after_line ×1" (in the order of first use).
+// "read_document ×2, insert_after_line ×1" (in the order of first use).
 function stToolCounts(names) {
   if (!names.length) return 'no tool calls';
   const counts = new Map();
@@ -868,13 +904,15 @@ function stRunError(run) {
 }
 
 // Where the current lines differ from the original: the common head a and tail b, the extra lines of the
-// current text (cur[a, n - b)) and the original lines they replace (t0[a, m - b)).
+// current text (cur[a, n - b)) and the original lines they replace (t0[a, m - b)). An empty original (one empty
+// paragraph) has no lines to lose: an insert with fill writes into that paragraph, so nothing of it is "changed".
 function stDiffLines(cur, t0) {
   let a = 0;
   while (a < cur.length && a < t0.length && cur[a] === t0[a]) a++;
   let b = 0;
   while (b < cur.length - a && b < t0.length - a && cur[cur.length - 1 - b] === t0[t0.length - 1 - b]) b++;
-  return { a, b, extra: cur.slice(a, cur.length - b), missing: t0.slice(a, t0.length - b) };
+  const empty = t0.length === 1 && !t0[0];
+  return { a, b, extra: cur.slice(a, cur.length - b), missing: empty ? [] : t0.slice(a, t0.length - b) };
 }
 const stLineRefs = (from, lines) => lines.map((t, i) => `line ${from + i} «${stClip(showText(t), 60)}»`).join(', ');
 
@@ -994,28 +1032,28 @@ const stModelFormat = stModelStep(async (ctx, mp) => {
   if (verdict.status !== 'pass') return stScenarioRow(ctx, run, verdict);
   const first = stSecLine(mp, 0);
   const last = stSecLine(mp, mp.sec.want.length - 1);
-  const f = await stTool(ctx, 'read_formatting', { start: first, end: last }, r.snap);
+  const f = await stReadFmt(ctx, first, last, r.snap);
   const line = f.content.split('\n').find((l) => l.startsWith(`${first + 1}: `)) || '';
   const bold = (/\*\*([^*]+)\*\*/.exec(line) || [])[1];
   let v;
-  if (bold === 'lazy dog') v = stPass(`read_formatting shows line ${first + 1} with **lazy dog**`);
+  if (bold === 'lazy dog') v = stPass(`read_document (formatting) shows line ${first + 1} with **lazy dog**`);
   else if (bold && bold.includes('lazy dog')) v = stWarn(`the bold text is «${stClip(bold)}», wider than «lazy dog»`);
-  else v = stFail('read_formatting does not show «lazy dog» as bold', stClip(f.content, ST_FORMAT_CHARS));
+  else v = stFail('read_document (formatting) does not show «lazy dog» as bold', stClip(f.content, ST_FORMAT_CHARS));
   return stScenarioRow(ctx, run, v);
 }, { api: true });
 
-// The heading line becomes Heading 2 (format_lines): its text unchanged, its style HEADING_2 and [h2] in read_formatting.
+// The heading line becomes Heading 2 (format_lines): its text unchanged, its style HEADING_2 and [h2] in read_document (formatting).
 // Another heading level (or other formatting too) is a warning, no heading a failure.
 const stModelHeading = stModelStep(async (ctx, mp) => {
   const { run, r, verdict } = await stModelEdit(ctx, mp, ST_PROMPTS.heading, mp.sec.want.slice());
   if (verdict.status !== 'pass') return stScenarioRow(ctx, run, verdict);
   const k = stSecLine(mp, 0);
   const line = r.snap.model.lines[k - 1];
-  const f = await stTool(ctx, 'read_formatting', { start: k, end: k }, r.snap);
-  const got = stLineOf(f, k);
+  const f = await stReadFmt(ctx, k, k, r.snap);
+  const got = stWithoutSheet(stLineOf(f, k));
   const style = line.style || 'NORMAL_TEXT';
   let v;
-  if (style === 'HEADING_2' && got === `${k}: [h2] ${showText(line.text)}`) v = stPass(`line ${k} is Heading 2: read_formatting shows ${stQuote(got)}`);
+  if (style === 'HEADING_2' && got === `${k}: [h2] ${showText(line.text)}`) v = stPass(`line ${k} is Heading 2: read_document (formatting) shows ${stQuote(got)}`);
   else if (style === 'HEADING_2') v = stWarn(`line ${k} is Heading 2, but other formatting changed too: ${stClip(got, 80)}`, stClip(f.content, ST_FORMAT_CHARS));
   else if (line.heading) v = stWarn(`line ${k} is ${style}, not HEADING_2`, stClip(f.content, ST_FORMAT_CHARS));
   else v = stFail(`line ${k} is not a heading (${style})`, stClip(f.content, ST_FORMAT_CHARS));
@@ -1030,7 +1068,7 @@ const stModelNumbered = stModelStep(async (ctx, mp) => {
   const nums = mp.sec.want.map((_, i) => stSecLine(mp, i));
   const lines = nums.map((n) => r.snap.model.lines[n - 1]);
   const kinds = lines.slice(1).map((l) => (l.list ? l.list.kind : 'none'));
-  const f = await stTool(ctx, 'read_formatting', { start: nums[0], end: nums[nums.length - 1] }, r.snap);
+  const f = await stReadFmt(ctx, nums[0], nums[nums.length - 1], r.snap);
   const where = `lines ${nums[1]}–${nums[nums.length - 1]}`;
   let v;
   if (lines[0].list) v = stFail(`the heading (line ${nums[0]}) is in a list too (${lines[0].list.kind})`, stClip(f.content, ST_FORMAT_CHARS));
@@ -1064,13 +1102,13 @@ const stModelSelection = stModelStep(async (ctx, mp) => {
   return stScenarioRow(ctx, run, v);
 }, { api: true });
 
-// A question in Manual mode: the answer must contain the number, and the model should have read the document.
+// A question in the read-only chat turn: the answer must contain the number, and the model should have read the document.
 async function stModelAsk(ctx, prompt, want) {
   const run = await stScenario(ctx, { prompt, mode: 'manual' });
   const err = stRunError(run);
   if (err) return stScenarioRow(ctx, run, err);
   const nums = (run.answer.match(/\d+/g) || []).map(Number);
-  const read = run.loop.tools.some((n) => READING_TOOLS.includes(n) || n === FORMAT_READING_TOOL);
+  const read = run.loop.tools.some((n) => READING_TOOLS.includes(n));
   let v;
   if (!nums.includes(want)) v = stFail(`the answer does not contain ${want}`);
   else if (!read) v = stWarn(`answered ${want} without calling a reading tool (guessed from the context)`);
@@ -1084,6 +1122,26 @@ const stModelQuestion = stModelStep(async (ctx, mp) => {
     return stModelAsk(ctx, ST_PROMPTS.questionExport, mp.pasteLine);
   }
   return stModelAsk(ctx, ST_PROMPTS.question, mp.sec.want.length);
+});
+
+// An agent (delegate, agents.js) in a read-only chat turn (turn mode 'manual': a read agent, no card can wait): the main
+// model hands the summary to an agent on its own model, which
+// runs in the background; the row waits for the agent's report message. Pass: a delegate call started an agent and its
+// report has status ok and a non-empty answer; the model answering without delegate is a warning.
+const stModelAgent = stModelStep(async (ctx) => {
+  const run = await stScenario(ctx, { prompt: ST_PROMPTS.agent, mode: 'manual' });
+  const err = stRunError(run);
+  if (err) return stScenarioRow(ctx, run, err);
+  const results = (run.history || []).filter((m) => (m._agentReport || m.role === 'tool') && m._agent); // a report, or a refusal
+  let v;
+  if (!results.length) v = stWarn('the model answered without delegate');
+  else {
+    const a = results[results.length - 1]._agent;
+    const report = stTrim(a.full);
+    if (a.status === 'ok' && report) v = stPass(`the agent (${a.provider}/${a.model}, ${stPlural(a.rounds || 0, 'round')}) reported «${stClip(report, 80)}»`);
+    else v = stFail(`the agent ended with status ${a.status}${report ? '' : ' and no report'}`, stClip(results[results.length - 1].content, 300));
+  }
+  return stScenarioRow(ctx, run, v);
 });
 
 const stModelDelete = stModelStep(async (ctx, mp) => {
@@ -1243,35 +1301,97 @@ const stModelWrite = stModelStep(async (ctx, mp) => (mp.api ? stModelWriteApi(ct
 
 // ---- Your turn: steps the user does by hand ---------------------------------------------------------
 // Docs cannot be selected or formatted by the panel without the API, so /test asks the user: a "Your turn"
-// card (confirmYourTurn: Continue / Skip; Stop ends the wait; no answer within ST_INTERACTIVE.timeoutMs counts
-// as Skip), then the panel reads the document again and checks what the user did. They run on the test
-// paragraph (ctx.it: { ready, api, line, text }): the one the model pasted (export mode) or the write cycle's
-// (Docs API mode; stHandRewriteApi writes it again afterwards). ctx.it also keeps shown (a card was shown or
-// the model replaced the selection), selected / selection (the select step passed and what it read) and
-// selectWhy (why the replace step does not run).
+// card (confirmYourTurn: the instruction and Skip; Stop ends the wait) while the panel watches for the change
+// itself (stYourTurn: a check every ST_WATCH.everyMs, an export read every ST_WATCH.exportEveryMs) and goes on as
+// soon as it sees it; no Continue button. No change within the step's timeout (ST_INTERACTIVE.timeoutMs) fails the
+// row with what the panel saw last. They run on the test paragraph (ctx.it: { ready, api, line, text }): the one the
+// model pasted (export mode) or the write cycle's (Docs API mode; stHandRewriteApi writes it again afterwards).
+// ctx.it also keeps shown (a card was shown or the model replaced the selection), selected / selection (the select
+// step passed and what it read) and selectWhy (why the replace step does not run).
 const ST_INTERACTIVE = { timeoutMs: 3 * 60 * 1000 }; // tests use the sandbox timers
+// everyMs: the selection and Docs API checks (Docs saves a manual edit to the server a second or two after it is
+// made); exportEveryMs: the export reads (Google limits export requests); backoffMs: after HTTP 429 without a
+// Retry-After.
+const ST_WATCH = { everyMs: 1000, exportEveryMs: 5000, backoffMs: 120000 }; // tests shorten these
+const ST_GOES_ON = 'The panel continues as soon as it sees the change.';
 const ST_YOUR_TURN = {
-  select: 'In the document, select the words «brown fox» in the test paragraph, then click Continue.',
-  bold: 'Select the word «quick» in the test paragraph and press Ctrl+B (make it bold), then click Continue.',
-  remove: 'Remove the test paragraph: press Ctrl+Z until it is gone, or select it and press Delete, then click Continue.',
-  typing: 'Click at the end of the test paragraph and type a few letters (no Enter). Wait about 5 seconds, delete them, then click Continue.',
+  select: `In the document, select the words «brown fox» in the test paragraph. ${ST_GOES_ON}`,
+  bold: `Select the word «quick» in the test paragraph and press Ctrl+B (make it bold). ${ST_GOES_ON}`,
+  remove: `Remove the test paragraph: press Ctrl+Z until it is gone, or select it and press Delete. ${ST_GOES_ON}`,
+  typing: `Click at the end of the test paragraph, type a few letters (no Enter) and delete them. ${ST_GOES_ON}`,
 };
 const ST_HAND = { select: 'brown fox', replace: 'red cat', bold: 'quick' };
 const ST_BY_USER = 'skipped by the user';
-const ST_TIMED_OUT = `${ST_BY_USER} (no answer within ${ST_INTERACTIVE.timeoutMs / 60000} minutes)`;
+// The tools that replace the selection correctly in one call (the prompt prefers replace_text).
+const ST_REPLACERS = ['replace_selection', 'replace_text', 'replace_section'];
+const stSpan = (ms) => (ms > 60000 && ms % 60000 === 0 ? `${ms / 60000} minutes` : `${Math.round(ms / 1000)} s`);
 
-// Shows the card and waits. Returns { go: true } on Continue, else { go: false, why } (Skip, the timeout);
-// Stop throws an AbortError. Afterwards the last read is stale (the user may have edited the document).
+// A wait that the signal ends early.
+function stSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    let t = null;
+    const done = () => { clearTimeout(t); signal.removeEventListener('abort', done); resolve(); };
+    t = setTimeout(done, ms);
+    signal.addEventListener('abort', done);
+  });
+}
+
+// Runs check() every everyMs until it returns { done: true, … } (resolves with it) or the signal ends (null).
+// w.last keeps the latest result (what the panel saw), w.polls counts the checks; a result's waitMs stretches the
+// next wait (a rate limit).
+async function stWatch(check, everyMs, signal, w) {
+  let wait = everyMs;
+  while (!signal.aborted) {
+    await stSleep(wait, signal);
+    if (signal.aborted) return null;
+    let r;
+    try { r = await check(); } catch (e) { r = { done: false, text: e.message || String(e) }; }
+    if (signal.aborted) return null;
+    w.polls++;
+    w.last = r;
+    if (r.done) return r;
+    wait = Math.max(everyMs, r.waitMs || 0);
+  }
+  return null;
+}
+
+// Shows the card and watches the document with check (every everyMs) while it waits. Returns { go: true, last,
+// polls, ms } once check saw the change, else { go: false, timedOut, why, last, polls, ms } (Skip, the timeout);
+// Stop throws an AbortError. Afterwards the last read is stale (the user may have edited the document), unless
+// the check that saw the change was a full read (its result's fresh).
 // showSelection: the card shows what the panel sees selected (the steps that ask the user to select text).
-async function stYourTurn(ctx, text, { showSelection = false, timeoutMs = ST_INTERACTIVE.timeoutMs } = {}) {
+async function stYourTurn(ctx, text, { showSelection = false, timeoutMs = ST_INTERACTIVE.timeoutMs, check = null, everyMs = ST_WATCH.everyMs } = {}) {
   ctx.it.shown = true;
   stLive(ctx, `${ctx.progress} · your turn (see the card below)`, 'wave');
+  const stop = new AbortController();
+  const w = { last: null, polls: 0 };
+  const t0 = Date.now();
+  const watching = check ? stWatch(check, everyMs, stop.signal, w) : null;
   let d;
-  try { d = await confirmYourTurn(text, ctx.signal, { timeoutMs, showSelection }); } finally { stLive(ctx, ctx.progress); }
-  ctx.fresh = false;
+  try { d = await confirmYourTurn(text, ctx.signal, { timeoutMs, showSelection, until: watching }); } finally {
+    stop.abort();
+    if (watching) await watching; // a check on its way ends first
+    stLive(ctx, ctx.progress);
+  }
+  ctx.fresh = d === 'done' && !!(w.last && w.last.fresh) && state.docText != null;
+  const out = { last: w.last, polls: w.polls, ms: Date.now() - t0 };
   if (d === 'stop' || ctx.signal.aborted) throw exportAbortError();
-  if (d === 'continue') return { go: true };
-  return { go: false, timedOut: d === 'timeout', why: d === 'timeout' ? ST_TIMED_OUT : ST_BY_USER };
+  if (d === 'done') return { ...out, go: true };
+  return { ...out, go: false, timedOut: d === 'timeout', why: ST_BY_USER };
+}
+
+// One export read of a Your-turn watch (through the self-test's pacer): { ok, text, lines, format }, or { ok: false,
+// error, waitMs } (HTTP 429: Retry-After, else ST_WATCH.backoffMs).
+async function stReadExport(ctx) {
+  try {
+    const r = await readExport(ctx.tab, () => {}, { signal: ctx.signal });
+    useExportRead(r);
+    return { ok: true, text: r.text, lines: r.text.split('\n'), format: r.format };
+  } catch (e) {
+    if (ctx.signal.aborted) throw e;
+    return { ok: false, error: e.message || String(e), waitMs: e.rateLimited ? (e.retryAfterMs > 0 ? e.retryAfterMs : ST_WATCH.backoffMs) : 0 };
+  }
 }
 
 // A Your-turn row: skipped when there is no test paragraph (the reading checks' reason).
@@ -1285,30 +1405,39 @@ function stHandStep(fn) {
   };
 }
 
-// 1. The user selects «brown fox»; the panel reads the selection the way a turn does (refreshSelection:
-// GET_SELECTION, live or from the content script's cache). The panel's own selection is left as it was.
+// 1. The user selects «brown fox»; the panel reads the selection every second the way a turn does
+// (refreshSelection: GET_SELECTION, live or from the content script's cache; the card's "The panel sees" line
+// follows) and goes on once it is «brown fox» after the panel's cleaning (a wider selection would make the replace
+// step fail, so it keeps waiting). The panel's own selection is left as it was.
 const stHandSelect = stHandStep(async (ctx, it) => {
   it.selectWhy = 'the selection step did not pass';
-  const t = await stYourTurn(ctx, ST_YOUR_TURN.select, { showSelection: true });
-  if (!t.go) { it.selectWhy = `the selection step was ${t.why}`; return stSkip(t.why); }
+  const check = async () => {
+    const r = await refreshSelection();
+    showYourTurnSelection(state.selection);
+    if (r.error) return { done: false, text: `could not read the selection: ${r.error}` };
+    const got = stTrim(r.text);
+    const how = r.cached ? 'cached' : 'live';
+    return { done: got === ST_HAND.select || stLoose(got) === ST_HAND.select, got, text: got ? `read ${stQuote(got)} (${how})` : `nothing selected (${how} read)` };
+  };
   const saved = state.selection;
-  const r = await refreshSelection();
-  state.selection = saved;
-  renderSelection();
-  if (r.error) return stFail(`could not read the selection: ${r.error}`);
-  const how = r.cached ? 'cached' : 'live';
-  const got = stTrim(r.text);
-  const read = got ? `read ${stQuote(got)} (${how})` : `nothing selected (${how} read)`;
-  if (got !== ST_HAND.select && stLoose(got) !== ST_HAND.select) return stFail(`${read}, expected «${ST_HAND.select}»`);
+  let t;
+  try { t = await stYourTurn(ctx, ST_YOUR_TURN.select, { showSelection: true, check }); } finally {
+    state.selection = saved;
+    renderSelection();
+  }
+  if (!t.go && !t.timedOut) { it.selectWhy = `the selection step was ${t.why}`; return stSkip(t.why); }
+  if (!t.go) return stFail(`${t.last ? t.last.text : 'nothing read'}, expected «${ST_HAND.select}» (no match within ${stSpan(ST_INTERACTIVE.timeoutMs)})`);
   it.selected = true;
-  it.selection = got;
-  return stPass(got === ST_HAND.select ? read : `${read}: «${ST_HAND.select}» after the panel's cleaning`);
+  it.selection = t.last.got;
+  return stPass(t.last.got === ST_HAND.select ? t.last.text : `${t.last.text}: «${ST_HAND.select}» after the panel's cleaning`);
 });
 
 // 2. The model replaces the real selection (Auto mode, the selection in the turn snapshot as a turn takes it):
-// through the Docs API (planApiSelection) or the paste with the expected selection (REPLACE_SELECTION.expected).
-// Verified by reading again, relative to the document right before the step (an earlier failure may have left
-// extra copies of the paragraph): «brown fox» once fewer, «red cat» once more, the rest of the line unchanged.
+// through the Docs API (replace_text, as the prompt prefers, or planApiSelection for replace_selection) or the paste
+// with the expected selection (REPLACE_SELECTION.expected). Verified by reading again, relative to the document
+// right before the step (an earlier failure may have left extra copies of the paragraph): «brown fox» once fewer,
+// «red cat» once more, the rest of the line unchanged. A right result through one call of ST_REPLACERS passes;
+// through anything else (several edits, an insert and a delete) it warns.
 const stHandReplace = stHandStep(async (ctx, it) => {
   const mp = ctx.mp;
   if (!it.selected) return stSkip(`not run: ${it.selectWhy || 'the selection step did not run'}`);
@@ -1333,31 +1462,32 @@ const stHandReplace = stHandStep(async (ctx, it) => {
       r = await stReread(ctx, it.api, { force: i > 0 });
       ok = r.ok && stCount(r.text, ST_HAND.replace) === had.replace + 1 && stCount(r.text, ST_HAND.select) === had.select - 1;
     }
-    const used = run.loop.tools.includes(REPLACE_TOOL.function.name);
-    const how = it.api ? 'the Docs API' : 'the paste over the selection';
+    const writes = run.loop.tools.filter((n) => !READING_TOOLS.includes(n));
+    const by = writes.length === 1 && ST_REPLACERS.includes(writes[0]) ? writes[0] : '';
+    const how = by !== REPLACE_TOOL.function.name || it.api ? 'the Docs API' : 'the paste over the selection';
     if (!r.ok) v = stFail(r.error);
     else if (!ok) {
       const before = had.select === 1 && had.replace === 0 ? ''
         : ` (before the step: «${ST_HAND.replace}» ${stPlural(had.replace, 'time')} and «${ST_HAND.select}» ${stPlural(had.select, 'time')})`;
       v = stFail(`the document has «${ST_HAND.replace}» ${stPlural(stCount(r.text, ST_HAND.replace), 'time')} and «${ST_HAND.select}» ${stPlural(stCount(r.text, ST_HAND.select), 'time')}` +
-        before + (used ? '' : '; the model did not call replace_selection'));
+        before + (writes.some((n) => ST_REPLACERS.includes(n)) ? '' : `; the model called none of ${ST_REPLACERS.join(', ')}`));
     } else {
       const k = r.lines.findIndex((t) => stLoose(t).includes(ST_HAND.replace)) + 1;
       const where = `line ${k} reads ${stQuote(r.lines[k - 1])}`;
-      if (!used) v = stWarn(`${where}, but the model did not use replace_selection`);
+      if (!by) v = stWarn(`${where}, but the model used ${writes.length ? stToolCounts(writes) : 'no writing tool'} instead of one call of ${ST_REPLACERS.join(', ')}`);
       else if (stLoose(r.lines[k - 1]) !== stLoose(want)) v = stWarn(`«${ST_HAND.select}» became «${ST_HAND.replace}», but the line changed otherwise: ${where}`, `Expected: ${stQuote(want)}`);
-      else v = stPass(`replace_selection replaced the selection «${it.selection}» through ${how}; ${where}`);
+      else v = stPass(`${by} replaced the selection «${it.selection}» through ${how}; ${where}`);
     }
     if (r.ok) it.text = r.lines[it.line - 1] || it.text;
   }
   return stScenarioRow(ctx, run, v);
 });
 
-// 3. The user makes «quick» bold. With the Docs API read_formatting must show **quick** on the paragraph's
-// line; without it the Markdown export (the panel keeps its **bold** markers in the document text).
+// 3. The user makes «quick» bold. The panel checks every second with the Docs API (read_document formatting must show
+// **quick** on the paragraph's line; the API lags the editor by a few seconds) or every ST_WATCH.exportEveryMs in
+// the Markdown export (the panel keeps its **bold** markers in the document text), and goes on once it is bold
+// (or bold wider than «quick»: a warning). The detail says after how many reads and how long.
 const stHandBold = stHandStep(async (ctx, it) => {
-  const t = await stYourTurn(ctx, ST_YOUR_TURN.bold, { showSelection: true });
-  if (!t.go) return stSkip(t.why);
   const lineOf = (lines) => lines.findIndex((x) => /lazy dog/i.test(x)) + 1; // the paragraph, whatever replaced «brown fox»
   const verdict = (text, where) => {
     if (/\*\*quick\*\*/i.test(text)) return { status: 'pass', text: `${where} shows **${ST_HAND.bold}**` };
@@ -1365,45 +1495,41 @@ const stHandBold = stHandStep(async (ctx, it) => {
     if (bold) return { status: 'warn', text: `${where}: the bold text is ${stQuote(bold)}, wider than «${ST_HAND.bold}»` };
     return { status: 'fail', text: `${where} does not show «${ST_HAND.bold}» as bold` };
   };
-  if (it.api) {
-    let v = null;
-    let f = null;
-    let n = 0;
-    while (n < ST_MODEL.apiTries) {
-      if (n) await stDelay(ST_MODEL.apiWaitMs);
-      const r = await stReread(ctx, true, { force: n > 0 });
-      n++;
-      if (!r.ok) return stFail(r.error);
-      const k = lineOf(r.lines);
-      if (!k) return stFail('the test paragraph is no longer in the document');
-      f = await stTool(ctx, 'read_formatting', { start: k, end: k }, r.snap);
-      const got = f.content.split('\n').find((l) => l.startsWith(`${k}: `)) || '';
-      v = verdict(got, `read_formatting of line ${k}`);
-      if (v.status === 'pass') break;
-    }
-    return stResult(v.status)(`${v.text} (after ${stPlural(n, 'read')})`, v.status === 'pass' ? '' : stClip(f.content, ST_FORMAT_CHARS));
-  }
-  let r = null;
-  let v = null;
-  for (let i = 0; i < ST_MODEL.exportTries; i++) {
-    if (i) await stDelay(ST_MODEL.exportWaitMs);
-    r = await stReread(ctx, false, { force: i > 0 });
-    if (!r.ok) return stFail(r.error);
-    if (r.snap.docFormat !== 'markdown') return stWarn('the export is plain text, so the formatting cannot be read without the Docs API');
+  const gone = { done: false, status: 'fail', text: 'the test paragraph is no longer in the document' };
+  const check = it.api ? async () => {
+    const r = await stReread(ctx, true, { force: true });
+    if (!r.ok) return { done: false, status: 'fail', text: r.error };
     const k = lineOf(r.lines);
-    if (!k) return stFail('the test paragraph is no longer in the document');
-    v = verdict(r.lines[k - 1], `the Markdown export of line ${k}`);
-    if (v.status === 'pass') break;
-  }
-  return stResult(v.status)(`${v.text} (formatting read from the Markdown export)`);
+    if (!k) return gone;
+    const f = await stReadFmt(ctx, k, k, r.snap);
+    const v = verdict(stLineOf(f, k), `read_document (formatting) of line ${k}`);
+    return { ...v, done: v.status !== 'fail', more: f.content, fresh: true };
+  } : async () => {
+    const r = await stReadExport(ctx);
+    if (!r.ok) return { done: false, status: 'fail', text: r.error, waitMs: r.waitMs };
+    if (r.format !== 'markdown') return { done: true, status: 'warn', plain: true, text: 'the export is plain text, so the formatting cannot be read without the Docs API' };
+    const k = lineOf(r.lines);
+    if (!k) return gone;
+    const v = verdict(r.lines[k - 1], `the Markdown export of line ${k}`);
+    return { ...v, done: v.status !== 'fail', fresh: true };
+  };
+  const t = await stYourTurn(ctx, ST_YOUR_TURN.bold, { showSelection: true, check, everyMs: it.api ? ST_WATCH.everyMs : ST_WATCH.exportEveryMs });
+  if (!t.go && !t.timedOut) return stSkip(t.why);
+  const v = t.last || { status: 'fail', text: 'the document was not read' };
+  if (v.plain) return stWarn(v.text);
+  const reads = `${stPlural(t.polls, 'read')} in ${stSecs(t.ms)}`;
+  const tail = it.api ? reads : `${reads}, formatting read from the Markdown export`;
+  const more = v.status === 'pass' || !v.more ? '' : stClip(v.more, ST_FORMAT_CHARS);
+  if (!t.go) return stFail(`${v.text} (no bold within ${stSpan(ST_INTERACTIVE.timeoutMs)}: ${tail})`, more);
+  return stResult(v.status)(`${v.text} (after ${tail})`, more);
 });
 
 // 4. The typing signal: the user types a few letters and deletes them; the panel counts what the content script
 // sends meanwhile (DOC_TYPED, DOC_CHANGED by source, through setDocSignalTap) and, from the first signal on, reads the
 // way the live line does (the Docs API revision every ST_SIGNAL.apiEveryMs; the export every ST_SIGNAL.exportEveryMs,
-// at most ST_SIGNAL.exportTries times) until a read differs from the one before the step. Waits ST_SIGNAL.timeoutMs
-// for Continue; no Continue by then still reports what arrived. The letters left in the document go with the
-// paragraph (Docs API: stHandRewriteApi writes it again; export: the user removes it at the end).
+// at most ST_SIGNAL.exportTries times) until a read differs from the one before the step. Goes on once a signal came
+// and a read saw the change (or failed); after ST_SIGNAL.timeoutMs it reports what arrived. The letters left in the
+// document go with the paragraph (Docs API: stHandRewriteApi writes it again; export: the user removes it at the end).
 const ST_SIGNAL = { timeoutMs: 60000, apiEveryMs: 1000, apiTries: 30, exportEveryMs: 3000, exportTries: 4 }; // tests shorten these
 async function stWatchExact(ctx, api, base, seen, signal) {
   const every = api ? ST_SIGNAL.apiEveryMs : ST_SIGNAL.exportEveryMs;
@@ -1421,12 +1547,13 @@ async function stWatchExact(ctx, api, base, seen, signal) {
       return;
     }
   }
+  seen.readDone = true; // no read saw the change
 }
 const stHandTyping = stHandStep(async (ctx, it) => {
   const pre = await stReread(ctx, it.api);
   if (!pre.ok) return stFail(pre.error);
   const base = { text: pre.text, rev: it.api ? pre.snap.model.revisionId : null };
-  const seen = { typed: 0, changed: 0, page: 0, input: 0, remote: 0, plus: 0, minus: 0, first: 0, readMs: null, readError: '' };
+  const seen = { typed: 0, changed: 0, page: 0, input: 0, remote: 0, plus: 0, minus: 0, first: 0, readMs: null, readError: '', readDone: false };
   const stop = new AbortController();
   let watching = null;
   setDocSignalTap((msg) => {
@@ -1441,8 +1568,9 @@ const stHandTyping = stHandStep(async (ctx, it) => {
       if (msg.remote) seen.remote++;
     }
   });
+  const check = async () => ({ done: !!seen.first && (seen.readMs != null || !!seen.readError || seen.readDone) });
   let t;
-  try { t = await stYourTurn(ctx, ST_YOUR_TURN.typing, { timeoutMs: ST_SIGNAL.timeoutMs }); } finally {
+  try { t = await stYourTurn(ctx, ST_YOUR_TURN.typing, { timeoutMs: ST_SIGNAL.timeoutMs, check }); } finally {
     setDocSignalTap(null);
     stop.abort();
   }
@@ -1458,35 +1586,38 @@ function stTypingVerdict(seen, api, timedOut) {
   const read = seen.readMs != null ? `exact read after ${(seen.readMs / 1000).toFixed(1)} s`
     : seen.readError ? `the read failed: ${seen.readError}`
       : `no ${api ? 'Docs API' : 'export'} read saw the change`;
+  const span = stSpan(ST_SIGNAL.timeoutMs);
   const detail = `DOC_TYPED ×${fmtNum(seen.typed)}, DOC_CHANGED ×${fmtNum(seen.changed)}${sources}, estimate ${est} chars, ${read}` +
-    (timedOut ? ` (no Continue within ${ST_SIGNAL.timeoutMs / 1000} s)` : '');
-  if (!seen.typed && !seen.changed) return stFail(`nothing arrived from the content script${timedOut ? ` within ${ST_SIGNAL.timeoutMs / 1000} s` : ''}: the panel does not see typing in this tab; reload the Docs tab and run /test again`);
+    (timedOut ? ` (waited ${span})` : '');
+  if (!seen.typed && !seen.changed) return stFail(`nothing arrived from the content script${timedOut ? ` within ${span}` : ''}: the panel does not see typing in this tab; reload the Docs tab and run /test again`);
   if (!seen.typed) return stWarn(`${detail}: no DOC_TYPED, so the numbers wait for the read`);
-  if (!seen.changed) return stWarn(`${detail}: no DOC_CHANGED, so the read waits for the 15 s check`);
+  if (!seen.changed) return stWarn(`${detail}: no DOC_CHANGED${api ? ' (DOC_TYPED alone starts the check)' : ', so the read waits for the 60 s export poll'}`);
   if (seen.readMs == null) return stWarn(detail);
   return stPass(detail);
 }
 
-// 5. Without the Docs API (export mode) the cleanup is the user's: the test paragraph removed by hand, the
-// document read again and compared with the start (empty). Skip (or the timeout) gives the warning the
-// panel's cleanup gave before; with no test paragraph the panel's cleanup check runs (stRestore).
+// 5. Without the Docs API (export mode) the cleanup is the user's: the panel reads the export every
+// ST_WATCH.exportEveryMs (longer after HTTP 429) until the document equals the start (empty) again. Skip reads once
+// more and gives the warning the panel's cleanup gave before; the timeout warns with what is left; with no test
+// paragraph the panel's cleanup check runs (stRestore).
 async function stHandRemove(ctx) {
   const mp = ctx.mp;
   if (!mp.allowed) return stSkip(mp.skipWhy || 'not run');
   if (!ctx.it.ready) return stModelCleanup(ctx);
-  const t = await stYourTurn(ctx, ST_YOUR_TURN.remove); // Stop here: runSelfTest's cleanup check still runs
+  const check = async () => {
+    const r = await stReadExport(ctx);
+    return r.ok ? { done: r.text === mp.T0, lines: r.lines, fresh: true } : { done: false, text: r.error, waitMs: r.waitMs };
+  };
+  const t = await stYourTurn(ctx, ST_YOUR_TURN.remove, { check, everyMs: ST_WATCH.exportEveryMs }); // Stop here: runSelfTest's cleanup check still runs
   mp.cleaned = true;
-  let r = null;
-  for (let i = 0; i < (t.go ? ST_MODEL.exportTries : 1); i++) {
-    if (i) await stDelay(ST_MODEL.exportWaitMs);
-    r = await stReread(ctx, false, { force: i > 0 });
-    if (!r.ok) return stFail(r.error);
-    if (r.text === mp.T0) return stPass(t.go ? `removed by the user; ${stSame(mp.T0)}` : stSame(mp.T0));
-  }
+  if (t.go) return stPass(`removed by the user; ${stSame(mp.T0)}`);
+  const r = await stReread(ctx, false, { force: true });
+  if (!r.ok) return stFail(r.error);
+  if (r.text === mp.T0) return stPass(stSame(mp.T0));
   const d = stDiffLines(r.lines, stLines(mp.T0));
-  if (!t.go) return stPasteStays(d);
+  if (!t.timedOut) return stPasteStays(d);
   const left = d.extra.length ? stLineRefs(d.a + 1, d.extra) : 'changes';
-  return stWarn(`the document is not empty after your turn (${left}): press Ctrl+Z in Google Docs or delete it by hand`);
+  return stWarn(`the document is not empty after ${stSpan(ST_INTERACTIVE.timeoutMs)} (${left}): press Ctrl+Z in Google Docs or delete it by hand`);
 }
 
 // The checks in order (one row each): the harmless checks, the "Empty document" gate, then by mode. 'api':
@@ -1501,8 +1632,8 @@ function selfTestChecks(mode = 'api') {
     ['Export read', stExport], ['Docs API read', stDocsApi], ['Model list', stModelList], ['Completion', stCompletion],
     ['Empty document', stEmptyDocument],
   ];
-  const reading = [['get_outline', stOutline], ['read_lines', stReadLines], ['find_in_document', stFind],
-    ['get_selection', stGetSelection], ['read_formatting', stReadFormatting], ['Matching', stMatching]];
+  const reading = [['read_document: outline', stOutline], ['read_document: lines', stReadLines], ['find_in_document', stFind],
+    ['get_selection', stGetSelection], ['read_document: formatting', stReadFormatting], ['Matching', stMatching]];
   const edits = [['Write: replace_text', stReplace], ['Write: format_text', stFormat], ['Write: text styles', stTextStyles],
     ['Write: format_lines', stFormatLines], ['Write: lists', stLists], ['Write: delete_lines', stDelete], ['Write: undo_last_edit', stUndo]];
   const hands = [['Your turn: select text', stHandSelect], ['Model: replace the selection', stHandReplace],
@@ -1511,7 +1642,7 @@ function selfTestChecks(mode = 'api') {
     ...head, ['Write: insert_after_line', stInsert], ...reading, ...hands, ...edits,
     ['Model: write a section', stModelWrite], ['Model: replace a phrase', stModelReplace], ['Model: format', stModelFormat],
     ['Model: heading', stModelHeading], ['Model: replace all', stModelReplaceAll], ['Model: list', stModelNumbered],
-    ['Model: selection', stModelSelection], ['Model: question', stModelQuestion],
+    ['Model: selection', stModelSelection], ['Model: question', stModelQuestion], ['Agent: summarize the test section', stModelAgent],
     ['Model: delete', stModelDelete], ['Model: cleanup', stModelCleanupStep], ['Multi-tab', stMultiTab],
   ] : [
     ...head, ['Write: insert_after_line', stInsert], ...edits,
@@ -1601,12 +1732,12 @@ async function runSelfTest() {
   return report;
 }
 
-// The live row of a running self-test: a notice in the chat with the orb (orbits while the checks run, the wave while
+// The live row of a running self-test: a report box in the chat with the orb (orbits while the checks run, the wave while
 // a Your-turn card waits for the user) and the current row. selfTestCard takes its place at the end; Stop and errors
 // end the run the same way, so the orb loop always stops (orbSetState null).
 function stLiveStart(ctx) {
   const d = document.createElement('div');
-  d.className = 'msg notice selftest-live';
+  d.className = 'msg report selftest-live';
   const orb = orbCreate();
   const text = document.createElement('span');
   text.className = 'st-live-text';
@@ -1695,7 +1826,7 @@ function selfTestMarkdown(report) {
     `- Document: «${h.title}» (${h.docId}) · Docs tab ${h.docsTab} · browser tab ${h.browserTab}`,
     ...(h.modelLine ? [`- Model: ${h.modelLine}`] : []), '',
     '| # | Check | Result | Time | Detail |', '|---|---|---|---|---|',
-    ...report.rows.map((r, i) => `| ${i + 1} | ${stCell(r.name)} | ${ST_ICONS[r.status]} ${ST_LABELS[r.status]} | ${fmtNum(r.ms)} ms | ${stCell(r.detail)} |`),
+    ...report.rows.map((r, i) => `| ${i + 1} | ${stCell(r.name)} | ${ST_LABELS[r.status]} | ${fmtNum(r.ms)} ms | ${stCell(r.detail)} |`),
     '', `**Summary:** ${selfTestSummary(report)}`,
   ];
   if (report.leftover) out.push('', `**Write cycle:** ${report.leftover}`);
@@ -1705,20 +1836,20 @@ function selfTestMarkdown(report) {
   return out.join('\n').replace(/\n+$/, '') + '\n';
 }
 
-// The report card in the chat: a notice-like element (renderHistory drops it), never stored in the history.
+// The report card in the chat: a report box (renderHistory drops it), never stored in the history.
 function selfTestCard(report, markdown = selfTestMarkdown(report)) {
   const h = report.header;
   const failed = report.rows.some((r) => r.status === 'fail');
   const row = (r) => {
-    const line = `<span class="st-icon">${ST_ICONS[r.status]}</span> <span class="st-name">${escapeHtml(r.name)}</span> ` +
+    const line = `<span class="st-icon mk ${ST_MARKS[r.status]}" role="img" aria-label="${ST_LABELS[r.status]}" data-tip="${ST_LABELS[r.status]}"></span> <span class="st-name">${escapeHtml(r.name)}</span> ` +
       `<span class="st-ms">${escapeHtml(fmtNum(r.ms))} ms</span> <span class="st-detail">${escapeHtml(r.detail)}</span>`;
     return r.more
       ? `<details class="st-row st-${r.status}"><summary>${line}</summary><pre>${escapeHtml(r.more)}</pre></details>`
       : `<div class="st-row st-${r.status}">${line}</div>`;
   };
   const d = document.createElement('div');
-  d.className = 'msg notice selftest';
-  d.innerHTML = `<div class="st-head">🩺 Self-test · ${escapeHtml(stDate(report.at))} · v${escapeHtml(h.version)} · ` +
+  d.className = 'msg report selftest';
+  d.innerHTML = `<div class="st-head">Self-test · ${escapeHtml(stDate(report.at))} · v${escapeHtml(h.version)} · ` +
     `${escapeHtml(h.provider)} / ${escapeHtml(h.model)} · Google ${escapeHtml(h.google)}</div>` +
     `<div class="st-sub">«${escapeHtml(h.title)}» (${escapeHtml(h.docId)}) · Docs tab ${escapeHtml(h.docsTab)} · browser tab ${escapeHtml(h.browserTab)}</div>` +
     (h.modelLine ? `<div class="st-sub st-model">Model: ${escapeHtml(h.modelLine)}</div>` : '') +
@@ -1726,7 +1857,7 @@ function selfTestCard(report, markdown = selfTestMarkdown(report)) {
     `<div class="st-summary">${escapeHtml(selfTestSummary(report))}</div>` +
     (report.leftover ? `<div class="st-leftover">${escapeHtml(report.leftover)}</div>` : '') +
     (report.modelLeftover ? `<div class="st-leftover">${escapeHtml(report.modelLeftover)}</div>` : '') +
-    '<div class="tool-actions st-actions"><button class="btn small" type="button" data-act="copy-selftest" title="Copy the whole report as Markdown">Copy report</button>' +
+    '<div class="tool-actions st-actions"><button class="btn small" type="button" data-act="copy-selftest" data-tip="Copy as Markdown">Copy report</button>' +
     (failed ? '<span class="st-hint">Send this report to the developer</span>' : '') + '</div>';
   d._report = markdown;
   d._selfTest = report;

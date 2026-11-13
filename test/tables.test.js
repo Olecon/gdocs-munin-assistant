@@ -34,7 +34,7 @@ const spec = () => docSpec({ items: [
 const TEXT0 = 'Title\nAlpha\nBeta\nA\nB\nC\nD\nAfter\nLast';
 const ROWS0 = [['A', 'B'], ['C', 'D']];
 const WIDTHS0 = [{ type: 'FIXED_WIDTH', pt: 120 }, { type: 'EVENLY_DISTRIBUTED' }];
-const NULLS = { action: null, line: null, table: null, row: null, column: null, rows: null, columns: null, cells: null, width: null };
+const NULLS = { action: null, line: null, table: null, row: null, column: null, rows: null, columns: null, cells: null, width: null, color: null, style: null };
 const tb = (over) => ({ ...NULLS, ...over });
 const loc = (index) => ({ index, tabId: 't.0' });
 const cellLoc = (start, r, c) => ({ tableStartLocation: loc(start), rowIndex: r, columnIndex: c });
@@ -58,20 +58,21 @@ test('schema, offer, prompt line, icon, pending text and action-log summaries', 
   await fresh(spec());
   const f = T.TABLE_TOOL.function;
   assert.strictEqual(f.name, 'table');
-  deq(f.parameters.required, ['action', 'line', 'table', 'row', 'column', 'rows', 'columns', 'cells', 'width']);
+  deq(f.parameters.required, ['action', 'line', 'table', 'row', 'column', 'rows', 'columns', 'cells', 'width', 'color', 'style']);
   deq(Object.keys(f.parameters.properties), f.parameters.required);
   assert.strictEqual(f.parameters.additionalProperties, false);
-  deq(f.parameters.properties.action.enum, ['insert', 'add_row', 'add_column', 'delete_row', 'delete_column', 'set_width']);
+  deq(f.parameters.properties.action.enum, ['insert', 'add_row', 'add_column', 'delete_row', 'delete_column', 'set_width', 'header_rows', 'shade', 'borders', 'merge', 'unmerge']);
+  deq(f.parameters.properties.style.anyOf[0], { type: 'string', enum: ['grid', 'horizontal', 'outer', 'none'] });
   deq(f.parameters.properties.cells.anyOf[0], { type: 'array', items: { type: 'array', items: { type: 'string' } } });
   // offered in Auto with the Docs API only, after the built-in tools
-  deq(T.toolsFor('edit', as).map((t) => t.function.name).slice(-7), ['replace_selection', 'ask_user', 'table', 'page_parts', 'read_comments', 'draft', 'revise_section']);
+  deq(T.toolsFor('edit', as).map((t) => t.function.name).slice(-11), ['replace_selection', 'ask_user', 'table', 'page_parts', 'document_styles', 'style_map', 'draft', 'revise_section', 'trim_to_words', 'phrase_usage', 'delegate']);
   assert.ok(!T.toolsFor('manual', as).some((t) => t.function.name === 'table'));
   assert.ok(!T.toolsFor('edit', { ...as, docFormat: 'markdown', model: null }).some((t) => t.function.name === 'table'));
   const head = T.buildSystemParts('edit', 1e5, as).head;
-  assert.ok(head.includes('\n- table(action, line, table, row, column, rows, columns, cells, width): insert a table after a line (with cell texts); add_row / add_column after row or column N of table Tn (0 = before the first); delete_row / delete_column; set_width of a column in pt. Edit cell text with replace_text.\n'), 'edit line');
+  assert.ok(!head.includes('- table('), 'no prompt line: the definition describes the tool');
   assert.ok(head.includes('(table cells are separate lines marked [rNcM] (row N, column M), under a [table Tn …] line, in reading order)'), 'cell sentence');
   assert.ok(!T.buildSystemParts('manual', 1e5, as).head.includes('- table('));
-  deq([T.activityIcon('table'), T.pendingCardText('table'), T.isEditTool('table')], ['▦', 'Changing a table…', true]);
+  deq([T.pendingCardText('table'), T.isEditTool('table')], ['Changing a table…', true]);
   const sum = (args) => T.logEntry({ id: 'x', function: { name: 'table', arguments: JSON.stringify(tb(args)) } }, null).summary;
   deq([sum({ action: 'insert', line: 7, rows: 3, columns: 2 }), sum({ action: 'insert', line: 0, rows: 1, columns: 1 }), sum({ action: 'delete_row', table: 'T1', row: 2 }),
     sum({ action: 'add_row', table: 't2', row: 0 }), sum({ action: 'add_column', table: '1', column: 3 }), sum({ action: 'delete_column', table: 'T1', column: 1 }),
@@ -82,7 +83,7 @@ test('schema, offer, prompt line, icon, pending text and action-log summaries', 
 
 test('notation: read_lines shows the [table …] line and the cell labels; a copied prefix still matches', async () => {
   await fresh(spec());
-  const r = await exec('read_lines', { start: 3, end: 8 });
+  const r = await exec('read_document', { scope: { start: 3, end: 8 }, include: ['text'], doc: null });
   assert.ok(r.content.includes('3: Beta\n[table T1: 2 rows × 2 columns, lines 4–7]\n4 [r1c1]: A\n5 [r1c2]: B\n6 [r2c1]: C\n7 [r2c2]: D\n8: After'), r.content);
   const f = await exec('find_in_document', { query: 'D' });
   assert.ok(f.content.includes('7 [r2c2]: D'), f.content);
@@ -95,8 +96,8 @@ test('insert: insertTable at the line\'s newline, then a second batch fills the 
   assert.ok(w._ok, w.content);
   // the API cannot fill a table in the batch that inserts it: two batches
   deq(posts(), [[{ insertTable: { rows: 2, columns: 2, location: loc(17) } }], [ins(26, 'x'), ins(23, 'H2'), ins(21, 'H1')]]);
-  assert.strictEqual(w.content, 'Done: inserted table T1 (2 rows × 2 columns) after line 3.\nLines 4-8 now:\n[table T1: 2 rows × 2 columns, lines 4–7]\n'
-    + '4 [r1c1]: H1\n5 [r1c2]: H2\n6 [r2c1]: x\n7 [r2c2]: \n8: \nThe document now has 14 lines.');
+  assert.strictEqual(w.content, 'Done: inserted table T1 (2 rows × 2 columns) after line 3; now lines 4–8; the document has 14 lines.');
+  assert.ok(T.runReadingTool('read_lines', { start: 4, end: 8 }, as).includes('[table T1: 2 rows × 2 columns, lines 4–7]\n4 [r1c1]: H1\n5 [r1c2]: H2\n6 [r2c1]: x\n7 [r2c2]: \n8: '));
   deq([w._message, w._cardLabel, w._cardText], ['Inserted a 2×2 table after line 3', 'Table', 'H1 | H2\nx | ']);
   deq(fake.tables('t.0').map((t) => t.rows), [[['H1', 'H2'], ['x', '']], ROWS0]);
   deq([w._edit.kind, w._edit.action, w._edit.start, w._edit.anchor, w._edit.atStart], ['table', 'insert', 18, false, false]);
@@ -104,7 +105,7 @@ test('insert: insertTable at the line\'s newline, then a second batch fills the 
   // the table goes together with the newline before it: the empty paragraph Docs left after it joins line 3 again
   const u = await undo();
   assert.ok(u._ok, u.content);
-  deq(posts().pop(), [{ deleteContentRange: { range: { startIndex: 17, endIndex: 34, tabId: 't.0' } } }]);
+  deq(posts().pop(), [{ deleteContentRange: { range: { startIndex: 17, endIndex: 35, tabId: 't.0' } } }]); // the table's end index as Docs gives it
   assert.strictEqual(u.content, 'Done: undid "Inserted a 2×2 table after line 3".\nLines 3-3 now:\n3: Beta\nThe document now has 9 lines.');
   assertOriginal();
   deq(fake.styles('t.0').slice(0, 3), ['TITLE', 'NORMAL_TEXT', 'NORMAL_TEXT']);
@@ -115,7 +116,7 @@ test('insert: at the beginning (line 0), without texts (one batch), rows and col
   let w = pushTool(await exec('table', tb({ action: 'insert', line: 0, rows: 1, columns: 1 })));
   assert.ok(w._ok, w.content);
   deq(posts(), [[{ insertTable: { rows: 1, columns: 1, location: loc(1) } }]]);
-  assert.ok(w.content.startsWith('Done: inserted table T1 (1 row × 1 column) at the beginning.\nLines 2-3 now:\n[table T1: 1 row × 1 column, line 2]\n2 [r1c1]: \n3: Title\n'), w.content);
+  assert.ok(w.content.startsWith('Done: inserted table T1 (1 row × 1 column) at the beginning; now lines 2–3; the document has'), w.content);
   assert.strictEqual(fake.text('t.0'), '\n\n' + TEXT0); // an empty paragraph, the table's cell, then the old line 1
   let u = await undo();
   assert.ok(u._ok, u.content);
@@ -140,7 +141,7 @@ test('insert: a failing cell batch rolls the table back; the result says so', as
   assert.ok(!w._ok);
   assert.ok(w.content.startsWith('Error: the edit failed halfway (') && w.content.includes('its first part was rolled back, so the document is as it was.'), w.content);
   const p = posts();
-  deq([p[0], p[p.length - 1]], [[{ insertTable: { rows: 1, columns: 2, location: loc(17) } }], [{ deleteContentRange: { range: { startIndex: 17, endIndex: 24, tabId: 't.0' } } }]]);
+  deq([p[0], p[p.length - 1]], [[{ insertTable: { rows: 1, columns: 2, location: loc(17) } }], [{ deleteContentRange: { range: { startIndex: 17, endIndex: 25, tabId: 't.0' } } }]]);
   assertOriginal();
 });
 
@@ -149,7 +150,7 @@ test('add_row / add_column: insertTableRow / insertTableColumn at the table star
   let w = pushTool(await exec('table', tb({ action: 'add_row', table: 'T1', row: 1, cells: [['E', 'F']] })));
   assert.ok(w._ok, w.content);
   deq(posts(), [[{ insertTableRow: { tableCellLocation: cellLoc(18, 0, 0), insertBelow: true } }], [ins(30, 'F'), ins(28, 'E')]]);
-  assert.strictEqual(w.content, 'Done: added row 2 to table T1.\nLines 6, 7 now:\n6 [r2c1]: E\n7 [r2c2]: F\nThe document now has 11 lines.');
+  assert.strictEqual(w.content, 'Done: added row 2 to table T1; now lines 6–7; the document has 11 lines.');
   deq(fake.tables('t.0')[0].rows, [['A', 'B'], ['E', 'F'], ['C', 'D']]);
   let u = await undo();
   assert.ok(u._ok, u.content);
@@ -159,7 +160,7 @@ test('add_row / add_column: insertTableRow / insertTableColumn at the table star
   w = pushTool(await exec('table', tb({ action: 'add_row', table: 'T1', row: 0 })));
   deq(lastPost().requests, [{ insertTableRow: { tableCellLocation: cellLoc(18, 0, 0), insertBelow: false } }]);
   deq(fake.tables('t.0')[0].rows, [['', ''], ...ROWS0]);
-  assert.strictEqual(w.content, 'Done: added row 1 to table T1.\nLines 4, 5 now:\n4 [r1c1]: \n5 [r1c2]: \nThe document now has 11 lines.');
+  assert.strictEqual(w.content, 'Done: added row 1 to table T1; now lines 4–5; the document has 11 lines.');
   u = await undo();
   deq(posts().pop(), [{ deleteTableRow: { tableCellLocation: cellLoc(18, 0, 0) } }]);
   assertOriginal();
@@ -167,7 +168,7 @@ test('add_row / add_column: insertTableRow / insertTableColumn at the table star
   w = pushTool(await exec('table', tb({ action: 'add_column', table: 'T1', column: 2, cells: [['x', 'y']] })));
   assert.ok(w._ok, w.content);
   deq(posts().slice(-2), [[{ insertTableColumn: { tableCellLocation: cellLoc(18, 0, 1), insertRight: true } }], [ins(36, 'y'), ins(27, 'x')]]);
-  assert.strictEqual(w.content, 'Done: added column 3 to table T1.\nLines 6, 9 now:\n6 [r1c3]: x\n9 [r2c3]: y\nThe document now has 11 lines.');
+  assert.strictEqual(w.content, 'Done: added column 3 to table T1; now lines 6–9; the document has 11 lines.');
   deq(fake.tables('t.0')[0].rows, [['A', 'B', 'x'], ['C', 'D', 'y']]);
   u = await undo();
   deq(posts().pop(), [{ deleteTableColumn: { tableCellLocation: cellLoc(18, 0, 2) } }]);
@@ -179,14 +180,15 @@ test('add_row / add_column: insertTableRow / insertTableColumn at the table star
   assertOriginal([{ type: 'FIXED_WIDTH', pt: 120 }, { type: 'EVENLY_DISTRIBUTED' }]);
 });
 
-test('delete_row / delete_column: the gate asks when the cells hold text; undo re-creates them with plain text (lossy note)', async () => {
+test('delete_row / delete_column: the Manual card says what goes and that undo restores plain text; undo re-creates them with plain text (lossy note)', async () => {
   await fresh(spec());
+  as.askEdits = true;
   const { r: w, html } = await decided(exec('table', tb({ action: 'delete_row', table: 'T1', row: 2 })), 'accept');
   pushTool(w);
   assert.ok(w._ok, w.content);
-  assert.ok(html.includes('Large edit: it deletes a table row with 2 characters of text; undo restores plain text only.') && html.includes('Table T1, row 2') && html.includes('C | D'), html);
+  assert.ok(html.includes('Deletes a table row with 2 characters of text; undo restores plain text only.') && html.includes('Table T1, row 2') && html.includes('<pre>C | D</pre>'), html);
   deq(lastPost().requests, [{ deleteTableRow: { tableCellLocation: cellLoc(18, 1, 0) } }]);
-  assert.strictEqual(w.content, 'Done: deleted row 2 of table T1 (its text: «C | D»).\nLines 4, 5 now:\n4 [r1c1]: A\n5 [r1c2]: B\nThe document now has 7 lines.');
+  assert.strictEqual(w.content, 'Done: deleted row 2 of table T1; now lines 4–5; the document has 7 lines.');
   deq(w._edit.texts, ['C', 'D']);
   let u = await undo();
   assert.ok(u._ok, u.content);
@@ -197,7 +199,7 @@ test('delete_row / delete_column: the gate asks when the cells hold text; undo r
   const c = await decided(exec('table', tb({ action: 'delete_column', table: 'T1', column: 1 })), 'accept');
   pushTool(c.r);
   deq(lastPost().requests, [{ deleteTableColumn: { tableCellLocation: cellLoc(18, 0, 0) } }]);
-  assert.strictEqual(c.r.content, 'Done: deleted column 1 of table T1 (its text: «A | C»).\nLines 4, 5 now:\n4 [r1c1]: B\n5 [r2c1]: D\nThe document now has 7 lines.');
+  assert.strictEqual(c.r.content, 'Done: deleted column 1 of table T1; now lines 4–5; the document has 7 lines.');
   u = await undo();
   deq(posts().slice(-2), [[{ insertTableColumn: { tableCellLocation: cellLoc(18, 0, 0), insertRight: false } }], [ins(27, 'C'), ins(21, 'A')]]);
   assert.ok(u.content.includes('Note: the column was re-created with its plain text'), u.content);
@@ -212,7 +214,7 @@ test('delete of an empty row passes without a card; undo puts back an empty row'
   await fresh(docSpec({ items: [{ p: 'Top' }, { table: [[[{ p: 'a' }], [{ p: 'b' }]], [[{ p: '' }], [{ p: '' }]]] }, { p: 'End' }] }));
   const w = pushTool(await exec('table', tb({ action: 'delete_row', table: 'T1', row: 2 })));
   assert.ok(w._ok && T.pendingPreviews.size === 0 && w._decision === undefined, w.content);
-  assert.strictEqual(w.content, 'Done: deleted row 2 of table T1.\nLines 2, 3 now:\n2 [r1c1]: a\n3 [r1c2]: b\nThe document now has 4 lines.');
+  assert.strictEqual(w.content, 'Done: deleted row 2 of table T1; now lines 2–3; the document has 4 lines.');
   const u = await undo();
   assert.ok(u._ok, u.content);
   deq(posts().pop(), [{ insertTableRow: { tableCellLocation: { tableStartLocation: loc(5), rowIndex: 0, columnIndex: 0 }, insertBelow: true } }]);
@@ -225,7 +227,7 @@ test('set_width: updateTableColumnProperties with its field mask; lines stay val
   assert.ok(w._ok, w.content);
   deq(lastPost().requests, [{ updateTableColumnProperties: { tableStartLocation: loc(18), columnIndices: [1],
     tableColumnProperties: { widthType: 'FIXED_WIDTH', width: { magnitude: 90, unit: 'PT' } }, fields: 'widthType,width' } }]);
-  assert.strictEqual(w.content, 'Done: column 2 of table T1 is 90 pt wide.\nTable T1 column widths: 1: 120 pt, 2: 90 pt.\nThe document now has 9 lines.');
+  assert.strictEqual(w.content, 'Done: column 2 of table T1 is 90 pt wide; the document has 9 lines.\nTable T1 column widths: 1: 120 pt, 2: 90 pt.');
   assert.strictEqual(as.responseWrite, null, 'a width moves no line');
   let u = await undo();
   assert.ok(u._ok, u.content);
@@ -233,7 +235,7 @@ test('set_width: updateTableColumnProperties with its field mask; lines stay val
   assertOriginal();
   // 0: automatic; undo gives the fixed 120 pt back
   w = pushTool(await exec('table', tb({ action: 'set_width', table: 'T1', column: 1, width: 0 })));
-  assert.strictEqual(w.content.split('\n')[0], 'Done: column 1 of table T1 has an automatic width.');
+  assert.strictEqual(w.content.split('\n')[0], 'Done: column 1 of table T1 has an automatic width; the document has 9 lines.');
   deq(fake.tables('t.0')[0].widths, [{ type: 'EVENLY_DISTRIBUTED' }, { type: 'EVENLY_DISTRIBUTED' }]);
   u = await undo();
   deq(lastPost().requests[0].updateTableColumnProperties.tableColumnProperties, { widthType: 'FIXED_WIDTH', width: { magnitude: 120, unit: 'PT' } });
@@ -262,22 +264,28 @@ test('undo refuses a table that changed after the edit, and finds one that moved
   await assert.rejects(T.undoEdit(t._edit), /the empty line after the table is no longer empty/);
 });
 
-test('gate: insert large above 50 cells; add, width and small inserts ask only in a tainted turn', async () => {
+test('gate: Auto asks about no table write (a big insert, a tainted turn); Manual asks for each, with the cells whole', async () => {
   await fresh(spec());
   const info = (args) => T.editGateInfo('table', T.planTable(as.model, tb(args)));
-  deq(info({ action: 'insert', line: 1, rows: 5, columns: 10 }), { large: false, what: 'inserts a table of 50 cells', range: 'After line 1', excerptLabel: 'Cells', excerpt: '(empty)' });
-  deq(info({ action: 'insert', line: 0, rows: 6, columns: 9 }).large, true);
-  deq(info({ action: 'insert', line: 1, cells: [['a', 'b']] }).excerpt, 'a | b');
-  deq(info({ action: 'add_row', table: 'T1', row: 1 }), { large: false, what: 'adds a table row', range: 'Table T1', excerptLabel: 'Cells', excerpt: '(empty)' });
-  deq(info({ action: 'set_width', table: 'T1', column: 1, width: 50 }), { large: false, what: 'changes a column width', range: 'Table T1, column 1', excerptLabel: 'Width', excerpt: '50 pt wide' });
-  deq(info({ action: 'delete_column', table: 'T1', column: 2 }), { large: true, what: 'deletes a table column with 2 characters of text; undo restores plain text only', range: 'Table T1, column 2', excerptLabel: 'Removed text', excerpt: 'B | D' });
-  // a big insert asks; a tainted turn asks for a small edit too
-  const big = await decided(exec('table', tb({ action: 'insert', line: 1, rows: 6, columns: 9 })), 'reject');
-  assert.ok(big.html.includes('Large edit: it inserts a table of 54 cells.'), big.html);
+  const one = (label, text) => [{ label, text }];
+  deq(info({ action: 'insert', line: 1, rows: 5, columns: 10 }), { what: 'inserts a table of 50 cells', range: 'After line 1', excerptLabel: 'Cells', excerpt: '(empty)', blocks: one('Cells', '(empty)') });
+  deq(info({ action: 'insert', line: 1, cells: [['a', 'b']] }).blocks, one('Cells', 'a | b'));
+  deq(info({ action: 'add_row', table: 'T1', row: 1 }), { what: 'adds a table row', range: 'Table T1', excerptLabel: 'Cells', excerpt: '(empty)', blocks: one('Cells', '(empty)') });
+  deq(info({ action: 'set_width', table: 'T1', column: 1, width: 50 }), { what: 'changes a column width', range: 'Table T1, column 1', excerptLabel: 'Width', excerpt: '50 pt wide', blocks: one('Width', '50 pt wide') });
+  deq(info({ action: 'delete_column', table: 'T1', column: 2 }), { what: 'deletes a table column with 2 characters of text; undo restores plain text only', range: 'Table T1, column 2', excerptLabel: 'Removed text', excerpt: 'B | D', blocks: one('Removed text', 'B | D') });
+  // Auto: a big insert and a tainted turn's width change run without a card
+  const big = pushTool(await exec('table', tb({ action: 'insert', line: 1, rows: 6, columns: 9 })));
+  assert.ok(big._ok && big._decision === undefined && T.pendingPreviews.size === 0, big.content);
   as.tainted = true;
-  const t = await decided(exec('table', tb({ action: 'set_width', table: 'T1', column: 1, width: 50 })), 'reject');
-  assert.ok(t.html.includes('This edit changes a column width.'), t.html);
-  as.tainted = false;
+  const w = await exec('table', tb({ action: 'set_width', table: 'T1', column: 1, width: 50 }));
+  assert.ok(w._ok && w._decision === undefined && T.pendingPreviews.size === 0, w.content);
+  // Manual: each asks
+  await fresh(spec());
+  as.askEdits = true;
+  const cells = Array.from({ length: 12 }, (_, r) => [`row ${String.fromCharCode(97 + r)} left`, `row ${String.fromCharCode(97 + r)} right`]);
+  const m = await decided(exec('table', tb({ action: 'insert', line: 1, cells })), 'reject');
+  assert.ok(m.html.includes('<div class="pv-note">Inserts a table of 24 cells.</div><div class="pv-anchor">After line 1</div>') &&
+    m.html.includes(`<pre>${cells.map((r) => r.join(' | ')).join('\n')}</pre>`), m.html);
   assert.strictEqual(posts().length, 0);
 });
 
@@ -285,10 +293,11 @@ test('replace_text and insert_after_line work inside a cell and report its label
   await fresh(spec());
   let w = pushTool(await exec('replace_text', { old_text: 'C', new_text: 'Charlie' }));
   assert.ok(w._ok, w.content);
-  assert.ok(w.content.includes('6 [r2c1]: Charlie'), w.content);
+  assert.strictEqual(w.content, 'Done: replaced line 6; the document has 9 lines.');
   w = pushTool(await exec('insert_after_line', { line: 4, text: 'A2' }));
   assert.ok(w._ok, w.content);
-  assert.ok(w.content.includes('5 [r1c1]: A2'), w.content);
+  assert.ok(w.content.startsWith('Done: inserted after line 4; now line 5;'), w.content);
+  assert.ok(T.runReadingTool('read_lines', { start: 4, end: 7 }, as).includes('\n5 [r1c1]: A2\n'), 'the cell label');
   deq(fake.tables('t.0')[0].rows, [['A\nA2', 'B'], ['Charlie', 'D']]);
   // the table tool sees the cell's two paragraphs as its text
   const p = T.planTable(as.model, tb({ action: 'delete_row', table: 'T1', row: 1 }));
@@ -299,7 +308,7 @@ test('errors name the fix', async () => {
   await fresh(spec());
   const err = async (args) => { const r = await exec('table', tb(args)); assert.ok(!r._ok, r.content); return r.content; };
   deq([
-    await err({ action: 'merge' }),
+    await err({ action: 'split' }),
     await err({ action: 'add_row', row: 1 }),
     await err({ action: 'add_row', table: 'T5', row: 1 }),
     await err({ action: 'delete_row', table: 'T1', row: 3 }),
@@ -317,9 +326,9 @@ test('errors name the fix', async () => {
     await err({ action: 'set_width', table: 'T1', column: 1, width: 3 }),
     await err({ action: 'set_width', table: 'T1', column: 3, width: 50 }),
   ], [
-    'Error: action must be one of insert, add_row, add_column, delete_row, delete_column, set_width',
-    'Error: table is required for add_row, e.g. "T1"; the document has table T1 (read_lines shows each as a [table Tn …] line)',
-    'Error: there is no table T5; the document has table T1 (read_lines shows each as a [table Tn …] line)',
+    'Error: action must be one of insert, add_row, add_column, delete_row, delete_column, set_width, header_rows, shade, borders, merge, unmerge',
+    'Error: table is required for add_row, e.g. "T1"; the document has table T1 (read_document shows each as a [table Tn …] line)',
+    'Error: there is no table T5; the document has table T1 (read_document shows each as a [table Tn …] line)',
     'Error: table T1 has 2 rows; row must be 1-2',
     'Error: table T1 has 2 rows; row must be 0-2 (the new row goes after it; 0 = above row 1)',
     'Error: table T1 has 2 columns; column must be 1-2',
@@ -366,8 +375,8 @@ test('nested tables and merged cells are refused (plan on a model with both)', (
   ], [
     'line 6 is inside table T2; tables cannot be nested. Insert after line 8 or another line outside a table',
     'table T2 is inside a cell of another table; nested tables can only be changed in Google Docs',
-    'the table has merged cells in row 1; Google Docs would delete every row they span. Unmerge them in Google Docs first',
-    'the table has merged cells in column 2; Google Docs would delete every column they span. Unmerge them in Google Docs first',
+    'the table has merged cells in row 1; Google Docs would delete every row they span. Unmerge them first (action unmerge)',
+    'the table has merged cells in column 2; Google Docs would delete every column they span. Unmerge them first (action unmerge)',
   ]);
   assert.ok(!T.planTable(m, tb({ action: 'delete_row', table: 'T1', row: 2 })).error);
 });
@@ -385,7 +394,7 @@ test('fake table plugin: a partial table range and a width under 5 pt are refuse
   r = await post([{ insertTableRow: { tableCellLocation: cellLoc(17, 0, 0), insertBelow: true } }]);
   deq([r.status, r.error && r.error.message], [400, 'Invalid table start location: no table starts at index 17']);
   // a whole table without the newline before it: the paragraphs around it stay apart
-  r = await post([{ deleteContentRange: { range: { startIndex: 18, endIndex: 33, tabId: 't.0' } } }]);
+  r = await post([{ deleteContentRange: { range: { startIndex: 18, endIndex: 34, tabId: 't.0' } } }]); // to the table's end index
   assert.strictEqual(r.status, 200);
   assert.strictEqual(srv.text('t.0'), 'Title\nAlpha\nBeta\nAfter\nLast');
   deq(srv.tables('t.0'), []);

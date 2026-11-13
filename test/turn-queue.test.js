@@ -65,7 +65,7 @@ test('shared chat: a message queued in A while B holds the chat lock waits for A
   const turnB = send(B, 'From B');
   await waitFor(() => B.bodies.length === 1, 'the request of B');
   const turnA = send(A, 'A first');
-  await waitFor(() => A.T.el.docStatus.textContent === WAIT, 'A to wait for the lock');
+  await waitFor(() => A.state.statusText.text === WAIT, 'A to wait for the lock');
   assert.strictEqual(A.state.busy, true);
   assert.strictEqual(queue(A, 'A second'), true);
   assert.strictEqual(A.state.queued.text, 'A second');
@@ -93,7 +93,7 @@ test('waiting for the lock: Enter queues only what was typed after the waiting m
   const turnB = send(B, 'From B');
   await waitFor(() => B.bodies.length === 1, 'the request of B');
   const turnA = send(A, 'A first');
-  await waitFor(() => A.T.el.docStatus.textContent === WAIT, 'A to wait for the lock');
+  await waitFor(() => A.state.statusText.text === WAIT, 'A to wait for the lock');
   assert.strictEqual(A.T.el.input.value, 'A first'); // the waiting message is still in the input box
   assert.strictEqual(A.T.queueInput(), false); // Enter again: it is already on its way, nothing queued
   assert.strictEqual(A.state.queued, null);
@@ -130,6 +130,24 @@ test('the queued message is sent only to the chat it was queued in; otherwise it
   A.T.syncQueueChat();
   assert.strictEqual(A.T.el.input.value, 'Other\n\ndraft');
   assert.strictEqual(A.state.queued, null);
+});
+
+test('a queued message keeps the mode it was queued in (Manual or Auto), whatever the mode button says when it is sent', async () => {
+  const A = await panel();
+  answers(A, 'Ok.');
+  A.state.applyMode = 'auto';
+  assert.strictEqual(queue(A, 'Queued in Auto'), true);
+  deq([A.state.queued.text, A.state.queued.mode], ['Queued in Auto', 'auto']);
+  const q1 = A.state.queued; A.state.queued = null;
+  A.state.applyMode = 'manual';
+  await A.T.sendMessage(q1);
+  A.state.applyMode = 'auto';
+  await A.T.sendMessage({ text: 'Queued in Manual', docId: A.state.docId, chatId: A.state.chatId, mode: 'manual' });
+  const users = A.state.messages.filter((m) => m.role === 'user');
+  deq(users.map((m) => [m.content, m._mode, m._asks, A.T.sentApplyMode(m)]), [['Queued in Auto', 'edit', undefined, 'auto'], ['Queued in Manual', 'edit', true, 'manual']]);
+  // the second message's head names Manual
+  assert.ok(A.bodies[1].system.map((b) => b.text).join('\n').includes('this is Manual mode; the user allows each edit on a card'));
+  assert.ok(!A.bodies[0].system.map((b) => b.text).join('\n').includes('allows each edit on a card'));
 });
 
 test('a normal turn without a queued message leaves the input box alone and sends nothing more', async () => {

@@ -11,6 +11,7 @@ async function streamChat(req, signal, snap, hooks) {
   let content = '';
   let reasoning = '';
   const calls = [];
+  const slotOf = new Map(); // the streamed tool-call index -> its slot in calls
   let finishReason = null;
   let usage = null;
   let sawDone = false;
@@ -33,8 +34,16 @@ async function streamChat(req, signal, snap, hooks) {
     if (typeof d.content === 'string' && d.content) { content += d.content; hooks.onContent && hooks.onContent(content); }
     if (Array.isArray(d.tool_calls)) {
       for (const tc of d.tool_calls) {
-        const idx = Number.isInteger(tc.index) ? tc.index : 0;
-        const slot = calls[idx] || (calls[idx] = { id: '', type: 'function', function: { name: '', arguments: '' } });
+        // A slot per streamed index; a chunk with a new id under an index already in use starts a call of its own
+        // (servers that stream parallel calls all at index 0, or without an index).
+        const key = Number.isInteger(tc.index) ? tc.index : 0;
+        let idx = slotOf.has(key) ? slotOf.get(key) : -1;
+        if (idx < 0 || (tc.id && calls[idx].id && calls[idx].id !== tc.id)) {
+          idx = calls.length;
+          calls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
+          slotOf.set(key, idx);
+        }
+        const slot = calls[idx];
         if (tc.id) slot.id = tc.id;
         if (tc.function) {
           if (tc.function.name) slot.function.name = tc.function.name; // later chunks carry name: null

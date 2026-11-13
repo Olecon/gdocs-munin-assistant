@@ -2,10 +2,10 @@
 // The draft plan checklist (src/draft.js): a section counts as written from the document (its heading, normalized,
 // with at least 40 words below it before the next heading; Docs API model and Markdown export) or from draft(done);
 // the card (one per chat, at the end of the chat, drawn again at every turn end), its markup, End draft, and the
-// "Draft complete" notice when the document completes the plan.
+// "Draft complete" row of the turn when the document completes the plan.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, installDocTab, installIdentity, waitFor } = require('./lib/sandbox');
+const { deq, load, installDocTab, installIdentity, waitFor, turnRowTexts } = require('./lib/sandbox');
 const { sseResponse, tu, msgStart, stopTool, textRound } = require('./lib/streams');
 const { docSpec, docsBench } = require('./lib/fake-docs');
 
@@ -24,7 +24,7 @@ const NULLS = { sections: null, section: null, readers: null };
 const run = (args, snap = as) => T.executeTool({ id: 'd' + Math.random().toString(36).slice(2, 6), function: { name: 'draft', arguments: JSON.stringify({ ...NULLS, ...args }) } }, 'edit', snap, {});
 const key = () => `muninDraft:DOC123:${state.chatId}`;
 const cards = () => T.el.chat.children.filter((c) => c.className.includes('draft-card'));
-const noticeTexts = () => T.el.chat.children.filter((c) => c.className.includes('notice')).map((c) => c.innerHTML);
+const rowTexts = () => turnRowTexts(T.el.chat); // the turns' rows and the rows outside a turn
 // A document: the title, "1. Introduction:" with 45 words, Methods with 10 words, then Results with 50 words under a subheading.
 const DOC_ITEMS = [
   { p: 'Membrane order', style: 'TITLE' },
@@ -87,18 +87,18 @@ test('the card: checklist, next section, open reader questions, End draft; one p
   await run({ action: 'plan', sections: SECTIONS, readers: READERS });
   const card = await T.refreshDraftCard();
   deq(cards().length, 1);
-  assert.strictEqual(card.innerHTML, '<div class="dc-title">🗂 Draft plan: 1 of 3 sections written</div>' +
-    '<ul class="dc-list"><li class="done">☑ Introduction</li><li>☐ Methods</li><li>☐ Results</li></ul>' +
+  assert.strictEqual(card.innerHTML, '<div class="dc-title">Draft plan: 1 of 3 sections written</div>' +
+    '<ul class="dc-list"><li class="done" data-tip="Written">Introduction</li><li>Methods</li><li>Results</li></ul>' +
     '<div class="dc-next">Next: Methods (how we measured it)</div>' +
     '<div class="dc-label">Open reader questions</div><ul class="dc-questions"><li>Reviewer 2: Why only twelve samples? <span class="dc-where">(Methods)</span></li></ul>' +
-    '<div class="tool-actions"><button class="btn small" type="button" data-draft="end" title="Clear the draft plan of this chat">End draft</button></div>');
+    '<div class="tool-actions"><button class="btn small" type="button" data-draft="end" data-tip="Clear the draft plan">End draft</button></div>');
   // drawn again: still one card, at the end, with the current state
-  T.addNotice('something else');
+  T.addError('something else');
   await run({ action: 'done', section: 'Methods' });
   await T.refreshDraftCard();
   deq(cards().length, 1);
   assert.ok(T.el.chat.children[T.el.chat.children.length - 1].className.includes('draft-card'));
-  assert.ok(cards()[0].innerHTML.includes('2 of 3 sections written') && cards()[0].innerHTML.includes('<li class="done">☑ Methods</li>'));
+  assert.ok(cards()[0].innerHTML.includes('2 of 3 sections written') && cards()[0].innerHTML.includes('<li class="done" data-tip="Written">Methods</li>'));
   assert.ok(!cards()[0].innerHTML.includes('Open reader questions'), 'the Methods question is answered');
   // a re-render of the chat drops it (not stored in the history; the stub DOM drops children by hand)
   T.renderHistory(); T.el.chat.children.length = 0;
@@ -116,7 +116,7 @@ test('the card: checklist, next section, open reader questions, End draft; one p
   assert.strictEqual(await T.endDraftFromCard(), true);
   assert.strictEqual(storage[key()], undefined);
   deq(cards().length, 0);
-  assert.ok(noticeTexts().includes('Draft ended: the plan of this chat is cleared.'));
+  assert.ok(rowTexts().includes('Draft ended: the plan of this chat is cleared.'));
   // not while an answer runs
   await run({ action: 'plan', sections: SECTIONS });
   state.busy = true;
@@ -143,8 +143,9 @@ test('turn end: the card is drawn again; writing the last section into the docum
   await waitFor(() => cards().length === 1, 'the card after the turn');
   assert.ok(cards()[0].innerHTML.includes('1 of 2 sections written'));
   // the model writes the Methods body (no draft(done)): the document completes the plan
-  await turn([aTool(2, 'insert_after_line', { line: 6, text: words(45, 'step') }), textRound('Methods are in.')], 'Write Methods');
-  await waitFor(() => noticeTexts().includes('Draft complete: 2 sections'), 'the notice');
+  // the connectivity check of the new paragraph (src/prose-tools.js) answers OK in between
+  await turn([aTool(2, 'insert_after_line', { line: 6, text: words(45, 'step') }), textRound('OK'), textRound('Methods are in.')], 'Write Methods');
+  await waitFor(() => rowTexts().includes('Draft complete: 2 sections'), 'the row');
   await waitFor(() => cards().length === 1 && cards()[0].innerHTML.includes('2 of 2 sections written'), 'the updated card');
   assert.ok(cards()[0].innerHTML.includes('All sections are written.'));
   const ctx = state.messages.filter((m) => m.role === 'user').pop()._context;

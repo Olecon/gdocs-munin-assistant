@@ -1,7 +1,8 @@
 'use strict';
 // Paste fallback safety (panel side): replace_selection passes the selection the model saw as
-// "expected"; a 'selection-changed' answer of the content script copies the text to the clipboard, shows
-// a notice and tells the model; without an expected selection (insert at the cursor) nothing changes.
+// "expected"; a 'selection-changed' answer of the content script copies the text to the clipboard, says so on the
+// call's failed row or card (nothing else in the chat) and tells the model; without an expected selection (insert at
+// the cursor) nothing changes.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
 const { load, installDocTab } = require('./lib/sandbox');
@@ -27,8 +28,8 @@ before(async () => {
   sandbox.navigator.clipboard.writeText = async (t) => { clip.push(t); };
 });
 
-const pasteOk = () => JSON.stringify({ ok: true, note: T.PASTE_DONE_NOTE }); // the model's result of any paste
-const notices = () => T.el.chat.children.filter((c) => c.className.includes('notice')).map((c) => c.innerHTML);
+const pasteOk = () => T.PASTE_DONE_NOTE; // the model's result of any paste: plain text, no JSON
+const notices = () => T.el.chat.children.map((c) => c.innerHTML || c._text || ''); // whatever reached the chat
 function snapWith(selection) {
   state.settings.provider = 'anthropic';
   state.settings.providers.anthropic.apiKey = 'k';
@@ -47,7 +48,7 @@ test('replace_selection sends the selection the model saw as "expected"; pasted 
   assert.strictEqual(clip.length, 0);
 });
 
-test('selection-changed: no paste, the text goes to the clipboard, a notice, and the model is told', async () => {
+test('selection-changed: no paste, the text goes to the clipboard, the call\'s message says so, and the model is told', async () => {
   sent.length = 0; clip.length = 0; T.el.chat.children.length = 0;
   reply = { ok: false, reason: 'selection-changed', error: 'the selection changed while the answer was being generated' };
   const r = await call(snapWith('quick brown'), 'fast brown');
@@ -57,14 +58,15 @@ test('selection-changed: no paste, the text goes to the clipboard, a notice, and
   assert.strictEqual(r._message, 'The selection changed while the answer was being generated; the text was copied to the clipboard instead.');
   assert.strictEqual(r.content, 'Error: the user changed the selection in the document while you were answering, so the text was not pasted. ' +
     'It was copied to the clipboard; the user can paste it where they want with Ctrl+V. Do not call the tool again.');
-  assert.deepStrictEqual(notices(), ['The selection changed while the answer was being generated; the text was copied to the clipboard instead.']);
+  assert.deepStrictEqual(notices(), []); // the call's failed row or card shows r._message
   // the clipboard fails too: the model is asked to show the text in the chat
   T.el.chat.children.length = 0;
   sandbox.navigator.clipboard.writeText = async () => { throw new Error('denied'); };
   try {
     const r2 = await call(snapWith('quick brown'), 'fast brown');
     assert.ok(r2.content.includes('so the text was not pasted. Show the text in the chat so the user can paste it manually.'));
-    assert.ok(notices()[0].startsWith('The selection changed while the answer was being generated, so the text was not pasted; copying it to the clipboard also failed.'));
+    assert.ok(r2._message.startsWith('The selection changed while the answer was being generated, so the text was not pasted; copying it to the clipboard also failed.'));
+    assert.deepStrictEqual(notices(), []);
   } finally {
     sandbox.navigator.clipboard.writeText = async (t) => { clip.push(t); };
   }
@@ -102,8 +104,11 @@ test('a normal paste: how it was inserted and the attempts reach the tool card a
   assert.strictEqual(r._attempts, 2);
   assert.strictEqual(r.content, pasteOk()); // the detail stays on the card, the model gets the assertive note
   assert.strictEqual(T.logEntry(tc, r).result, r.content); // the action log row shows what the model received
-  const card = T.toolCardFor(tc, r);
-  assert.ok(card.innerHTML.includes('inserted via paste event (detected by the editor change) · 2 attempts'), card.innerHTML);
+  // a successful paste has no card: its action-log row says Done, the detail is in its fold
+  assert.strictEqual(T.toolCardFor(tc, r).nodeType, 11);
+  const row = T.activityRow(T.logEntry(tc, r));
+  assert.ok(row.innerHTML.includes('<span class="log-status">Done</span><span class="log-preview"> · pasted</span>'), row.innerHTML);
+  assert.ok(row.innerHTML.includes('<div class="log-detail">inserted via paste event (detected by the editor change) · 2 attempts</div>'), row.innerHTML);
   // the Apply button's path gets the same detail
   reply = { ok: true, method: 'paste', detail: 'inserted via paste event', attempts: 1 };
   const a = await T.applyToDocument('from the button');
@@ -119,12 +124,12 @@ test('a paste Docs did not confirm (verified false): ok for the model with the a
   assert.strictEqual(sent.length, 1); // sent once, never retried
   assert.strictEqual(r._ok, true);
   assert.strictEqual(r._message, 'Pasted');
-  assert.deepStrictEqual(JSON.parse(r.content), { ok: true, note: T.PASTE_DONE_NOTE }); // nothing that invites a re-read
+  assert.strictEqual(r.content, T.PASTE_DONE_NOTE); // nothing that invites a re-read
   assert.ok(!r._detail, 'no detail line for a normal paste'); // one attempt is the rule, not news
   assert.deepStrictEqual(clip, []); // no clipboard fallback
-  assert.deepStrictEqual(notices(), []); // and no notice
-  const card = T.toolCardFor(tc, r);
-  assert.ok(card.innerHTML.includes('Pasted'), card.innerHTML);
+  assert.deepStrictEqual(notices(), []); // and nothing in the chat
+  const row = T.activityRow(T.logEntry(tc, r));
+  assert.ok(row.innerHTML.includes('<div class="log-what">Pasted</div>') && row.innerHTML.includes('<span class="log-status">Done</span>'), row.innerHTML);
   // the Apply button's path: ok, not verified, the same message, no clipboard
   const a = await T.applyToDocument('from the button');
   assert.deepStrictEqual([a.ok, a.verified, a.message], [true, false, 'Pasted']);
@@ -133,11 +138,11 @@ test('a paste Docs did not confirm (verified false): ok for the model with the a
   reply = { ok: true, method: 'paste', verified: true, attempts: 1, detail: 'inserted via paste event' };
   const v = await T.executeTool({ ...tc, id: 'rs-verified' }, 'edit', snapWith(''));
   assert.strictEqual(v._message, 'Replaced in document');
-  assert.deepStrictEqual(JSON.parse(v.content), { ok: true, note: T.PASTE_DONE_NOTE });
+  assert.strictEqual(v.content, T.PASTE_DONE_NOTE);
 });
 
 test('the model\'s result of a paste says it was pasted and must not be verified or repeated', () => {
-  assert.strictEqual(T.PASTE_DONE_NOTE, 'The text was pasted into the document. The document snapshot your reading tools see was taken before this paste ' +
+  assert.strictEqual(T.PASTE_DONE_NOTE, 'Done: the text was pasted into the document. The document snapshot your reading tools see was taken before this paste ' +
     'and will not show it until the user\'s next message, so do not re-read to verify and do not call replace_selection again for this text.');
 });
 

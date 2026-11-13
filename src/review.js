@@ -7,7 +7,7 @@
 // the answer's text wherever the chat shows it (decorateReviews, on every change of the chat), and Fix flagged
 // (fixFlagged: one normal user message through the Send path).
 /* global addError, el, FINDINGS_PARSE_ERROR, findingGroup, findingsCard, findingsMarkdown, findingsWhenIdle, flaggedFindings,
-   parseFindings, registerTurnHook, renderQueue, sendMessage, sortFindings, state, verifyFindings, isAutoMode */
+   parseFindings, registerTurnHook, renderQueue, sendMessage, sortFindings, state, verifyFindings, isPlanMode */
 /* exported REVIEW_CRITERIA, reviewResult, fixFlaggedText, fixFlaggedState, fixFlagged, decorateReviews, reviewCard */
 
 // The rubric's criteria (REVIEW_RUBRIC) as the card names them.
@@ -67,9 +67,10 @@ function bestReview(replies, snap) {
 }
 
 // ---- The card ---------------------------------------------------------------------------------------------------
-// Fix flagged works only where the edit can be verified: Auto with the document read through the Docs API.
+// Fix flagged works only where the edit can be verified: an editing turn (Manual, where each edit asks, or Auto) with the
+// document read through the Docs API.
 function fixFlaggedState() {
-  if (!isAutoMode()) return { ok: false, reason: 'Fix flagged edits the document: switch to Edit automatically first.' };
+  if (isPlanMode()) return { ok: false, reason: 'Fix flagged edits the document: switch to Manual or Auto first.' };
   if (!state.googleConnected || state.docFormat !== 'docs-api') return { ok: false, reason: 'Fix flagged needs the Google Docs API: sign in with Google in Settings.' };
   return { ok: true, reason: '' };
 }
@@ -90,7 +91,7 @@ function fixFlagged(review, btn, hint) {
   const list = flaggedFindings(review.findings || []);
   if (!list.length) return Promise.resolve(false);
   if (btn) { btn.disabled = true; btn.textContent = 'Sent'; }
-  const q = { text: fixFlaggedText(list), docId: state.docId, chatId: state.chatId };
+  const q = { text: fixFlaggedText(list), docId: state.docId, chatId: state.chatId, mode: state.applyMode }; // its mode, as a typed message's
   if (state.busy) {
     const cur = state.queued;
     state.queued = cur ? { ...cur, text: cur.text + '\n\n' + q.text } : q;
@@ -108,7 +109,7 @@ function reviewCard(review) {
     btn.type = 'button';
     btn.className = 'btn small primary review-fix';
     btn.textContent = `Fix flagged (${flagged.length})`;
-    btn.title = 'Ask for one edit per flagged finding, at its line';
+    btn.dataset.tip = 'One edit per finding';
     const hint = document.createElement('span');
     hint.className = 'st-hint review-fix-hint';
     const s = fixFlaggedState();
@@ -119,7 +120,7 @@ function reviewCard(review) {
   return findingsCard(review, { title: REVIEW_TITLE, labels: REVIEW_CRITERIA, actions });
 }
 // Puts the card into every shown answer that is a stored review (its text is the review's Markdown) and hides that
-// text and the answer's Apply / Copy (the card has its own Copy, of the same Markdown). Runs on every change of the
+// text (the card has its own Copy, of the same Markdown). Runs on every change of the
 // chat, so the card comes back after each re-render, a chat switch and a reload.
 function decorateReviews() {
   if (!el.chat || !state.messages.some((m) => m._review)) return;
@@ -131,8 +132,7 @@ function decorateReviews() {
     const card = reviewCard(m._review);
     b._reviewCard = card;
     b._parts.md.classList.add('hidden');
-    b._parts.actions.classList.add('hidden');
-    b.insertBefore(card, b._parts.place);
+    b.insertBefore(card, b._parts.answer); // after the activity, in the answer's place
   }
 }
 if (typeof MutationObserver === 'function' && el.chat) new MutationObserver(decorateReviews).observe(el.chat, { childList: true });

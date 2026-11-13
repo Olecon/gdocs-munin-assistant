@@ -64,10 +64,11 @@ test('resize grip: centred on the left edge, drag changes the width within the c
   const frame = host.querySelector('iframe');
   const grip = host.querySelector('.munin-panel-grip');
   assert.ok(grip && grip.parentNode === host); // shown and hidden with the panel
-  assert.strictEqual(grip.title, 'Drag to resize; double-click to reset');
+  assert.ok(!grip.title); // no tooltip on the grip (the owner's choice)
   const st = grip.style;
   assert.deepStrictEqual([st.position, st.left, st.top, st.transform, st.width, st.height, st.cursor],
-    ['absolute', '0px', '50%', 'translateY(-50%)', '6px', '48px', 'ew-resize']);
+    ['absolute', '-6.25px', '50%', 'translateY(-50%)', '4.5px', '48px', 'ew-resize']); // 12.5 px wide: its centre on the edge
+  assert.strictEqual(host.style.overflow, 'visible'); // so the grip can straddle the edge
   assert.strictEqual(host.style.width, '400px'); // the default
   // drag 100 px to the left: wider; the iframe ignores the pointer while dragging
   pointer(grip, 'pointerdown', { clientX: 600 });
@@ -498,4 +499,14 @@ test('SCROLL_TO_LINE: not drawn yet: a jump to about line / of, then the search 
   assert.deepStrictEqual(sets, [810, 120]); // jumped to 9 / 100 of 9,000, then back
   r = await c.send({ type: 'SCROLL_TO_LINE', line: 10, text: ' ' });
   assert.deepStrictEqual(r, { ok: false, reason: 'no-text' });
+}));
+
+test('the raven button follows the panel theme: the light icon on a white disc with muninTheme light, the dark one otherwise', () => withPage({ storage: { muninTheme: 'light' } }, async (c) => {
+  await c.send({ type: 'TOGGLE_PANEL' });
+  await c.send({ type: 'COLLAPSE_PANEL' });
+  const fab = c.document.getElementById(FAB);
+  await waitFor(() => shown(fab), 'the raven button');
+  const img = fab.querySelector('img');
+  await waitFor(() => /icon48-light\.png$/.test(img.src), 'the light icon');
+  assert.strictEqual(fab.style.background, 'rgb(255, 255, 255)');
 }));

@@ -616,7 +616,7 @@ function checkDocument(doc, { instructions = '', comments } = {}) {
     blind: ckBlind(doc, { comments }),
     readability: ckReadability(doc),
   };
-  if (!budget) groups.budgets.push(ckFinding('budgets', 'no-budget', 'note', null, 0, 0, 'No budget line in the document instructions, for example: budget: abstract 250, total 6000 (source: https://…).'));
+  if (!budget) groups.budgets.push(ckFinding('budgets', 'no-budget', 'note', null, 0, 0, 'No budget line in DOC.md, for example: budget: abstract 250, total 6000 (source: https://…).'));
   for (const id of Object.keys(groups)) groups[id] = ckSortFindings(groups[id]);
   return { groups, entries, budget };
 }

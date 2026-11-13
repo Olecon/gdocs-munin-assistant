@@ -29,10 +29,12 @@ before(async () => {
 
 // What buildLineModel, collectLines and paragraphLine read (src/docs-model.js), written out by hand.
 const DOC_PATHS = ['documentId', 'title', 'revisionId'];
-const TAB_PATHS = ['tabProperties.tabId', 'tabProperties.title', 'documentTab.body.content', 'documentTab.lists'];
-const STYLE_KEYS = ['bold', 'italic', 'underline', 'link.url', 'link.headingId', 'fontSize', 'weightedFontFamily', 'foregroundColor', 'backgroundColor'];
+const TAB_PATHS = ['tabProperties.tabId', 'tabProperties.title', 'documentTab.body.content', 'documentTab.lists', 'documentTab.inlineObjects'];
+const STYLE_KEYS = ['bold', 'italic', 'underline', 'link.url', 'link.headingId', 'fontSize', 'weightedFontFamily', 'foregroundColor', 'backgroundColor', 'baselineOffset'];
 const PARA_KEYS = ['namedStyleType', 'alignment', 'lineSpacing', 'spaceAbove', 'spaceBelow', 'indentStart', 'indentFirstLine', 'direction'];
-const OTHER_ELEMENTS = ['inlineObjectElement', 'autoText', 'pageBreak', 'columnBreak', 'footnoteReference', 'horizontalRule', 'equation', 'person', 'richLink'];
+// The body's own paragraphs only (format_lines box and page_break_before, the sheet's controls stay out of table cells).
+const TOP_PARA_KEYS = ['indentEnd', 'pageBreakBefore', 'keepWithNext', 'keepLinesTogether', 'avoidWidowAndOrphan', 'shading', 'borderTop', 'borderBottom', 'borderLeft', 'borderRight', 'borderBetween'];
+const OTHER_ELEMENTS = ['inlineObjectElement', 'autoText', 'pageBreak', 'columnBreak', 'footnoteReference', 'horizontalRule', 'equation', 'person', 'richLink', 'dateElement', 'dropdown'];
 const ELEMENT_PATHS = [
   'startIndex', 'endIndex', ...PARA_KEYS.map((k) => 'paragraph.paragraphStyle.' + k), 'paragraph.bullet.listId', 'paragraph.bullet.nestingLevel',
   'paragraph.elements.startIndex', 'paragraph.elements.endIndex', 'paragraph.elements.textRun.content',
@@ -45,7 +47,10 @@ const TABLE_PATH = 'table.tableRows.tableCells.content';
 // Outer tables (model.tables): the column count, the column widths and the cell spans; the table of contents
 // (model.toc) whole; the tab's headers, footers and footnotes whole with documentStyle (model.segments).
 const OUTER_TABLE_PATHS = ['table.columns', 'table.tableStyle.tableColumnProperties.widthType', 'table.tableStyle.tableColumnProperties.width',
-  'table.tableRows.tableCells.tableCellStyle.rowSpan', 'table.tableRows.tableCells.tableCellStyle.columnSpan', 'tableOfContents'];
+  'table.tableRows.tableCells.tableCellStyle.rowSpan', 'table.tableRows.tableCells.tableCellStyle.columnSpan', 'tableOfContents',
+  // the body's section breaks (model.sectionBreaks: page_parts sections)
+  ...['sectionType', 'columnProperties.paddingEnd', 'columnSeparatorStyle', 'marginTop', 'marginBottom', 'marginLeft', 'marginRight', 'pageNumberStart',
+    'flipPageOrientation'].map((k) => 'sectionBreak.sectionStyle.' + k)];
 const SEGMENT_PATHS = ['documentTab.headers', 'documentTab.footers', 'documentTab.footnotes', 'documentTab.documentStyle.defaultHeaderId',
   'documentTab.documentStyle.firstPageHeaderId', 'documentTab.documentStyle.evenPageFooterId'];
 // Tabs nest three levels; a table inside a table cell is read (one level).
@@ -61,29 +66,38 @@ test('the fields mask parses and contains every property path the line model rea
     const c1 = `${c0}.${TABLE_PATH}`;
     const c2 = `${c1}.${TABLE_PATH}`;
     for (const c of [c0, c1, c2]) used.push(...ELEMENT_PATHS.map((p) => `${c}.${p}`));
+    used.push(...TOP_PARA_KEYS.map((k) => `${c0}.paragraph.paragraphStyle.${k}`));
     used.push(`${c0}.${TABLE_PATH}`, `${c1}.${TABLE_PATH}`, ...OUTER_TABLE_PATHS.map((p) => `${c0}.${p}`), ...SEGMENT_PATHS.map((p) => `${tab}.${p}`));
     if (tab !== TAB_PREFIXES[TAB_PREFIXES.length - 1]) used.push(`${tab}.childTabs`);
   }
   for (const p of used) assert.ok(covers(paths, p), 'missing in the mask: ' + p);
   // and nothing the model does not read: the heavy parts of a document stay out
-  // (formatting: fonts, colors, paragraph fields, bullets and the tab's lists are read since the formatting tools)
+  // (formatting: fonts, colors, paragraph fields, bullets and the tab's lists are read since the formatting tools; the
+  // paragraph controls, the end indent, borders and shading since format_lines box and page_break_before)
   for (const p of ['body', 'headers', 'footers', 'footnotes', 'inlineObjects', 'lists', 'namedStyles', 'documentStyle', 'positionedObjects',
-    'suggestedDocumentStyleChanges', 'tabs.documentTab.inlineObjects', 'tabs.documentTab.namedStyles', 'tabs.documentTab.positionedObjects',
+    'suggestedDocumentStyleChanges', 'tabs.documentTab.namedStyles', 'tabs.documentTab.positionedObjects',
     'tabs.documentTab.suggestedDocumentStyleChanges', 'tabs.tabProperties.index',
-    'tabs.documentTab.body.content.paragraph.bullet.textStyle', 'tabs.documentTab.body.content.sectionBreak',
+    'tabs.documentTab.body.content.paragraph.bullet.textStyle', 'tabs.documentTab.body.content.sectionBreak.sectionStyle.defaultHeaderId',
+    'tabs.documentTab.body.content.table.tableRows.tableCells.content.sectionBreak',
     'tabs.documentTab.body.content.table.tableRows.tableRowStyle', 'tabs.documentTab.body.content.table.tableRows.tableCells.tableCellStyle.backgroundColor',
     'tabs.documentTab.body.content.table.tableStyle.tableColumnProperties.paddingStart',
     'tabs.documentTab.body.content.table.tableRows.tableCells.content.table.tableStyle', 'tabs.documentTab.body.content.table.tableRows.tableCells.content.tableOfContents',
     'tabs.documentTab.body.content.paragraph.elements.textRun.textStyle.strikethrough',
-    'tabs.documentTab.body.content.paragraph.elements.textRun.textStyle.baselineOffset',
-    'tabs.documentTab.body.content.paragraph.paragraphStyle.headingId', 'tabs.documentTab.body.content.paragraph.paragraphStyle.shading']) {
+    'tabs.documentTab.body.content.paragraph.elements.textRun.textStyle.smallCaps',
+    'tabs.documentTab.body.content.paragraph.paragraphStyle.headingId', 'tabs.documentTab.body.content.paragraph.paragraphStyle.spacingMode',
+    'tabs.documentTab.body.content.table.tableRows.tableCells.content.paragraph.paragraphStyle.shading']) {
     assert.ok(!covers(paths, p), 'should not be requested: ' + p);
   }
   // with includeTabsContent=true the legacy doc.body is not filled; the model reads nothing else
   const src = fs.readFileSync(path.join(ROOT, 'src', 'docs-model.js'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
-  assert.ok(!/\b(inlineObjects|namedStyles|positionedObjects)\b/.test(src));
-  // stays well below the 8 KB URL limit of Google APIs: about 4.7 KB with the formatting fields, 5.1 KB with tables and segments
-  assert.ok(mask.length < 5300, 'mask length ' + mask.length);
+  assert.ok(!/\b(namedStyles|positionedObjects)\b/.test(src));
+  // the inline objects (a map, read whole) give only the alt text and size of the reading notes: the short-lived
+  // contentUri is never kept in the model
+  assert.ok(!/contentUri|imageProperties/.test(src));
+  // stays well below the 8 KB URL limit of Google APIs: about 4.7 KB with the formatting fields, 5.1 KB with tables and
+  // segments, 5.4 KB with dates, dropdowns and inline objects, 5.9 KB with the paragraph controls of the body's own paragraphs,
+  // 6.3 KB with the section breaks' styles, 6.5 KB with baselineOffset (format_text script)
+  assert.ok(mask.length < 6500, 'mask length ' + mask.length);
 });
 
 // A documents.get response with everything the model reads plus much it does not (fonts, lists, inline
@@ -121,7 +135,7 @@ function richDoc() {
   };
   const main = body(() => [
     para([{ text: 'Report\n' }], 'TITLE'),
-    para([{ text: 'Plain ' }, { text: 'bold', st: { bold: true } }, { text: ' and ' }, { text: 'link', st: { italic: true, link: { url: 'https://example.org', tabId: 't.0' } } }, { text: ' cut', sugg: true }, { text: '\n' }], 'NORMAL_TEXT', { bullet: { listId: 'kix.list', nestingLevel: 0 } }),
+    para([{ text: 'Plain ' }, { text: 'bold', st: { bold: true, baselineOffset: 'SUPERSCRIPT' } }, { text: ' and ' }, { text: 'link', st: { italic: true, link: { url: 'https://example.org', tabId: 't.0' } } }, { text: ' cut', sugg: true }, { text: '\n' }], 'NORMAL_TEXT', { bullet: { listId: 'kix.list', nestingLevel: 0 } }),
     para([{ text: 'Img ' }, { obj: 'inlineObjectElement', props: { inlineObjectId: 'kix.1' }, st: { bold: true } }, { obj: 'person', props: { personId: 'p', personProperties: { email: 'a@example.org', name: 'A' } } },
       { obj: 'richLink', props: { richLinkId: 'r', richLinkProperties: { title: 'File', uri: 'https://drive.example/f' } }, sugg: true }, { obj: 'footnoteReference', props: { footnoteId: 'kix.f', footnoteNumber: '1' } }, { text: '\n' }]),
     table([[() => [para([{ text: 'Cell A\n' }])], () => [para([{ text: 'Cell B\n' }]), table([[() => [para([{ text: 'Deep ', st: { underline: true } }, { text: 'cell\n' }])]]]), para([{ text: 'After\n' }])]]]),
@@ -141,9 +155,11 @@ function richDoc() {
 test('a response filtered by the mask gives exactly the same line model as the full response', () => {
   const full = richDoc();
   const masked = applyMask(JSON.parse(JSON.stringify(full)), parseMask(T.DOCS_GET_FIELDS));
-  // the inline object properties and styles stay out (headers, footnotes and documentStyle are read since the page parts)
-  assert.ok(JSON.stringify(masked).length < JSON.stringify(full).length * 0.8, `${JSON.stringify(masked).length} of ${JSON.stringify(full).length}`);
-  assert.strictEqual(masked.tabs[0].documentTab.inlineObjects, undefined);
+  // the styles stay out (headers, footnotes and documentStyle are read since the page parts; the inline objects, a map,
+  // whole since the image notes: compared without them)
+  deq(masked.tabs[0].documentTab.inlineObjects, full.tabs[0].documentTab.inlineObjects);
+  const lean = (d) => JSON.stringify(d, (k, v) => (k === 'inlineObjects' ? undefined : v)).length;
+  assert.ok(lean(masked) < lean(full) * 0.9, `${lean(masked)} of ${lean(full)}`);
   assert.strictEqual(masked.tabs[0].documentTab.namedStyles, undefined);
   assert.strictEqual(masked.tabs[0].documentTab.body.content[4].table.tableRows[0].tableRowStyle, undefined);
   deq(masked.tabs[0].documentTab.body.content[4].table.tableRows[0].tableCells[0].tableCellStyle, { rowSpan: 1, columnSpan: 1 });
@@ -161,9 +177,10 @@ test('a response filtered by the mask gives exactly the same line model as the f
   const marked = (l) => l.runs.filter((r) => r.bold || r.italic || r.underline || r.link);
   deq(marked(m.lines[1]).map((r) => [r.s, r.e, r.bold, r.italic, r.link]), [[6, 10, true, false, null], [15, 19, false, true, 'https://example.org']]);
   deq(marked(m.lines[1])[1].linkRaw, { url: 'https://example.org', tabId: 't.0' });
+  deq(marked(m.lines[1]).map((r) => r.script), ['super', null]); // baselineOffset (format_text script)
   deq(marked(m.lines[2]).map((r) => [r.s, r.e, r.bold]), [[4, 5, true]]);
   deq(marked(m.lines[5]).map((r) => [r.s, r.e, r.underline]), [[0, 5, true]]);
-  deq(m.lines[1].runs[0], { s: 0, e: 6, bold: false, italic: false, underline: false, link: null, font: 'Arial', weight: 400, size: 11, color: '#330000', bg: null, linkRaw: null });
+  deq(m.lines[1].runs[0], { s: 0, e: 6, bold: false, italic: false, underline: false, link: null, font: 'Arial', weight: 400, size: 11, color: '#330000', bg: null, script: null, linkRaw: null });
   deq(m.textDefault, { font: 'Arial', size: 11, color: '#330000' });
   deq(m.lines[1].list, { listId: 'kix.list', level: 0, kind: 'bullet' });
   deq(m.lines[1].para, { direction: 'LEFT_TO_RIGHT', lineSpacing: 115 });
@@ -216,7 +233,7 @@ test('a Docs API failure in a turn: no second documents.get in that turn (tools,
   sandbox.fetch = routeDocs(async () => sseResponse(textRound('Now through the API.')));
   T.el.input.value = 'Again';
   await T.sendMessage();
-  assert.strictEqual(gets(), 2);
+  assert.strictEqual(gets(), 3); // the model and the comments view (the comment tool's offer, docs-comment-write.js)
   assert.strictEqual(state.docFormat, 'docs-api');
   assert.strictEqual(state.docsApiFailed, false);
   // Sign out / Sign in also starts fresh

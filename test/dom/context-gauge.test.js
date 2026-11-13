@@ -1,6 +1,7 @@
 'use strict';
 // The context gauge in the composer bar (renderContextGauge in src/render.js): measured from the last
-// request's usage, estimated like the compaction check otherwise, warning tint near the compaction point,
+// request's usage, estimated like the compaction check otherwise, warning tint near the compaction point (near the hard
+// request budget on a provider with a prompt cache),
 // hidden on an empty chat, the provider's window after Save; and the compaction boundary rows (summary vs
 // fold), also after a reload from storage.
 const { test, before, after } = require('node:test');
@@ -12,7 +13,7 @@ let env, T, state, el, document, PROVIDERS;
 const gauge = () => document.getElementById('contextGauge');
 const shown = () => !gauge().classList.contains('hidden');
 const text = () => document.getElementById('contextText').textContent;
-const MUNIN_COMPACT_AT = 65536 - 8192 - 2000; // contextTokens - maxTokens - EDIT_SAFETY_TOKENS
+const MUNIN_COMPACT_AT = 40000; // MUNIN_COMPACT_AT_TOKENS (below the hard budget 65536 - 8192 - 2000)
 
 function installTab(e) {
   installDocTab(e);
@@ -54,17 +55,17 @@ test('empty chat: the gauge is hidden; it appears with the first turn', () => {
 });
 
 test('measured: the last request\'s usage (prompt + reply) against the context window', () => {
-  show(turn({ prompt_tokens: 40000, completion_tokens: 1200, total_tokens: 41200 }));
-  assert.strictEqual(text(), 'Context 41k / 66k');
+  show(turn({ prompt_tokens: 30000, completion_tokens: 1200, total_tokens: 31200 }));
+  assert.strictEqual(text(), '31k / 66k');
   // role="img" hides the children from screen readers: the numbers are read from the label.
-  assert.strictEqual(gauge().getAttribute('aria-label'), 'Context: 41,200 of 65,536 tokens');
+  assert.strictEqual(gauge().getAttribute('aria-label'), 'Context: 31,200 of 65,536 tokens');
   assert.ok(!gauge().classList.contains('estimated'));
   assert.ok(!gauge().classList.contains('warn'));
-  assert.ok(gauge().title.startsWith('Last request: 41,200 tokens, measured by the provider (prompt 40,000 + reply 1,200).'), gauge().title);
-  assert.ok(gauge().title.includes('Munin context window: 65,536 tokens.'));
-  assert.ok(gauge().title.includes(`compacted when a request is estimated above ${MUNIN_COMPACT_AT.toLocaleString('en-US')} tokens (next request now: about`));
-  assert.strictEqual(document.getElementById('contextFill').style.width, `${(41200 / 65536 * 100).toFixed(1)}%`);
-  assert.strictEqual(document.getElementById('contextMark').style.left, `${(MUNIN_COMPACT_AT / 65536 * 100).toFixed(1)}%`);
+  assert.ok(gauge().dataset.tip.startsWith('Last request: 31,200 tokens (prompt 30,000 + reply 1,200)'), gauge().dataset.tip);
+  assert.ok(gauge().dataset.tip.includes('Munin window: 65,536 tokens'));
+  assert.ok(gauge().dataset.tip.includes(`Compacted above ${MUNIN_COMPACT_AT.toLocaleString('en-US')} tokens (next: about`));
+  assert.strictEqual(document.getElementById('contextFill').style.width, `${(31200 / 65536 * 100).toFixed(1)}%`);
+  assert.strictEqual(document.getElementById('contextMark').style.left, `${+(MUNIN_COMPACT_AT / 65536 * 100).toFixed(1)}%`); // 61% (the style drops a trailing .0)
   // the last round of the turn counts, not the first one
   show([
     { role: 'user', content: 'Fix it' },
@@ -72,7 +73,7 @@ test('measured: the last request\'s usage (prompt + reply) against the context w
     { role: 'tool', tool_call_id: 'c1', content: 'L1: # My Doc' },
     { role: 'assistant', content: 'Fixed.', _usage: { prompt_tokens: 5600, completion_tokens: 30 } },
   ]);
-  assert.strictEqual(text(), 'Context 5.6k / 66k');
+  assert.strictEqual(text(), '5.6k / 66k');
 });
 
 test('estimated: no usage in the latest turn; the same estimate as the compaction check', async () => {
@@ -80,25 +81,25 @@ test('estimated: no usage in the latest turn; the same estimate as the compactio
   const est = compactionEstimate();
   assert.ok(est > 1000);
   assert.ok(gauge().classList.contains('estimated'));
-  assert.ok(text().startsWith('Context ~'), text());
-  assert.ok(gauge().title.startsWith(`Next request: about ${est.toLocaleString('en-US')} tokens, estimated from this chat`), gauge().title);
+  assert.ok(text().startsWith('~'), text());
+  assert.ok(gauge().dataset.tip.startsWith(`Next request: about ${est.toLocaleString('en-US')} tokens`), gauge().dataset.tip);
   // a usage of an earlier turn is not the latest request: the failed newest turn is estimated
   show([...turn({ prompt_tokens: 3000, completion_tokens: 5 }), { role: 'user', content: 'And now?' }]);
   assert.ok(gauge().classList.contains('estimated'));
-  assert.strictEqual(gauge().title.split(' tokens')[0], `Next request: about ${compactionEstimate().toLocaleString('en-US')}`);
-  // Plan and Manual offer fewer tools: a pick in the mode menu updates the estimate (Edit automatically -> Plan -> Manual -> back)
+  assert.strictEqual(gauge().dataset.tip.split(' tokens')[0], `Next request: about ${compactionEstimate().toLocaleString('en-US')}`);
+  // Plan offers fewer tools: a pick in the mode menu updates the estimate (Auto -> Plan -> Manual -> back)
   const pick = (mode) => { click(el.modeCycle); click(el.modeMenu.querySelector(`.mode-row[data-mode="${mode}"]`)); };
   const auto = compactionEstimate('edit');
   pick('plan');
   await tick(5);
   assert.strictEqual(state.applyMode, 'plan');
-  assert.ok(gauge().title.startsWith(`Next request: about ${compactionEstimate('plan').toLocaleString('en-US')} tokens`));
+  assert.ok(gauge().dataset.tip.startsWith(`Next request: about ${compactionEstimate('plan').toLocaleString('en-US')} tokens`));
   assert.ok(compactionEstimate('plan') < auto);
   pick('manual');
   await tick(5);
   assert.strictEqual(state.applyMode, 'manual');
-  assert.ok(gauge().title.startsWith(`Next request: about ${compactionEstimate('manual').toLocaleString('en-US')} tokens`));
-  assert.ok(compactionEstimate('manual') < auto);
+  // Manual edits like Auto (the same tools): the same estimate
+  assert.ok(gauge().dataset.tip.startsWith(`Next request: about ${auto.toLocaleString('en-US')} tokens`), gauge().dataset.tip);
   pick('auto');
   await tick(5);
 });
@@ -111,27 +112,41 @@ test('warning tint near the compaction point (measured or estimated)', () => {
   assert.ok(!gauge().classList.contains('warn'));
   // the estimate counts too: compaction is decided on it
   show([{ role: 'user', content: 'x'.repeat(3 * near) }, { role: 'assistant', content: 'ok', _usage: { prompt_tokens: 1000, completion_tokens: 1 } }]);
-  assert.strictEqual(text(), 'Context 1k / 66k');
+  assert.strictEqual(text(), '1k / 66k');
   assert.ok(gauge().classList.contains('warn'));
 });
 
-test('provider switch in the settings (applied at once): the window and the compaction point follow', async () => {
+test('model switch in the model menu (applied at once): the window and the compaction point follow', async () => {
+  state.settings.providers.munin.apiKey = 'k-m';
+  state.settings.providers.anthropic.apiKey = 'sk-ant-x';
   show(turn({ prompt_tokens: 70000, completion_tokens: 500 }));
-  assert.strictEqual(text(), 'Context 71k / 66k');
-  click(document.getElementById('settingsBtn'));
+  assert.strictEqual(text(), '71k / 66k');
   env.ctx.fetch = async () => ({ ok: true, status: 200, json: async () => ({ data: [{ id: 'claude-opus-5-5' }] }), text: async () => '' });
-  el.provider.value = 'anthropic';
-  el.provider.dispatchEvent(new env.window.Event('change', { bubbles: true }));
-  await waitFor(() => text() === 'Context 71k / 200k', 'the gauge after the switch');
-  click(document.getElementById('settingsBtn'));
+  click(el.chatModel);
+  await waitFor(() => document.querySelector('#modelMenu .model-pick[data-account="anthropic"]'), 'the Anthropic models in the menu');
+  click(document.querySelector('#modelMenu .model-pick[data-account="anthropic"]'));
+  await waitFor(() => text() === '71k / 200k', 'the gauge after the switch');
+  assert.ok(el.modelMenu.classList.contains('hidden'));
   assert.strictEqual(state.settings.provider, 'anthropic');
-  assert.ok(gauge().title.includes('Anthropic (Claude) context window: 200,000 tokens.'));
-  assert.ok(gauge().title.includes('compacted when a request is estimated above 80,000 tokens'));
-  assert.ok(gauge().classList.contains('warn')); // 70.5k >= 0.8 x 80k
+  assert.ok(gauge().dataset.tip.includes('Anthropic (Claude) window: 200,000 tokens'));
+  assert.ok(gauge().dataset.tip.includes('Compacted above 80,000 tokens'));
+  // a provider with a prompt cache: 80k is a cost choice (compacted in the background), so no tint at 70.5k (>= 0.8 x 80k);
+  // the tint comes near the request's hard budget; the tick stays at the compaction point
+  assert.ok(!gauge().classList.contains('warn'));
   assert.strictEqual(document.getElementById('contextMark').style.left, '40%'); // 80k of 200k
+  const hard = env.run('tokenBudget(applyTurnMode(), { prov: activeProvider() })');
+  assert.ok(hard > 150000, String(hard));
+  const near = Math.ceil(0.8 * hard);
+  show(turn({ prompt_tokens: near - 1000, completion_tokens: 0 }));
+  assert.ok(!gauge().classList.contains('warn'));
+  show(turn({ prompt_tokens: near, completion_tokens: 0 }));
+  assert.ok(gauge().classList.contains('warn'));
+  assert.strictEqual(document.getElementById('contextMark').style.left, '40%');
+  show(turn({ prompt_tokens: 70000, completion_tokens: 500 }));
   state.settings.provider = 'munin';
   T.renderHistory();
-  assert.strictEqual(text(), 'Context 71k / 66k');
+  assert.strictEqual(text(), '71k / 66k');
+  assert.ok(gauge().classList.contains('warn')); // Munin: still against its compaction point (no prompt cache)
   assert.strictEqual(PROVIDERS.munin.contextTokens, 65536);
 });
 
@@ -146,12 +161,12 @@ test('compaction boundary: summary and fold rows differ; the text stays inspecta
   assert.strictEqual(rows[0].querySelector('summary').textContent, 'Earlier conversation summarized · 4 messages');
   assert.ok(!rows[0].classList.contains('folded') && rows[0].classList.contains('compacted'));
   assert.strictEqual(rows[0].querySelector('.summary-text').textContent, 'The user wants a shorter paper.');
-  assert.ok(rows[0].title.includes('summarized by the model'));
+  assert.ok(rows[0].dataset.tip.includes('summary'));
   assert.strictEqual(rows[1].querySelector('summary').textContent, 'Earlier conversation condensed · 3 messages');
   assert.ok(rows[1].classList.contains('folded'));
   // the fold's lines are shown; its format note (meant for the model) is not
   assert.strictEqual(rows[1].querySelector('.summary-text').textContent, 'User: Fix the typo\n[replace_text(old_text="Teh", new_text="The"): ok]\nAssistant: Fixed.');
-  assert.ok(rows[1].title.includes('condensed'));
+  assert.ok(rows[1].dataset.tip.includes('now gets'));
   click(rows[1].querySelector('summary'));
   assert.ok(rows[1].open);
 });
@@ -177,7 +192,7 @@ test('after a reload: the boundary rows and the gauge come back from the stored 
     assert.deepStrictEqual(labels, ['Earlier conversation summarized · 2 messages', 'Earlier conversation condensed · 3 messages']);
     assert.strictEqual(doc.querySelectorAll('#chat .msg.compacted').length, 2);
     assert.ok(!doc.getElementById('contextGauge').classList.contains('hidden'));
-    assert.strictEqual(doc.getElementById('contextText').textContent, 'Context 12k / 66k');
+    assert.strictEqual(doc.getElementById('contextText').textContent, '12k / 66k');
   } finally {
     fresh.close();
   }

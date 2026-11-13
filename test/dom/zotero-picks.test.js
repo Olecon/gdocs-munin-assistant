@@ -85,9 +85,10 @@ test('without the grant "@smi" asks once per panel load (Not now: "@" stays iner
   const asked = [];
   env.chrome.permissions = { request: async (p) => { asked.push(p.origins); return false; }, contains: async () => false };
   typeInto(el.input, 'See @smith');
-  const access = () => [...el.chat.querySelectorAll('.tool-card.preview.access')];
+  const access = () => [...el.chat.querySelectorAll('.tool-card.preview.access, .answered-row.access')];
   await waitFor(() => access().length === 1, 'the access card');
-  assert.match(access()[0].querySelector('.pv-note').textContent, /Zotero \(on this computer\), Crossref and OpenAlex\. To list works from your Zotero library as you type @\.$/);
+  // only Zotero is asked while typing "@", so only Zotero is named
+  assert.strictEqual(access()[0].querySelector('.pv-note').textContent, 'The assistant wants to look up references through Zotero (on this computer). To list works from your Zotero library as you type @.');
   click(access()[0].querySelector('button[data-access="later"]'));
   await waitFor(() => !access().length, 'the card removed');
   typeInto(el.input, 'See @smit');
@@ -128,7 +129,7 @@ test('a sent message: a chip in the user bubble, the context line in the request
   const bubble = [...el.chat.querySelectorAll('.msg.user')].pop();
   const chip = bubble.querySelector('.zotero-chip');
   assert.strictEqual(chip.textContent, 'Smith & Lee 2020: Lipid rafts in membranes');
-  assert.strictEqual(chip.title, 'Zotero item ABCD1234');
+  assert.strictEqual(chip.dataset.tip, 'Zotero item ABCD1234');
   assert.ok(bubble.textContent.startsWith('Cite Smith & Lee 2020'));
   reset(false);
   await T.createChat();
@@ -149,7 +150,7 @@ test('a fresh panel without the grant: "@smi" shows the card; Allow asks Chrome,
     e.chrome.permissions = { request: async (p) => { asked.push(p.origins); return true; }, contains: async () => true };
     assert.strictEqual(e.state.settings.references, false);
     typeInto(e.el.input, 'See @smith');
-    const card = () => e.el.chat.querySelector('.tool-card.preview.access');
+    const card = () => e.el.chat.querySelector('.tool-card.preview.access, .answered-row.access');
     await waitFor(() => card(), 'the access card');
     click(card().querySelector('button[data-access="allow"]'));
     deq(asked, [['http://localhost:23119/*', 'https://api.crossref.org/*', 'https://api.openalex.org/*']]);

@@ -276,3 +276,28 @@ test('undo after a fold: the folded edit keeps its journal and is undone, also a
     denv.PROVIDERS.anthropic.contextTokens = saved;
   }
 });
+
+test('one huge earlier turn is folded, not trimmed whole; no summary request for one turn', async () => {
+  useProvider(env, 'anthropic');
+  await T.createChat();
+  const saved = PROVIDERS.anthropic.contextTokens;
+  PROVIDERS.anthropic.contextTokens = 100; // the 8,000-token floor
+  try {
+    state.messages.push(...editTurn(1, 40000));
+    await T.saveHistory();
+    state.messages.push({ role: 'user', content: 'new question' });
+    const snap = snapNow();
+    const planned = T.compactionPlan('edit', snap);
+    assert.ok(planned && planned.foldOnly && planned.length === 4);
+    state.messages.pop();
+    const bodies = recordFetch(env, [textRound('Answer.')]);
+    await send(env, 'new question');
+    assert.strictEqual(bodies.length, 1); // the answer only
+    const entry = state.messages.find((m) => m._summary);
+    assert.ok(entry && entry._folded && entry._covers === 4);
+    assert.ok(entry.content.includes('User: Question 1\n[replace_text(old_text="old 1", new_text="new 1"): ok]\nAssistant: Answer 1.'));
+    assert.strictEqual(bodies[0].messages[0].content[0].text, entry.content);
+  } finally {
+    PROVIDERS.anthropic.contextTokens = saved;
+  }
+});

@@ -29,6 +29,8 @@ const SPEC = () => docSpec({ items: [
 ] });
 const NONE = { bold: null, italic: null, underline: null, font: null, size: null, color: null, highlight: null, link: null };
 const fmtCall = (old_text, props, id, same) => exec('format_text', { old_text, ...NONE, ...props }, id, same);
+// A line as read_formatting shows it now (a write's result names the lines only).
+const RF = (n) => T.runReadingTool('read_formatting', { start: n, end: n }, as);
 const style = () => lastPost().requests[0].updateTextStyle;
 const posts = () => fake.log.filter((x) => x.method === 'POST').length;
 const at = (line, off) => as.model.lines[line - 1].start + off;
@@ -51,10 +53,11 @@ test('format_text: the request and field mask of every property', async () => {
     const w = await fmtCall(text, props);
     assert.ok(w._ok, w.content);
     deq(style(), { range: rng(at(2, off), at(2, off + text.length)), textStyle, fields });
-    assert.ok(w.content.startsWith(`Done: formatted line 2 (${how}).\n${T.formatNote(as.model)}\nLines 2-2 now:\n2: `), w.content);
+    assert.ok(w.content.startsWith(`Done: formatted line 2 (${how}); the document has 5 lines.`), w.content);
   }
   deq(fake.fmt('t.0')[1], [
-    [0, 3, { link: 'https://example.com/', underline: true, color: LINK_HEX }], [4, 9, { bold: true }], [16, 19, { underline: true }],
+    // a bold write stores the font the text shows (Docs)
+    [0, 3, { link: 'https://example.com/', underline: true, color: LINK_HEX }], [4, 9, { bold: true, font: 'Arial' }], [16, 19, { underline: true }],
     [20, 25, { font: 'Times New Roman' }], [26, 30, { size: 14 }], [31, 39, { color: '#FF0000' }], [40, 43, { bg: '#FFFF00' }],
   ]);
   assert.strictEqual(as.model.lines[1].runs.length, 7);
@@ -65,7 +68,7 @@ test('format_text: the request and field mask of every property', async () => {
   deq(style().textStyle, { bold: true, italic: true, underline: false, weightedFontFamily: { fontFamily: 'Arial', weight: 400 }, fontSize: { magnitude: 9.5, unit: 'PT' },
     foregroundColor: { color: { rgbColor: { red: 192 / 255 } } }, backgroundColor: { color: { rgbColor: { red: 1, green: 242 / 255, blue: 204 / 255 } } }, link: { url: 'mailto:a@b.org' } });
   assert.strictEqual(style().fields, 'bold,italic,underline,weightedFontFamily,fontSize,foregroundColor,backgroundColor,link');
-  assert.ok(w.content.startsWith('Done: formatted line 2 (bold on, italic on, underline off, font Arial, size 9.5, color #C00000, highlight #FFF2CC, link mailto:a@b.org).\n'), w.content);
+  assert.ok(w.content.startsWith('Done: formatted line 2 (bold on, italic on, underline off, font Arial, size 9.5, color #C00000, highlight #FFF2CC, link mailto:a@b.org); the document has'), w.content);
 });
 
 test('format_text: resets leave the key out of textStyle; the font keeps its weight; undo restores every key', async () => {
@@ -75,15 +78,15 @@ test('format_text: resets leave the key out of textStyle; the font keeps its wei
   let w = pushTool(await fmtCall('Styled', { font: 'georgia' }, 'r1'));
   assert.ok(w._ok, w.content);
   deq(style(), { range: rng(at(3, 0), at(3, 6)), textStyle: { weightedFontFamily: { fontFamily: 'Georgia', weight: 700 } }, fields: 'weightedFontFamily' });
-  deq(w._edit.requests, [{ updateTextStyle: { range: rng(at(3, 0), at(3, 6)), textStyle: { weightedFontFamily: { fontFamily: 'Roboto', weight: 700 } }, fields: 'weightedFontFamily' } }]);
+  deq(w._edit.requests, [{ updateTextStyle: { range: rng(at(3, 0), at(3, 6)), textStyle: { weightedFontFamily: { fontFamily: 'Roboto', weight: 700 } }, fields: 'weightedFontFamily,bold' } }]);
   // resets: font "default", size 0, color "none", highlight "none"
   w = pushTool(await fmtCall('Styled words', { font: 'default', size: 0, color: 'none', highlight: 'none' }, 'r2'));
   assert.ok(w._ok, w.content);
   deq(style(), { range: rng(at(3, 0), at(3, 12)), textStyle: {}, fields: 'weightedFontFamily,fontSize,foregroundColor,backgroundColor' });
-  assert.ok(w.content.startsWith('Done: formatted line 3 (font default, size default, color default, highlight removed).\n'), w.content);
+  assert.ok(w.content.startsWith('Done: formatted line 3 (font default, size default, color default, highlight removed); the document has'), w.content);
   deq(fake.fmt('t.0')[2], []);
-  // the inverse: one request per stretch of equal prior values, all touched keys listed
-  const F = 'weightedFontFamily,fontSize,foregroundColor,backgroundColor';
+  // the inverse: one request per stretch of equal prior values, all touched keys listed (bold with the font)
+  const F = 'weightedFontFamily,fontSize,foregroundColor,backgroundColor,bold';
   deq(w._edit.requests, [
     { updateTextStyle: { range: rng(at(3, 0), at(3, 6)), textStyle: { weightedFontFamily: { fontFamily: 'Georgia', weight: 700 }, fontSize: { magnitude: 14, unit: 'PT' } }, fields: F } },
     { updateTextStyle: { range: rng(at(3, 6), at(3, 7)), textStyle: {}, fields: F } },
@@ -102,7 +105,7 @@ test('format_text: links: set (Docs restyles it), remove (link, underline and co
   assert.ok(w._ok, w.content);
   deq(style(), { range: rng(at(2, 4), at(2, 9)), textStyle: { link: { url: 'https://example.com/q' } }, fields: 'link' });
   deq(fake.fmt('t.0')[1], [[4, 9, { link: 'https://example.com/q', underline: true, color: LINK_HEX }], [10, 15, { italic: true }]]);
-  assert.ok(w.content.includes('\n2: The [quick](https://example.com/q) *brown*'), w.content);
+  assert.ok(!w.content.includes('\n2: ') && RF(2).includes('\n2: The [quick](https://example.com/q) *brown*'), w.content);
   deq(w._edit.requests, [{ updateTextStyle: { range: rng(at(2, 4), at(2, 9)), textStyle: {}, fields: 'link,underline,foregroundColor' } }]);
   assert.ok((await exec('undo_last_edit', {}, 'l1u'))._ok);
   deq(fake.fmt('t.0'), JSON.parse(orig));
@@ -111,7 +114,7 @@ test('format_text: links: set (Docs restyles it), remove (link, underline and co
     w = pushTool(await fmtCall('site', { link: off }, 'l2'));
     assert.ok(w._ok, w.content);
     deq(style(), { range: rng(at(5, 6), at(5, 10)), textStyle: {}, fields: 'link,underline,foregroundColor' });
-    assert.ok(w.content.startsWith('Done: formatted line 5 (link removed).\n') && w.content.includes('\n5: Visit site now\n'), w.content);
+    assert.ok(w.content.startsWith('Done: formatted line 5 (link removed); the document has') && RF(5).endsWith('\n5: Visit site now'), w.content);
     deq(fake.fmt('t.0')[4], []);
     deq(w._edit.requests, [{ updateTextStyle: { range: rng(at(5, 6), at(5, 10)),
       textStyle: { link: { url: 'https://x.org' }, underline: true, foregroundColor: { color: { rgbColor: { red: 17 / 255, green: 85 / 255, blue: 204 / 255 } } } }, fields: 'link,underline,foregroundColor' } }]);
@@ -165,7 +168,7 @@ test('format_text: forgiving values: "true"/yes/1 flags, "14pt", #RGB, rgb(), co
 
 test('format_text: validation errors, verbatim; nothing is sent', async () => {
   await fresh(SPEC());
-  const EX = '{"old_text":"lazy dog","bold":true,"italic":null,"underline":null,"font":null,"size":null,"color":null,"highlight":null,"link":null}';
+  const EX = '{"old_text":"lazy dog","bold":true,"italic":null,"underline":null,"font":null,"size":null,"color":null,"highlight":null,"script":null,"link":null}';
   const err = async (args, content, short) => {
     const w = await exec('format_text', args);
     assert.strictEqual(w.content, 'Error: ' + content);
@@ -173,7 +176,8 @@ test('format_text: validation errors, verbatim; nothing is sent', async () => {
     if (short) assert.strictEqual(w._message, short);
   };
   await err({ bold: true }, `invalid arguments. Example: ${EX}`, 'Invalid tool arguments');
-  await err({ old_text: 'lazy dog', ...NONE }, `pass at least one property that is not null (bold, italic, underline, font, size, color, highlight, link). Example: ${EX}`, 'format_text: no formatting given');
+  await err({ old_text: 'lazy dog', ...NONE }, `pass at least one property that is not null (bold, italic, underline, font, size, color, highlight, script, link). Example: ${EX}`, 'format_text: no formatting given');
+  for (const script of ['above', 2, true]) await err({ old_text: 'lazy dog', ...NONE, script }, `script must be "super", "sub" or "none"; got ${typeof script === 'string' ? `the string "${script}"` : `${JSON.stringify(script)} (${typeof script})`}`, 'format_text: invalid script');
   const COLOR = 'is not a color: use "#RRGGBB" (e.g. "#C00000") or one of red, orange, yellow, green, blue, purple, gray, black, white; "none" resets';
   await err({ old_text: 'lazy dog', ...NONE, color: 'reddish' }, `color "reddish" ${COLOR}`, 'format_text: invalid color');
   await err({ old_text: 'lazy dog', ...NONE, highlight: '#12345' }, `highlight "#12345" ${COLOR}`, 'format_text: invalid highlight');

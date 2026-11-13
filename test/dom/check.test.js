@@ -1,7 +1,7 @@
 'use strict';
 // /check on a real DOM (jsdom): sending "/check" runs the report without a model call (no history, the input emptied),
 // the card's groups, severities and line links, a line link sends SCROLL_TO_LINE to the Docs tab (and a miss gives
-// the notice), Copy report copies the Markdown, the export note, and the reference-list phase with References on
+// an error), Copy report copies the Markdown, the export note, and the reference-list phase with References on
 // (progress, the verdicts in the card, Cancel).
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -41,7 +41,11 @@ before(async () => {
 after(() => env.close());
 
 const card = () => [...el.chat.querySelectorAll('.msg.check-report')].pop() || null;
-const groupItems = (id) => [...card().querySelectorAll(`.ck-group[data-group="${id}"] .ck-item`)].map((n) => n.textContent.replace(/\s+/g, ' ').trim());
+// The severity is a coloured dot (no emoji) named by its aria-label: the items read "warning line 5 …".
+const groupItems = (id) => [...card().querySelectorAll(`.ck-group[data-group="${id}"] .ck-item`)].map((n) => {
+  const sev = n.querySelector('.ck-sev');
+  return ((sev ? sev.getAttribute('aria-label') + ' ' : '') + n.textContent).replace(/\s+/g, ' ').trim();
+});
 
 test('/check: the report card without a model call; groups with severities and line links; nothing stored', async () => {
   const fetched = [];
@@ -56,28 +60,33 @@ test('/check: the report card without a model call; groups with severities and l
   const c = card();
   assert.match(c.querySelector('.ck-head').textContent, /Check · .* · «Lipase paper» · export \(Markdown\)/);
   assert.match(c.querySelector('.ck-sub').textContent, /Read through the export/);
-  assert.deepStrictEqual(groupItems('acronyms'), ['⚠️ line 5 PNPB is used before its definition on line 9 (p-nitrophenyl butyrate).']);
-  assert.deepStrictEqual(groupItems('pointers'), ['❌ line 9 Figure 2 is mentioned but there is no caption "Figure 2." at a line start.']);
-  assert.deepStrictEqual(groupItems('references'), ['❌ line 5 Moreno, 2018 matches no entry of the reference list.', '⚠️ line 13 Smith (2020) is never cited in the text.']);
-  assert.deepStrictEqual(groupItems('placeholders'), ['❌ line 9 Open placeholder [[?]].']);
-  assert.deepStrictEqual(groupItems('reflist'), ['ℹ️ Not checked: reference lookups through Crossref and OpenAlex are not allowed yet. Allow lookups']);
+  assert.deepStrictEqual(groupItems('acronyms'), ['warning line 5 PNPB is used before its definition on line 9 (p-nitrophenyl butyrate).']);
+  assert.deepStrictEqual(groupItems('pointers'), ['error line 9 Figure 2 is mentioned but there is no caption "Figure 2." at a line start.']);
+  assert.deepStrictEqual(groupItems('references'), ['error line 5 Moreno, 2018 matches no entry of the reference list.', 'warning line 13 Smith (2020) is never cited in the text.']);
+  assert.deepStrictEqual(groupItems('placeholders'), ['error line 9 Open placeholder [[?]].']);
+  assert.deepStrictEqual(groupItems('reflist'), ['note Not checked: reference lookups through Crossref and OpenAlex are not allowed yet. Allow lookups']);
   assert.ok(c.querySelector('.ck-group[data-group="reflist"] button.ck-allow'));
-  assert.match(c.querySelector('.ck-summary').textContent, /^3 errors, 2 warnings, \d+ notes$/);
+  // doc-checks.js: the abstract cites and uses an abbreviation it does not define (each row's text opens its fold)
+  assert.deepStrictEqual(groupItems('sections'), [
+    'warning line 5 The abstract cites (Moreno, 2018); an abstract usually stands without citations.',
+    'warning line 5 The abstract uses PNPB without defining it there.',
+  ]);
+  assert.match(c.querySelector('.ck-summary').textContent, /^3 errors, 4 warnings, \d+ notes$/);
   assert.ok(c.querySelector('.ck-error'));
   // the Markdown copy
   click(c.querySelector('button[data-act="copy-selftest"]'));
   await tick(5);
   const md = env.clipboard.writes.pop();
   assert.match(md, /^## Munin check\n\n- Date: .*\n- Document: «Lipase paper» \(DOC123\) · export \(Markdown\)\n/);
-  assert.ok(md.includes('### Acronyms\n\n- ⚠️ warning · line 5 · PNPB is used before its definition on line 9 (p-nitrophenyl butyrate).'));
-  assert.ok(md.includes('### Placeholders\n\n- ❌ error · line 9 · Open placeholder [[?]].'));
-  assert.ok(md.includes('### Word budgets\n\n- ℹ️ note · No budget line'));
-  // a re-render drops the card (a notice, not history)
+  assert.ok(md.includes('### Acronyms\n\n- warning · line 5 · PNPB is used before its definition on line 9 (p-nitrophenyl butyrate).'));
+  assert.ok(md.includes('### Placeholders\n\n- error · line 9 · Open placeholder [[?]].'));
+  assert.ok(md.includes('### Word budgets\n\n- note · No budget line'));
+  // a re-render drops the card (a report, not history)
   T.renderHistory();
   assert.strictEqual(card(), null);
 });
 
-test('a line link sends SCROLL_TO_LINE with the line, its text and the line count; a miss shows the notice', async () => {
+test('a line link sends SCROLL_TO_LINE with the line, its text and the line count; a miss shows an error', async () => {
   env.ctx.fetch = async () => { throw new Error('Failed to fetch'); };
   el.input.value = '/check';
   await T.sendMessage();
@@ -90,11 +99,11 @@ test('a line link sends SCROLL_TO_LINE with the line, its text and the line coun
   const msg = tabMsgs.find((m) => m.type === 'SCROLL_TO_LINE');
   deq(msg, { type: 'SCROLL_TO_LINE', line: 9, text: 'We used p-nitrophenyl butyrate (PNPB) and the yield was [[?]] mg, see Fig. 2.', of: 13 });
   await tick(5);
-  assert.ok(![...el.chat.querySelectorAll('.msg.notice')].some((n) => n.textContent === T.SCROLL_NOT_FOUND));
+  assert.ok(![...el.chat.querySelectorAll('.msg.error')].some((n) => n.textContent === T.SCROLL_NOT_FOUND));
   scrollReply = { ok: false, reason: 'not-found' };
   const r = await T.scrollToLine(5, 'Activity towards PNPB was high');
   assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), { ok: false, reason: 'not-found' });
-  assert.ok([...el.chat.querySelectorAll('.msg.notice')].some((n) => n.textContent === 'Could not find the line in the editor view.'));
+  assert.ok([...el.chat.querySelectorAll('.msg.error')].some((n) => n.textContent === 'Could not find the line in the editor view. Scroll to it in the document.'));
   scrollReply = { ok: true, how: 'lineview' };
 });
 
@@ -123,12 +132,12 @@ test('References on: the list is checked against Crossref and OpenAlex with prog
   await run;
   assert.ok(!card().querySelector('.ck-progress'));
   assert.deepStrictEqual(groupItems('reflist'), [
-    '⚠️ line 13 Warning: Smith (2020). Found in OpenAlex, but year 2020 here, 2019 in OpenAlex.',
-    'ℹ️ 0 of 1 entry matches Crossref or OpenAlex.',
+    'warning line 13 Warning: Smith (2020). Found in OpenAlex, but year 2020 here, 2019 in OpenAlex.',
+    'note 0 of 1 entry matches Crossref or OpenAlex.',
   ]);
   assert.strictEqual(asked.length, 1);
   assert.match(asked[0], /^https:\/\/api\.openalex\.org\/works\?search=Interfacial%20activation/);
-  assert.match(card()._report, /### Reference list against Crossref and OpenAlex\n\n- ⚠️ warning · line 13 · Warning: Smith \(2020\)/);
+  assert.match(card()._report, /### Reference list against Crossref and OpenAlex\n\n- warning · line 13 · Warning: Smith \(2020\)/);
 });
 
 test('References on: Cancel in the card stops the lookups; the card says how far it got', async () => {
@@ -147,7 +156,7 @@ test('References on: Cancel in the card stops the lookups; the card says how far
   assert.ok(!state.busy);
   const items = groupItems('reflist');
   assert.strictEqual(items.length, 1);
-  assert.match(items[0], /^ℹ️ Stopped after 0 of 1 entry; OpenAlex is not allowed, so only Crossref was searched\.$/);
+  assert.match(items[0], /^note Stopped after 0 of 1 entry; OpenAlex is not allowed, so only Crossref was searched\.$/);
   state.settings.references = false;
 });
 
@@ -198,7 +207,7 @@ test('with the Docs API: heading styles, suggested changes and open comments; no
   await waitFor(() => card() && !state.busy, 'the report');
   assert.match(card().querySelector('.ck-head').textContent, /· Docs API$/);
   assert.strictEqual(card().querySelector('.ck-sub'), null);
-  deq(groupItems('blind').sort(), ['⚠️ line 3 Open comment: «Rephrase this.».', '⚠️ line 4 Unresolved suggested change.', '⚠️ line 6 Acknowledgement or funding line «We thank».'].sort());
+  deq(groupItems('blind').sort(), ['warning line 3 Open comment: «Rephrase this.».', 'warning line 4 Unresolved suggested change.', 'warning line 6 Acknowledgement or funding line «We thank».'].sort());
   const gets = fake.log.slice(before).filter((x) => x.method === 'GET');
   assert.strictEqual(gets.filter((x) => /commentsViewMode=/.test(x.url)).length, 1);
   state.googleConnected = false;

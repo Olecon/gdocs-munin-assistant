@@ -25,7 +25,7 @@ test('/test on an empty document: no permission card, the write cycle with the r
   const card = await b.run('/test');
   const rows = b.rows();
   deq(rows.map((r) => r.name), API_ROWS);
-  assert.strictEqual(rows.length, 40);
+  assert.strictEqual(rows.length, 42);
   assert.strictEqual(new Set(rows.map((r) => r.name)).size, rows.length, 'one row per check');
   for (const r of rows) assert.strictEqual(r.status, 'pass', `${r.name}: ${r.detail} ${r.more || ''}`);
   deq(b.cards, [], 'no confirmation card');
@@ -34,82 +34,89 @@ test('/test on an empty document: no permission card, the write cycle with the r
   assert.strictEqual(b.row('Empty document').detail, 'empty: 0 characters, 1 line (Docs API) · nothing selected · write cycle (revision rev-1, 1 line) · model scenarios (Docs API)');
   assert.strictEqual(b.row('Export read').detail, 'empty document: the export returned no text (markdown) · read by the panel · 1 export request in this self-test');
   // the write cycle and the reading checks, once, on its two lines
-  assert.strictEqual(b.row('Write: insert_after_line').detail, 'lines 2–3 read «Self-test section» / «The quick brown fox jumps over the lazy …»');
-  assert.strictEqual(b.row('get_outline').detail, 'no headings (the "no headings" note)');
-  assert.strictEqual(b.row('read_lines').detail, 'lines 1–3 of 3; line 3 «The quick brown fox jumps over the lazy …»');
-  assert.strictEqual(b.row('find_in_document').detail, '"quick" found on line 3');
-  assert.strictEqual(b.row('get_selection').detail, 'selection simulated on line 3 (44 characters): lines 3-3');
-  assert.strictEqual(b.row('read_formatting').detail, 'lines 2–3: 2 lines, plain text');
-  assert.match(b.row('Matching').detail, /^line 3 «The quick brown fox jumps over the lazy …»: exact match, and with NBSP a normalized match at the same place$/);
+  assert.strictEqual(b.row('Write: insert_after_line').detail, 'lines 1–2 read «Self-test section» / «The quick brown fox jumps over the lazy …»');
+  assert.strictEqual(b.row('read_document: outline').detail, 'no headings (the "no headings" note)');
+  assert.strictEqual(b.row('read_document: lines').detail, 'lines 1–2 of 2; line 2 «The quick brown fox jumps over the lazy …»');
+  assert.strictEqual(b.row('find_in_document').detail, '"quick" found on line 2');
+  assert.strictEqual(b.row('get_selection').detail, 'selection simulated on line 2 (44 characters): lines 2-2');
+  assert.strictEqual(b.row('read_document: formatting').detail, 'lines 1–2: 2 lines, plain text');
+  assert.match(b.row('Matching').detail, /^line 2 «The quick brown fox jumps over the lazy …»: exact match, and with NBSP a normalized match at the same place$/);
   // the Your-turn steps on the write cycle's paragraph (the simulated user selects «brown fox», bolds «quick», types
   // and deletes «abc»)
   deq(b.turns.length, 3);
   assert.match(b.row('Your turn: typing signal').detail, /^DOC_TYPED ×3, DOC_CHANGED ×2 \(page 1, input 1\), estimate \+5 −5 chars, exact read after \d+\.\d s$/);
   assert.match(b.row('Change signal').detail, /^editor \.kix-appview-editor observed · hidden iframe listened to · so far: keys 3 in the iframe and 0 on the page, beforeinput 0, page changes 2$/);
   assert.strictEqual(b.row('Your turn: select text').detail, 'read «brown fox» (live)');
-  assert.strictEqual(b.row('Model: replace the selection').detail, 'replace_selection replaced the selection «brown fox» through the Docs API; line 3 reads «The quick red cat jumps over the lazy do…» · 3 rounds · get_selection ×1, replace_selection ×1 · 330 tokens');
-  assert.strictEqual(b.row('Your turn: make text bold').detail, 'read_formatting of line 3 shows **quick** (after 1 read)');
+  assert.strictEqual(b.row('Model: replace the selection').detail, 'replace_selection replaced the selection «brown fox» through the Docs API; line 2 reads «The quick red cat jumps over the lazy do…» · 3 rounds · get_selection ×1, replace_selection ×1 · 330 tokens');
+  assert.match(b.row('Your turn: make text bold').detail, /^read_document \(formatting\) of line 2 shows \*\*quick\*\* \(after 1 read in \d+\.\d s\)$/);
   deq(b.pastes, [], 'the selection was replaced through the Docs API, not pasted');
   // then the panel writes the paragraph again (plain) before the write cycle goes on
-  assert.match(b.row('Write: replace_text').detail, /^line 3 reads «The slow green turtle.* · after the Your-turn steps the panel wrote line 3 again as «The quick brown fox/);
-  assert.strictEqual(b.row('Write: format_text').detail, 'read_formatting shows line 3 with **lazy dog**');
-  assert.strictEqual(b.row('Write: delete_lines').detail, 'lines 2–3 deleted; the document is empty again');
-  assert.strictEqual(b.row('Write: text styles').detail, 'line 3: {***lazy dog***}(font=Courier New size=14 color=#FF0000 bg=#FFFF00), [turtle](https://example.com/); undone twice · Docs styled the link itself (underline, #1155CC)');
-  assert.strictEqual(b.row('Write: format_lines').detail, 'line 2: [h2], then [h2 center space 12/6 line 1.5]; undone twice (style NORMAL_TEXT again)');
-  assert.strictEqual(b.row('Write: lists').detail, 'lines 4–5: [number], [checklist], no tag; undone three times; the items deleted again');
-  assert.match(b.row('Write: undo_last_edit').detail, /^inserted «Self-test undo line», undo_last_edit; the document is empty again · revision rev-1 → rev-47$/);
+  assert.match(b.row('Write: replace_text').detail, /^line 2 reads «The slow green turtle.* · after the Your-turn steps the panel wrote line 2 again as «The quick brown fox/);
+  assert.strictEqual(b.row('Write: format_text').detail, 'read_document (formatting) shows line 2 with **lazy dog**');
+  assert.strictEqual(b.row('Write: delete_lines').detail, 'lines 1–2 deleted; the document is empty again');
+  assert.strictEqual(b.row('Write: text styles').detail, 'line 2: {***lazy dog***}(font=Courier New size=14 color=#FF0000 bg=#FFFF00), [turtle](https://example.com/); undone twice · Docs styled the link itself (underline, #1155CC)');
+  assert.strictEqual(b.row('Write: format_lines').detail, 'line 1: [h2], then [h2 center space 12/6 line 1.5]; undone twice (style NORMAL_TEXT again)');
+  assert.strictEqual(b.row('Write: lists').detail, 'lines 3–4: [number], [checklist], no tag; undone three times; the items deleted again');
+  assert.match(b.row('Write: undo_last_edit').detail, /^inserted «Self-test undo line», undo_last_edit; the document is empty again · revision rev-1 → rev-53$/);
   const kinds = b.posts().map((x) => x.body.requests.map((q) => Object.keys(q)[0]).join('+'));
   // insert, the model's replace of the selection, the rewrite (delete + insert), replace_text, format_text,
   // (the text styles: 2 format_text, 2 undos), format_lines ×2 and 2 undos, the list items: insert, number,
   // checklist, none, 3 undos, their deletion; page parts (footer and footnote, two undos); delete_lines, the undo
   // line and its undo (the user's bold is an outside edit: no POST)
-  deq(kinds.slice(0, 6), ['insertText', 'deleteContentRange+insertText', 'deleteContentRange+updateParagraphStyle', 'insertText',
+  // (the rewrite's delete_lines of the last line sends no named style: the line before keeps its own after the merge)
+  deq(kinds.slice(0, 6), ['insertText+updateTextStyle+updateParagraphStyle+updateParagraphStyle', 'deleteContentRange+insertText', 'deleteContentRange', 'insertText+updateTextStyle+updateParagraphStyle',
     'deleteContentRange+insertText', 'updateTextStyle']);
   deq(kinds.slice(6, 10), ['updateTextStyle', 'updateTextStyle', 'updateTextStyle', 'updateTextStyle']);
   const at = 10;
   // Write: table (between the lists and delete_lines): insert and fill, a row and its text, a width, the row deleted; four undos
   const tableRows = ['insertTable', 'insertText+insertText+insertText+insertText', 'insertTableRow', 'insertText+insertText', 'updateTableColumnProperties',
     'deleteTableRow', 'insertTableRow', 'insertText+insertText', 'updateTableColumnProperties', 'deleteTableRow', 'deleteContentRange'];
-  deq(kinds.slice(at, at + 34), ['updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle',
-    'insertText', 'createParagraphBullets', 'deleteParagraphBullets+createParagraphBullets', 'deleteParagraphBullets+updateParagraphStyle',
-    'createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+updateParagraphStyle',
-    'deleteContentRange+updateParagraphStyle',
+  // (the undo of the heading style writes the line's text styles back: the style change cleared what covered the line)
+  deq(kinds.slice(at, at + 40), ['updateParagraphStyle+updateTextStyle+updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle', 'updateParagraphStyle+updateTextStyle+updateParagraphStyle+updateTextStyle',
+    'insertText+updateTextStyle+updateParagraphStyle+updateParagraphStyle', 'updateParagraphStyle+createParagraphBullets', 'deleteParagraphBullets+updateParagraphStyle+createParagraphBullets', 'deleteParagraphBullets+updateParagraphStyle',
+    'updateParagraphStyle+createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+updateParagraphStyle+createParagraphBullets+updateParagraphStyle', 'deleteParagraphBullets+updateParagraphStyle',
+    'deleteContentRange',
     ...tableRows,
     'createFooter', 'insertText', 'createFootnote', 'insertText', 'deleteContentRange', 'deleteContentRange', 'deleteContentRange', 'deleteFooter',
-    'deleteContentRange+updateParagraphStyle', 'insertText', 'deleteContentRange+updateParagraphStyle']);
+    // Write: comments: add, reply, resolve; three undos
+    'insertComment', 'addCommentReply', 'addCommentReply', 'addCommentReply', 'deleteCommentReply', 'deleteComment',
+    'deleteContentRange', 'insertText+updateTextStyle+updateParagraphStyle', 'deleteContentRange+updateParagraphStyle']);
   // checklist -> number on two items: the bullets deleted, then created with the numbered preset
   const toNumberUndo = b.posts()[at + 9].body.requests;
   deq(toNumberUndo.map((q) => q.createParagraphBullets && q.createParagraphBullets.bulletPreset).filter(Boolean), ['NUMBERED_DECIMAL_ALPHA_ROMAN']);
-  assert.strictEqual(b.posts()[0].body.requests[0].insertText.text, '\nSelf-test section\nThe quick brown fox jumps over the lazy dog.');
+  assert.strictEqual(b.posts()[0].body.requests[0].insertText.text, 'Self-test section\nThe quick brown fox jumps over the lazy dog.'); // fills the empty paragraph
   // the model scenarios: what was verified, rounds, tool calls, tokens
   assert.match(b.row('Model: write a section').detail, /^lines 2–3 read «Self-test section» \/ «The quick brown fox jumps over the lazy …» · 2 rounds · insert_after_line ×1 · 220 tokens$/);
-  assert.match(b.row('Model: format').detail, /read_formatting shows line 3 with \*\*lazy dog\*\*/);
-  assert.strictEqual(b.row('Model: heading').detail, 'line 2 is Heading 2: read_formatting shows «2: [h2] Self-test section» · 2 rounds · format_lines ×1 · 220 tokens');
+  assert.match(b.row('Model: format').detail, /read_document \(formatting\) shows line 3 with \*\*lazy dog\*\*/);
+  assert.strictEqual(b.row('Model: heading').detail, 'line 2 is Heading 2: read_document (formatting) shows «2: [h2] Self-test section» · 2 rounds · format_lines ×1 · 220 tokens');
   assert.strictEqual(b.row('Model: list').detail, 'lines 3–4 are a numbered list; the heading is not in it · 2 rounds · format_lines ×1 · 220 tokens');
   assert.match(b.row('Model: replace all').detail, /the panel added «A turtle is a turtle\.» as line 4; all 3 «turtle» became «tortoise»/);
   assert.match(b.row('Model: selection').detail, /line 3 is uppercase · selection simulated/);
-  assert.match(b.row('Model: question').detail, /answered 3 \(correct\) after reading · 2 rounds · read_lines ×1/);
+  assert.match(b.row('Model: question').detail, /answered 3 \(correct\) after reading · 2 rounds · read_document ×1/);
+  // the agent row: the main model delegated in Manual mode; the agent read the document and reported
+  assert.strictEqual(b.row('Agent: summarize the test section').detail,
+    'the agent (munin/qwen3.8-27b, 1 round) reported «The Self-test section has one sentence about a quick brown fox.» · 2 rounds · delegate ×1 · 220 tokens');
   assert.match(b.row('Model: delete').detail, /^the document is empty again · 2 rounds · delete_lines ×1/);
   assert.strictEqual(b.row('Model: cleanup').detail, 'the document is empty again');
   // each scenario is its own turn: its first request has one user message (the instruction with the turn
   // context), Auto mode with the writing tools, Manual for the question
   const firsts = b.bodies.filter((x, i) => b.keys[i].endsWith(':0') && !b.keys[i].startsWith('probe'));
-  deq(firsts.map((x) => b.keys[b.bodies.indexOf(x)]), ['replaceSelection:0', 'write:0', 'replace:0', 'format:0', 'heading:0', 'replaceAll:0', 'list:0', 'selection:0', 'question:0', 'delete:0']);
+  deq(firsts.map((x) => b.keys[b.bodies.indexOf(x)]), ['replaceSelection:0', 'write:0', 'replace:0', 'format:0', 'heading:0', 'replaceAll:0', 'list:0', 'selection:0', 'question:0', 'agent:0', 'agentTask:0', 'delete:0']);
   for (const x of firsts) assert.deepStrictEqual(x.messages.filter((m) => m.role !== 'system').map((m) => m.role), ['user']);
   const tools = (x) => x.tools.map((t) => t.function.name);
   assert.ok(tools(firsts[1]).includes('insert_after_line') && tools(firsts[1]).includes('replace_selection'));
   assert.ok(tools(firsts[4]).includes('format_lines'));
-  assert.ok(!tools(firsts[8]).includes('insert_after_line') && tools(firsts[8]).includes('read_lines'), 'the question is Manual');
+  assert.ok(!tools(firsts[8]).includes('insert_after_line') && tools(firsts[8]).includes('read_document'), 'the question is Manual');
   assert.ok(firsts[1].messages[1].content.endsWith(T.ST_PROMPTS.write));
   assert.ok(firsts[0].messages[1].content.endsWith(T.ST_PROMPTS.replaceSelection));
-  // the selection is given by its line and size only; the model reads its text with get_selection
-  assert.ok(firsts[0].messages[1].content.includes('\nSelection: line 3 (9 characters)\n') && !firsts[0].messages[1].content.includes('brown fox'), 'the real selection is in the turn context by its line');
-  assert.ok(firsts[7].messages[1].content.includes('\nSelection: line 3 (48 characters)\n'), 'the simulated selection is in the turn context by its line');
+  // the selection is given by its line and size, and (short) its text, so get_selection is not needed
+  assert.ok(firsts[0].messages[1].content.includes('\nSelection: line 2 (9 characters)\nIts text (no need for get_selection):\n<selection>\nbrown fox\n</selection>\n'), 'the real selection is in the turn context by its line and text');
+  assert.ok(firsts[7].messages[1].content.includes('\nSelection: line 3 (48 characters)\nIts text (no need for get_selection):\n<selection>\n'), 'the simulated selection is in the turn context by its line and text');
   // the report: the Model line and the summary
   const md = card._report;
   assert.ok(md.startsWith('## Munin self-test\n'));
-  assert.match(md, /\n- Model: Munin \/ qwen3\.8-27b · 22 requests · 2,420 tokens \(2,200 in \/ 220 out\) · \d+\.\d s\n/);
-  assert.match(md, /\*\*Summary:\*\* 40 passed, 0 warnings, 0 failed, 0 skipped/);
+  assert.match(md, /\n- Model: Munin \/ qwen3\.8-27b · 24 requests · 2,640 tokens \(2,400 in \/ 240 out\) · \d+\.\d s\n/);
+  assert.match(md, /\*\*Summary:\*\* 42 passed, 0 warnings, 0 failed, 0 skipped/);
   assert.ok(card.innerHTML.includes('st-model'));
   assert.ok(!card.innerHTML.includes('Send this report to the developer'));
   // nothing reached the chat
@@ -138,7 +145,7 @@ test('/test on a document with text: only the harmless checks run, nothing is wr
   deq(b.keys, ['probe:0'], 'the probe only');
   deq(b.cards, []);
   assert.strictEqual(b.fake.text('t.0'), text);
-  assert.match(b.card()._report, /\*\*Summary:\*\* 9 passed, 0 warnings, 1 failed, 30 skipped/);
+  assert.match(b.card()._report, /\*\*Summary:\*\* 9 passed, 0 warnings, 1 failed, 32 skipped/);
   deq(b.turns, [], 'no Your-turn card');
   assert.ok(!b.card()._report.includes('- Model:'));
 });
@@ -192,14 +199,14 @@ test('/test: a model that does the wrong thing fails with its answer and the dep
 
 test('/test: a failed scenario lists the tool calls it made, with the arguments as compact JSON and the first result line', async () => {
   const bad = () => call('format_text', { old_text: 'lazy dog', bold: 'maybe', italic: null, underline: null });
-  const b = await bench({ script: { format: [bad, bad, () => call('read_formatting', { start: 1, end: 3 }), () => say('I could not make it bold.')] } });
+  const b = await bench({ script: { format: [bad, bad, () => call('read_document', { scope: { start: 1, end: 3 }, include: ['formatting'], doc: null }), () => say('I could not make it bold.')] } });
   await b.run('/test');
   const f = b.row('Model: format');
   assert.strictEqual(f.status, 'fail', f.detail);
   const trace = f.more.slice(f.more.indexOf('Tool calls:'));
   assert.ok(trace.startsWith('Tool calls:\n1. format_text({"old_text":"lazy dog","bold":"maybe","italic":null,"underline":null}) → Error: bold must be true, false or null (JSON booleans); got the string "maybe"\n' +
     '2. format_text({"old_text":"lazy dog","bold":"maybe","italic":null,"underline":null}) → Error: bold must be'), trace);
-  assert.match(trace, /\n3\. read_formatting\(\{"start":1,"end":3\}\) → /);
+  assert.match(trace, /\n3\. read_document\(\{"scope":\{"start":1,"end":3\},"include":\["formatting"\],"doc":null\}\) → /);
   // the scenarios that passed have no trace
   assert.ok(!(b.row('Model: replace a phrase').more || '').includes('Tool calls:'));
   // a long run: at most 12 calls, each clipped
@@ -227,7 +234,7 @@ test('/test: loose arguments still pass: markers and "true" strings in format_te
   assert.strictEqual(h.status, 'pass', `${h.detail} ${h.more || ''}`);
   assert.match(h.detail, / · 3 rounds · format_lines ×2 · /);
   const results = b.bodies.flatMap((x) => x.messages.filter((m) => m.role === 'tool').map((m) => String(m.content)));
-  assert.ok(results.some((c) => c.startsWith('Done: formatted line 2 (h2).')), results.join('\n---\n'));
+  assert.ok(results.some((c) => c.startsWith('Done: formatted line 2 (h2);')), results.join('\n---\n'));
   assert.ok(results.some((c) => c.startsWith('Already done in this message: formatted line 2 (h2). Do not call format_lines again for this.')), results.join('\n---\n'));
   assert.strictEqual(b.row('Model: cleanup').status, 'pass');
 });
@@ -272,8 +279,8 @@ test('/test: "Write: lists" with a missing tag prints the raw bullet and nesting
   await b.run('/test');
   const r = b.row('Write: lists');
   assert.strictEqual(r.status, 'fail');
-  assert.match(r.detail, /^list number: lines 4–5 read 4: \[checklist\] Item one \/ 5: \[checklist\] Item two, expected \[number\] · Left in the document: /);
-  assert.ok(r.more.startsWith('Raw: line 4 bullet {"listId":"kix.list.1"} level {"glyphFormat":"%0."}; line 5 bullet {"listId":"kix.list.1"} level {"glyphFormat":"%0."}'), r.more);
+  assert.match(r.detail, /^list number: lines 3–4 read 3: \[checklist\] Item one \/ 4: \[checklist\] Item two, expected \[number\] · Left in the document: /);
+  assert.ok(r.more.startsWith('Raw: line 3 bullet {"listId":"kix.list.1"} level {"glyphFormat":"%0."}; line 4 bullet {"listId":"kix.list.1"} level {"glyphFormat":"%0."}'), r.more);
   assert.strictEqual(b.row('Write: delete_lines').detail, 'not run: an earlier write step failed');
 });
 
@@ -314,12 +321,12 @@ test('/test without a Google account on an empty document: paste at the cursor, 
   deq(b.pastes, [{ type: 'REPLACE_SELECTION', text: PASTE }, { type: 'REPLACE_SELECTION', text: 'red cat', expected: 'brown fox' }]);
   assert.strictEqual(b.row('Your turn: select text').detail, 'read «brown fox» (live)');
   assert.match(b.row('Model: replace the selection').detail, /^replace_selection replaced the selection «brown fox» through the paste over the selection; line 1 reads «Self-test paragraph: the quick red cat j…» · 3 rounds · get_selection ×1, replace_selection ×1/);
-  assert.strictEqual(b.row('Your turn: make text bold').detail, 'the Markdown export of line 1 shows **quick** (formatting read from the Markdown export)');
-  for (const n of READING.filter((x) => x !== 'read_formatting')) assert.strictEqual(s[n], 'pass', `${n}: ${b.row(n).detail}`);
-  assert.strictEqual(b.row('read_lines').detail, 'lines 1–2 of 2; line 1 «Self-test paragraph: the quick brown fox…»');
+  assert.match(b.row('Your turn: make text bold').detail, /^the Markdown export of line 1 shows \*\*quick\*\* \(after 1 read in \d+\.\d s, formatting read from the Markdown export\)$/);
+  for (const n of READING.filter((x) => x !== 'read_document: formatting')) assert.strictEqual(s[n], 'pass', `${n}: ${b.row(n).detail}`);
+  assert.strictEqual(b.row('read_document: lines').detail, 'lines 1–2 of 2; line 1 «Self-test paragraph: the quick brown fox…»');
   assert.strictEqual(b.row('find_in_document').detail, '"Self" found on line 1');
   assert.strictEqual(b.row('get_selection').detail, 'selection simulated on line 1 (65 characters): lines 1-1');
-  deq([s.read_formatting, b.row('read_formatting').detail], ['skip', 'needs a Google account (Docs API)']);
+  deq([s['read_document: formatting'], b.row('read_document: formatting').detail], ['skip', 'needs a Google account (Docs API)']);
   assert.match(b.row('Model: question').detail, /answered 1 \(correct\) after reading · 2 rounds · find_in_document ×1/);
   for (const n of ['Your turn: select text', 'Model: replace the selection', 'Your turn: make text bold']) assert.strictEqual(s[n], 'pass', `${n}: ${b.row(n).detail}`);
   deq([s['Your turn: remove the test text'], b.row('Your turn: remove the test text').detail], ['pass', 'removed by the user; the document is empty again']);
@@ -341,7 +348,7 @@ test('/test without a Google account: the paste inserted three times for one cal
   deq(b.pastes.length, 2); // the insert and the replace of the selection
   // the reading rows run on the tripled line (195 characters); Matching finds no unique text on it
   assert.strictEqual(b.row('get_selection').detail, 'selection simulated on line 1 (195 characters): lines 1-1');
-  for (const n of ['get_outline', 'read_lines', 'find_in_document', 'get_selection']) assert.strictEqual(s[n], 'pass', `${n}: ${b.row(n).detail}`);
+  for (const n of ['read_document: outline', 'read_document: lines', 'find_in_document', 'get_selection']) assert.strictEqual(s[n], 'pass', `${n}: ${b.row(n).detail}`);
   deq([s.Matching, b.row('Matching').detail], ['skip', 'line 1 has no unique text with an inner space']);
   assert.strictEqual(s['Model: question'], 'pass', b.row('Model: question').detail);
   // the selection is replaced in one of the three copies: «brown fox» once fewer, «red cat» once more than before
@@ -378,6 +385,21 @@ test('/test without a Google account: a second replace_selection in the turn is 
   const refusal = b.bodies.find((x) => x.messages.some((m) => m.role === 'tool' && m.content === b.T.PASTE_AGAIN_TEXT));
   assert.ok(refusal, 'the refusal reached the model');
   assert.strictEqual(b.row('Model: replace the selection').status, 'pass', b.row('Model: replace the selection').detail);
+});
+
+test('/test: "Model: replace the selection" passes through replace_text (the tool the prompt prefers) and names it; several edits warn', async () => {
+  const text = await bench({ script: { replaceSelection: [() => call('get_selection', {}), () => call('read_document', { scope: { start: 2, end: 2 }, include: ['text'], doc: null }),
+    () => call('replace_text', { old_text: 'brown fox', new_text: 'red cat' }), () => say('Replaced.')] } });
+  await text.run('/test');
+  const r = text.row('Model: replace the selection');
+  assert.strictEqual(r.status, 'pass', r.detail);
+  assert.match(r.detail, /^replace_text replaced the selection «brown fox» through the Docs API; line 2 reads «The quick red cat jumps over the lazy do…» · 4 rounds · get_selection ×1, read_document ×1, replace_text ×1/);
+  // the right text through two edits: a warning naming them
+  const two = await bench({ script: { replaceSelection: [() => call('replace_text', { old_text: 'brown', new_text: 'red' }),
+    () => call('replace_text', { old_text: 'fox', new_text: 'cat' }), () => say('Replaced.')] } });
+  await two.run('/test');
+  const w = two.row('Model: replace the selection');
+  deq([w.status, w.detail.split(' · ')[0]], ['warn', 'line 2 reads «The quick red cat jumps over the lazy do…», but the model used replace_text ×2 instead of one call of replace_selection, replace_text, replace_section']);
 });
 
 test('the paste verdict: several pasted calls are the model\'s behavior, with the characters per call', async () => {
@@ -430,7 +452,7 @@ test('/test: Stop during the write cycle ends the run and the panel deletes the 
   const rows = b.rows();
   assert.strictEqual(rows[rows.length - 1].name, 'Write: replace_text');
   assert.ok(b.card()._selfTest.stopped);
-  assert.match(b.card()._report, /\*\*Write cycle:\*\* Stopped: cleaned up by the panel: deleted lines 2–3; the document is empty again\./);
+  assert.match(b.card()._report, /\*\*Write cycle:\*\* Stopped: cleaned up by the panel: deleted lines 1–2; the document is empty again\./);
   assert.strictEqual(b.fake.raw('t.0'), '');
   deq(b.keys, ['probe:0', 'replaceSelection:0', 'replaceSelection:1', 'replaceSelection:2'], 'no scenario after Stop');
   assert.strictEqual(b.state.busy, false);
@@ -472,7 +494,8 @@ test('/test: the Export read row names the route that delivered the text', async
 });
 
 test('/test without a Google account: one export read for Export read and the gate, re-reads only after a write, spaced 2 s apart', async () => {
-  const b = await bench({ connected: false });
+  const b = await bench({ connected: false, clock: true }); // the pacing on the bench's clock, not the wall clock
+  assert.strictEqual(b.T.ST_EXPORT_PACE.gapMs, 2000);
   await b.run('/test');
   assert.strictEqual(b.row('Model: insert at the cursor').status, 'pass');
   assert.strictEqual(b.row('Model: question').status, 'pass');
@@ -483,27 +506,53 @@ test('/test without a Google account: one export read for Export read and the ga
   deq(b.events.filter((e) => e === 'export').length, 8);
   assert.match(b.row('Export read').detail, / · 8 export requests in this self-test$/);
   // every export read after the first waits for the rest of the 2 s gap first
+  const waits = [];
   b.events.forEach((e, i) => {
     if (e !== 'export' || i === b.events.indexOf('export')) return;
     const wait = /^sleep (\d+)$/.exec(b.events[i - 1] || '');
     assert.ok(wait && Number(wait[1]) > 1500 && Number(wait[1]) <= 2000, `a wait before export #${i}: ${b.events.join(', ')}`);
+    waits.push(Number(wait[1]));
   });
+  assert.ok(waits.some((w) => w < 2000), `the rest of the gap after the model's requests: ${waits.join(', ')}`);
+  // so the export requests are exactly 2 s apart
+  const at = b.clock.exports;
+  deq(at.slice(1).map((t, i) => t - at[i]), Array(7).fill(2000));
   assert.strictEqual(b.state.exportPace, null); // the scheduler is removed after the run
 });
 
 test('/test without a Google account: the verification re-reads the export twice at most, 3 s apart', async () => {
   const b = await bench({ connected: false, script: { insert: [() => call('replace_selection', { text: 'Something else entirely.' }), () => say('Done.')] } });
   b.T.ST_MODEL.exportWaitMs = 3000;
-  const T0 = Date.now();
   const delays = [];
+  const fired = []; // timers of 1 s or more that ran out: real waits (the model's 90 s timeout is cleared)
   const setT = b.ctx.setTimeout;
-  b.ctx.setTimeout = (fn, ms, ...a) => { if (ms === 3000) { delays.push(ms); return setT(fn, 0, ...a); } return setT(fn, ms, ...a); };
+  b.ctx.setTimeout = (fn, ms, ...a) => {
+    if (ms === 3000) { delays.push(ms); b.events.push('pause'); return setT(fn, 0, ...a); }
+    if (ms >= 1000) return setT((...x) => { fired.push(ms); fn(...x); }, ms, ...a);
+    return setT(fn, ms, ...a);
+  };
   await b.run('/test');
   b.ctx.setTimeout = setT;
   const ins = b.row('Model: insert at the cursor');
   assert.strictEqual(ins.status, 'fail');
   assert.strictEqual(b.T.ST_MODEL.exportTries, 2);
   deq(delays, [3000]); // two tries, one 3 s pause between them
-  assert.ok(Date.now() - T0 < 2000, 'no real waits');
+  const verify = b.events.slice(b.events.indexOf('pause') - 1);
+  deq([verify[0], verify[1], verify.filter((e) => e === 'export').length], ['export', 'pause', 2]);
+  deq(fired, [], 'no real waits');
   for (const n of READING) assert.strictEqual(b.row(n).detail, 'not run: the test paragraph was not inserted', n);
+});
+
+test('/test agent row: a summary without delegate is a warning; an agent that ends without a report fails', async () => {
+  let b = await bench({ script: { agent: [() => say('The section is about a fox.')] } });
+  await b.run('/test');
+  let row = b.row('Agent: summarize the test section');
+  assert.strictEqual(row.status, 'warn');
+  assert.match(row.detail, /^the model answered without delegate · 1 round · no tool calls/);
+  assert.strictEqual(b.row('Model: delete').status, 'pass'); // the next scenarios go on
+  b = await bench({ script: { agentTask: [() => say('')] } });
+  await b.run('/test');
+  row = b.row('Agent: summarize the test section');
+  assert.strictEqual(row.status, 'fail');
+  assert.match(row.detail, /^the agent ended with status ok and no report/);
 });

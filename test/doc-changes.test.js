@@ -78,7 +78,7 @@ test('in a chat: no note on the first turn, a note after a change, none when not
   doc.text = changed.join('\n');
   await send(env, 'second');
   const note = '<document_changes>Since your last turn: +17 characters, +3 lines; headings moved: "Methods" 5→8, "Results" 9→12.</document_changes>';
-  const own = 'Since your last message you added lines 5–7: «One. / Two. / Three.».'; // own-changes.js
+  const own = 'Since your previous turn the document was changed outside the panel (by the user or a collaborator): added lines 5–7: «One. / Two. / Three.».'; // own-changes.js
   assert.ok(state.messages[2]._context.includes(`</document>\n${note}\n${own}\nCurrent selection in the document:`), state.messages[2]._context);
   assert.ok(bodies[1].messages[bodies[1].messages.length - 1].content[0].text.includes(note)); // sent with the turn
   assert.strictEqual(state.messages[0]._docFacts, undefined); // only the newest facts are kept

@@ -8,3 +8,5 @@ dist/
 build.json
 development/
 CLAUDE.local.md
+bugs/
+.config/

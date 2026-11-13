@@ -47,9 +47,9 @@ test('read_formatting: line tags, spans and the default-font header (the example
   // without a default (a hand-built model) every explicit value is shown; linesReport passes the model's default
   assert.strictEqual(T.markedText(m.lines[4]), '[center line 1.5] {Plain }(font=Arial size=11){centered}(font=Arial size=14 color=#FF0000){ text}(font=Arial size=11)');
   assert.ok(T.linesReport(m, 5, 5, T.markedText).endsWith('\n5: [center line 1.5] Plain {centered}(size=14 color=#FF0000) text'));
-  // the tool description names tags and spans
-  const desc = T.TOOL_DEFS.read_formatting.function.description;
-  assert.ok(desc.includes('{text}(font= size= color= bg=)') && desc.includes('[tag]'), desc);
+  // the result's note names tags and spans (the tool description only says formatting shows the formatting)
+  const desc = T.TOOL_DEFS.read_document.function.description;
+  assert.ok(T.FORMAT_NOTE.includes('{text}(font= size= color= bg=)') && T.FORMAT_NOTE.includes('[tags]') && desc.includes('formatting shows the formatting'), desc);
 });
 
 test('line model: runs keep font, weight, size, colors and the raw link; plain runs are left out', () => {
@@ -57,7 +57,7 @@ test('line model: runs keep font, weight, size, colors and the raw link; plain r
     { p: 'Fonts and colors here', fmt: [[0, 5, { font: 'Roboto', weight: 700, size: 14 }], [10, 16, { color: '#00B050', bg: '#FFFF00' }], [17, 21, { link: { headingId: 'h.abc' } }]] },
     { p: 'Black text', fmt: [[0, 5, { color: '#000000' }]] },
   ])));
-  const plain = { bold: false, italic: false, underline: false, link: null, font: null, weight: null, size: null, color: null, bg: null, linkRaw: null };
+  const plain = { bold: false, italic: false, underline: false, link: null, font: null, weight: null, size: null, color: null, bg: null, script: null, linkRaw: null };
   deq(m.lines[0].runs, [
     { s: 0, e: 5, ...plain, font: 'Roboto', weight: 700, size: 14 },
     { s: 10, e: 16, ...plain, color: '#00B050', bg: '#FFFF00' },
@@ -67,7 +67,7 @@ test('line model: runs keep font, weight, size, colors and the raw link; plain r
   deq(m.textDefault, { font: null, size: null, color: null });
   assert.strictEqual(T.markedText(m.lines[0], m.textDefault), '{Fonts}(font=Roboto size=14) and {colors}(color=#00B050 bg=#FFFF00) here');
   assert.strictEqual(T.formatNote(m), T.FORMAT_NOTE); // no default: no "Unmarked text"
-  deq([...T.TEXT_STYLE_KEYS], ['bold', 'italic', 'underline', 'link', 'font', 'weight', 'size', 'color', 'bg', 'linkRaw']);
+  deq([...T.TEXT_STYLE_KEYS], ['bold', 'italic', 'underline', 'link', 'font', 'weight', 'size', 'color', 'bg', 'script', 'linkRaw']);
   assert.ok(T.isPlainStyle(plain) && !T.isPlainStyle({ ...plain, linkRaw: { headingId: 'h' } }) && !T.isPlainStyle({ ...plain, bg: '#FFFFFF' }));
   assert.ok(T.sameStyle({ ...plain, linkRaw: { url: 'a' } }, { ...plain, linkRaw: { url: 'a' } }) && !T.sameStyle(plain, { ...plain, size: 11 }));
   // the link color Docs adds by itself is not repeated in a span on a link
@@ -160,7 +160,11 @@ test('docs-style: vocabularies and loose parsers', () => {
   assert.strictEqual(T.knownFont(' '), null);
   assert.strictEqual(T.TEXT_STYLE_API_FIELDS.highlight, 'backgroundColor');
   assert.strictEqual(T.lineTag({ style: 'HEADING_2', list: null, para: { align: 'center', spaceAbove: 12, spaceBelow: 6, lineSpacing: 150 } }), 'h2 center space 12/6 line 1.5');
-  assert.strictEqual(T.lineTag({ style: 'NORMAL_TEXT', list: { kind: 'bullet', level: 2 }, para: { indentStart: 108, spaceBelow: 4 } }), 'bullet L3 space -/4');
+  // a list item's indent: hidden when it repeats the list level's own indents, shown when it differs (a numbered heading)
+  assert.strictEqual(T.lineTag({ style: 'NORMAL_TEXT', list: { kind: 'bullet', level: 2, indent: { start: 108, first: 90 } }, para: { indentStart: 108, indentFirstLine: 90, spaceBelow: 4 } }), 'bullet L3 space -/4');
+  assert.strictEqual(T.lineTag({ style: 'NORMAL_TEXT', list: { kind: 'bullet', level: 2 }, para: { indentStart: 108, spaceBelow: 4 } }), 'bullet L3 indent 108/- space -/4');
+  assert.strictEqual(T.lineTag({ style: 'HEADING_2', list: { kind: 'number', level: 1, indent: { start: 72, first: 54 } }, para: { indentStart: 35, indentFirstLine: 0 } }), 'h2 number L2 indent 35/0');
+  assert.strictEqual(T.lineTag({ style: 'NORMAL_TEXT', list: { kind: 'bullet', level: 0, indent: { start: 36, first: 18 } }, para: {} }), 'bullet');
   assert.strictEqual(T.spanAttrs({ font: 'Courier New', size: 14, color: '#FF0000', bg: '#FFFF00' }, { font: 'Arial', size: 11 }), 'font=Courier New size=14 color=#FF0000 bg=#FFFF00');
   assert.strictEqual(T.unmarkedNote({ font: null, size: 12, color: null }), ' Unmarked text: size 12.');
   assert.strictEqual(T.unmarkedNote({ font: null, size: null, color: null }), '');
@@ -277,21 +281,25 @@ test('fake Docs: lists (leading tabs are the nesting level, joining a preceding 
   deq(tab.body.content[2].paragraph.bullet, { listId: 'kix.list.1' });
   deq(tab.body.content[3].paragraph.bullet, { listId: 'kix.list.1', nestingLevel: 1 });
   deq(tab.lists['kix.list.1'].listProperties.nestingLevels.slice(0, 2).map((l) => l.glyphType), ['DECIMAL', 'ALPHA']);
-  // "Three" (now 14-19) with the same preset continues the list right before it
+  // "Three" (now 14-19) with the same preset continues the list right before it, its level counted from that item's (the
+  // real API: real-docs.js fact num4)
   await post(fake, [{ createParagraphBullets: { range: range(14, 19), bulletPreset: NUM } }]);
-  deq(fake.bullets('t.0')[3], { listId: 'kix.list.1', level: 0, preset: NUM });
+  deq(fake.bullets('t.0')[3], { listId: 'kix.list.1', level: 1, preset: NUM });
   // another preset: a new list
   await post(fake, [{ createParagraphBullets: { range: range(1, 5), bulletPreset: 'BULLET_CHECKBOX' } }]);
   deq(fake.bullets('t.0')[0], { listId: 'kix.list.2', level: 0, preset: 'BULLET_CHECKBOX' });
   deq(fake.render(true).tabs[0].documentTab.lists['kix.list.2'].listProperties.nestingLevels[0], { ...CHECKBOX_GLYPH, indentFirstLine: { magnitude: 18, unit: 'PT' }, indentStart: { magnitude: 36, unit: 'PT' } });
   const m = modelOf(fake);
-  deq(m.lines.map((l) => l.list && [l.list.kind, l.list.level]), [['checklist', 0], ['number', 0], ['number', 1], ['number', 0]]);
-  deq(T.runReadingTool('read_formatting', { start: 1, end: 4 }, snapOf(m)).split('\n').slice(2), ['1: [checklist] Head', '2: [number] One', '3: [number L2] Two', '4: [number] Three']);
-  // deleteParagraphBullets: the bullet goes, the level's indent stays as a plain indent
+  deq(m.lines.map((l) => l.list && [l.list.kind, l.list.level]), [['checklist', 0], ['number', 0], ['number', 1], ['number', 1]]);
+  deq(T.runReadingTool('read_formatting', { start: 1, end: 4 }, snapOf(m)).split('\n').slice(2), ['1: [checklist] Head', '2: [number] One', '3: [number L2] Two', '4: [number L2] Three']);
+  // deleteParagraphBullets: the bullet goes, the level stays as a plain indent of level × 36 pt on both fields (real Docs:
+  // real-docs.js fact 1; at level 0 that is 0, the inherited value, and is not stored)
   await post(fake, [{ deleteParagraphBullets: { range: range(10, 13) } }]);
   deq(fake.bullets('t.0')[2], null);
-  deq(fake.pstyles('t.0')[2], { indentStart: 72, indentFirstLine: 72 });
-  assert.strictEqual(T.markedText(modelOf(fake).lines[2]), '[indent 72/72] Two');
+  deq(fake.pstyles('t.0')[2], { indentStart: 36, indentFirstLine: 36 });
+  assert.strictEqual(T.markedText(modelOf(fake).lines[2]), '[indent 36/36] Two');
+  await post(fake, [{ deleteParagraphBullets: { range: range(6, 9) } }]);
+  deq(fake.pstyles('t.0')[1], {});
   // an unknown preset: 400, nothing changed
   const rev = fake.revision;
   r = await post(fake, [{ createParagraphBullets: { range: range(1, 5), bulletPreset: 'STARS' } }]);

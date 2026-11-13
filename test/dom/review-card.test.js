@@ -44,8 +44,8 @@ test('the card replaces the review text, with groups, line links, the unverified
   const bubble = [...el.chat.querySelectorAll('.msg.assistant')].pop();
   const c = card();
   assert.ok(c, 'the card is in the answer');
-  assert.ok(bubble.querySelector('.md').classList.contains('hidden') && bubble.querySelector('.msg-actions').classList.contains('hidden'));
-  assert.strictEqual(c.querySelector('.st-head').textContent, '📋 Review');
+  assert.ok(bubble.querySelector('.md').classList.contains('hidden') && !bubble.querySelector('.msg-actions'));
+  assert.strictEqual(c.querySelector('.st-head').textContent, 'Review');
   assert.strictEqual(c.querySelector('.st-sub').textContent, '1 major, 1 supported, 1 unverified');
   assert.strictEqual(c.querySelector('.finding-criteria').textContent, 'Claims vs evidence: FAIL');
   const rows = [...c.querySelectorAll('.finding')];
@@ -92,14 +92,15 @@ test('a re-render (and a reload of the chat) puts the card back; without scrollT
   }
 });
 
-test('Fix flagged: off in Manual (the reason shows), then one message through the Send path; queued while busy', async () => {
+test('Fix flagged: off in Plan (the reason shows), then one message through the Send path; queued while busy with its mode', async () => {
+  state.applyMode = 'plan';
   T.renderHistory();
   await tick(5);
   const btn = card().querySelector('button.review-fix');
   const hint = card().querySelector('.review-fix-hint');
   assert.strictEqual(btn.textContent, 'Fix flagged (1)');
   assert.ok(btn.classList.contains('off'));
-  assert.strictEqual(hint.textContent, 'Fix flagged edits the document: switch to Edit automatically first.');
+  assert.strictEqual(hint.textContent, 'Fix flagged edits the document: switch to Manual or Auto first.');
   const sent = [];
   const realSend = env.window.sendMessage;
   env.window.sendMessage = async (q) => { sent.push(q); };
@@ -126,6 +127,12 @@ test('Fix flagged: off in Manual (the reason shows), then one message through th
     click(card().querySelector('button.review-fix'));
     assert.strictEqual(sent.length, 1);
     assert.ok(state.queued && state.queued.text.startsWith('Fix the flagged findings:'));
+    assert.strictEqual(state.queued.mode, 'auto'); // the mode it was queued in
+    // Manual edits too (each edit asks): Fix flagged is on there
+    state.busy = false; state.queued = null; state.applyMode = 'manual';
+    T.renderHistory();
+    await tick(5);
+    assert.ok(!card().querySelector('button.review-fix').classList.contains('off'));
   } finally {
     env.window.sendMessage = realSend;
     state.busy = false;

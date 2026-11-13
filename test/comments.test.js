@@ -1,8 +1,10 @@
 'use strict';
-// read_comments (read-only comment threads through the Docs API comments view): where it is offered, the prompt
-// line, the result text (status filter, anchors mapped to lines in the body, a table cell, another tab, a footnote,
-// the quote fallback, lost anchors, replies), the limits, the per-turn cache, the errors, the fake's API shapes and
-// a full turn (a reading call: no card, stubbed after the turn, works in Manual).
+// Comment threads (read-only, through the Docs API comments view), read with read_document include "comments" (the
+// read_comments tool of earlier versions is refused as unknown): the prompt sentence, the threads after the lines of the
+// scope, the room left by the per-call limit, the result text of readComments (status filter, anchors mapped to lines
+// in the body, a table cell, another tab, a footnote, the quote fallback, lost anchors, replies), the limits, the
+// per-turn cache, the errors, the fake's API shapes and a full turn (a reading call: no card, stubbed after the turn,
+// works in Manual).
 const { test, before } = require('node:test');
 const assert = require('node:assert');
 const { deq, load, installDocTab, installIdentity } = require('./lib/sandbox');
@@ -42,38 +44,52 @@ function threads() {
 }
 const withComments = (comments, over) => ({ ...docSpec(over), comments });
 const call = (args, id = 'rc' + Math.random().toString(36).slice(2, 6)) => ({ id, type: 'function', function: { name: 'read_comments', arguments: JSON.stringify(args) } });
-const read = async (args, mode = 'edit') => (await T.executeTool(call({ status: 'open', lines: null, ...args }), mode, as)).content;
+// The threads as readComments gives them (read_document's comments part uses status "all").
+const read = async (args) => T.readComments({ status: 'open', lines: null, ...args }, as);
+const docCall = (scope, include) => ({ id: 'rd' + Math.random().toString(36).slice(2, 6), type: 'function', function: { name: 'read_document', arguments: JSON.stringify({ scope, include, doc: null }) } });
+const readDoc = async (scope, include, mode = 'edit') => (await T.executeTool(docCall(scope, include), mode, as)).content;
 const commentGets = () => fake.log.filter((x) => x.method === 'GET' && /commentsViewMode=/.test(x.url));
 
 const OPEN = '4 open comment threads (of 5):\n' +
   '[id c1] open · lines 4–5 «beta gamma. Alpha» · Anna K. · 2026-10-20: Too vague. Explain.\n' +
-  '  ↳ Ivan (you) · 2026-10-21: Fixed\n' +
+  '  ↳ [reply c1.p1] Ivan (you) · 2026-10-21: Fixed\n' +
   '[id c3] open · in tab "Notes" «Second» · Carol · 2026-10-20: Other tab\n' +
   '[id c4] open · line 10 (by its quote) «Last line» · Anna K. · 2026-10-20: Check\n' +
   '[id c5] open · anchor text no longer in the document (quote: «gone text») · Anna K. · 2026-10-20: Stale';
 
-test('offered with read_formatting: tools turns whose main document was read through the Docs API; the prompt line', async () => {
-  await fresh(withComments([]));
-  deq(T.READ_COMMENTS_TOOL.function.parameters.required, ['status', 'lines']);
-  for (const mode of ['edit', 'manual', 'research']) {
+
+test('read_document with include "comments": the threads of the scope after its lines; the legacy read_comments is refused', async () => {
+  await fresh(withComments(threads()));
+  for (const mode of ['edit', 'manual']) {
     const names = T.toolsFor(mode, as).map((t) => t.function.name);
-    assert.ok(names.includes('read_comments'), mode);
-    // the research prompt lists no reading tools (like read_formatting)
-    if (mode !== 'research') assert.ok(T.buildSystemParts(mode, 1e5, as).head.includes('\n- read_comments(status, lines): the comment threads'), mode);
+    assert.ok(names.includes('read_document') && !names.includes('read_comments'), mode);
+    // the hint lives in read_document's description and the comment tool's prompt line, not in the reading section
+    assert.ok(!T.buildSystemParts(mode, 1e5, as).head.includes('Use include "comments" when'), mode);
+    assert.ok(T.TOOL_DEFS.read_document.function.description.includes('comments adds the comment threads'), mode);
   }
-  const exported = { ...as, docFormat: 'markdown', model: null, promptView: null };
-  assert.ok(!T.toolsFor('edit', exported).some((t) => t.function.name === 'read_comments'));
-  assert.ok(!T.buildSystemParts('edit', 1e5, exported).head.includes('read_comments'));
-  state.settings.provider = 'munin';
-  deq(T.toolsFor('code', T.takeSnapshot()), []); // Munin persona turns: no client tools
-  state.settings.provider = 'anthropic';
-  // not offered: refused without a request
-  const r = await T.executeTool(call({ status: 'open', lines: null }), 'edit', exported);
-  assert.ok(!r._ok && /not available for this message/.test(r.content));
-  // action log and icon
-  assert.strictEqual(T.logEntry(call({ status: 'open', lines: null }), null).summary, 'comments (open)');
-  assert.strictEqual(T.logEntry(call({ status: 'resolved', lines: '9-3' }), null).summary, 'comments (resolved, lines 3–9)');
-  assert.strictEqual(T.activityIcon('read_comments'), '💬');
+  // lines 4-6 with their comments (every status, open first), after the lines
+  let r = await readDoc({ start: 4, end: 6 }, ['text', 'comments']);
+  assert.strictEqual(r, 'Lines 4-6 of 10:\n4: Alpha beta gamma.\n5: Alpha beta delta.\n[table T1: 1 row × 2 columns, lines 6–7]\n6 [r1c1]: Cell A\n\n' +
+    '2 comment threads in lines 4–6 (of 5):\n' +
+    '[id c1] open · lines 4–5 «beta gamma. Alpha» · Anna K. · 2026-10-20: Too vague. Explain.\n  ↳ [reply c1.p1] Ivan (you) · 2026-10-21: Fixed\n' +
+    '[id c2] resolved · line 6 «Cell A» · Bob · 2026-10-20: Rename\n  ↳ Anna K. · 2026-10-20: [resolved]');
+  // comments alone, the whole document: open threads first
+  r = await readDoc('all', ['comments']);
+  assert.ok(r.startsWith('5 comment threads:\n[id c1] open') && r.indexOf('[id c2] resolved') > r.indexOf('[id c5] open'), r);
+  // the lines take the room first: what is left of the per-call limit holds the comments, or a note says how to read them
+  const munin = { ...as, prov: { ...as.prov, readMaxChars: 300, readMaxLines: 100 } };
+  r = await T.readDocumentTool({ scope: 'all', include: ['text', 'comments'], doc: null }, munin, munin, T.readLimits(munin.prov));
+  assert.ok(r.endsWith('[Comments not shown: this result reached the limit per call. Read them with include ["comments"] alone for these lines.]'), r);
+  // not the main document, not the Docs API
+  const exported = { ...as, docFormat: 'markdown', model: null, docText: '# A\nB', lines: null };
+  r = await T.readDocumentTool({ scope: 'all', include: ['comments'], doc: null }, exported, exported);
+  assert.strictEqual(r, '[Comments need the Google Docs API, which is not available for this message.]');
+  // the action-log row
+  assert.strictEqual(T.logEntry(docCall({ start: 4, end: 6 }, ['text', 'comments']), null).summary, 'lines 4–6 + comments');
+  // the old tool: an unknown tool in a new turn, the current tools listed; its stored rows still read as before
+  const old = await T.executeTool(call({ status: 'open', lines: null }), 'edit', as);
+  assert.ok(!old._ok && /^Error: unknown tool "read_comments"\. Available tools: read_document, find_in_document, get_selection, open_document/.test(old.content), old.content);
+  assert.strictEqual(T.logEntry(call({ status: 'resolved', lines: '9-3' }), null).summary, 'comments (resolved)');
   assert.ok(T.isReadingTool(call({ status: 'all', lines: null })) && !T.isEditTool('read_comments'));
 });
 
@@ -85,7 +101,7 @@ test('result: open threads with lines, tabs, the quote fallback, lost anchors an
   assert.ok(all.startsWith('5 comment threads:\n[id c1] open'), all);
   assert.ok(all.includes('\n[id c2] resolved · line 6'));
   assert.strictEqual(await read({ status: 'all', lines: '5-6' }), '2 comment threads in lines 5–6 (of 5):\n' +
-    '[id c1] open · lines 4–5 «beta gamma. Alpha» · Anna K. · 2026-10-20: Too vague. Explain.\n  ↳ Ivan (you) · 2026-10-21: Fixed\n' +
+    '[id c1] open · lines 4–5 «beta gamma. Alpha» · Anna K. · 2026-10-20: Too vague. Explain.\n  ↳ [reply c1.p1] Ivan (you) · 2026-10-21: Fixed\n' +
     '[id c2] resolved · line 6 «Cell A» · Bob · 2026-10-20: Rename\n  ↳ Anna K. · 2026-10-20: [resolved]');
   assert.strictEqual(await read({ lines: 'lines 10' }), '1 open comment thread in line 10 (of 5):\n[id c4] open · line 10 (by its quote) «Last line» · Anna K. · 2026-10-20: Check');
   assert.strictEqual(await read({ lines: '1–3' }), 'No comments (status: open, lines 1–3; 5 threads in all).');
@@ -119,13 +135,13 @@ test('limits: 50 threads, 6,000 characters, long posts and quotes clipped; the n
   await fresh(withComments(many));
   let r = await read({});
   assert.strictEqual((r.match(/^\[id /gm) || []).length, T.COMMENTS_MAX_THREADS);
-  assert.ok(r.startsWith('60 open comment threads:\n') && r.endsWith('\n[10 more; narrow with lines or status.]'), r.slice(-60));
+  assert.ok(r.startsWith('60 open comment threads:\n') && r.endsWith('\n[10 more; read a smaller range.]'), r.slice(-60));
   const long = Array.from({ length: 20 }, (_, i) => ({ id: 'l' + i, start: L4.start, end: L4.end, quoted: 'q'.repeat(200), text: 'w'.repeat(1000) }));
   await fresh(withComments(long));
   r = await read({});
   const shown = (r.match(/^\[id /gm) || []).length;
   assert.ok(shown < 20 && r.length <= T.COMMENTS_MAX_CHARS + 200, `${shown} threads, ${r.length} chars`);
-  assert.ok(r.endsWith(`\n[${20 - shown} more; narrow with lines or status.]`));
+  assert.ok(r.endsWith(`\n[${20 - shown} more; read a smaller range.]`));
   assert.ok(r.includes(`«${'q'.repeat(80)}…»`) && r.includes(`: ${'w'.repeat(400)}…\n`));
 });
 
@@ -136,7 +152,8 @@ test('cache: read once per turn and document revision; an edit in the turn reads
   await read({ status: 'all' });
   assert.strictEqual(commentGets().length, 1);
   assert.strictEqual(commentGets()[0].url, 'https://docs.googleapis.com/v1/documents/DOC123?' + T.COMMENTS_QUERY);
-  assert.ok(/fields=revisionId,comments,tabs\(tabProperties\(tabId,title\),documentTab\(commentAnchors\),childTabs\(/.test(T.COMMENTS_QUERY));
+  assert.ok(/fields=revisionId,comments,suggestions,tabs\(tabProperties\(tabId,title\),documentTab\(commentAnchors,body\(content\(startIndex,paragraph\(elements\(textRun\(suggestedInsertionIds,suggestedDeletionIds\),/.test(T.COMMENTS_QUERY), T.COMMENTS_QUERY);
+  assert.ok(/\),childTabs\(/.test(T.COMMENTS_QUERY));
   assert.ok(T.COMMENTS_QUERY.includes('includeTabsContent=true&suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED'));
   assert.strictEqual(as.model, model); // reading comments never replaces the turn's model
   // a write in the same turn: a new line before the anchor; the next call reads again and maps to the new lines
@@ -179,7 +196,11 @@ test('fake: the comments view in the API shapes and the parameter rules; the pla
   await fresh(withComments(threads()));
   const get = (q) => fake.fetch('https://docs.googleapis.com/v1/documents/DOC123?' + q, { headers: { Authorization: 'Bearer tok-1' } });
   let r = await get(T.COMMENTS_QUERY);
+  const withBody = await r.json();
+  assert.ok(withBody.tabs.every((t) => t.documentTab.body && t.documentTab.body.content.length)); // the mask names body
+  r = await get(T.COMMENTS_QUERY.replace(/,body\(.*?\)\)\)\)\)\)\)\)\)\)/g, ''));
   const body = await r.json();
+  assert.ok(!body.tabs.some((t) => t.documentTab.body), 'without body in the mask');
   assert.strictEqual(body.revisionId, 'rev-1');
   deq(body.comments[0], { commentId: 'c1', anchorId: 'kix.anchor0', status: 'OPEN', plainTextQuote: 'beta gamma.\nAlpha',
     headPost: { postId: 'c1.p0', content: 'Too vague.\nExplain.', author: { displayName: 'Anna K.' }, createTime: '2026-10-20T10:00:00.000Z' },
@@ -201,26 +222,26 @@ test('fake: the comments view in the API shapes and the parameter rules; the pla
   assert.ok(!('comments' in (await r.json())));
 });
 
-test('a turn: read_comments is a reading call (no card, no journal), stubbed after the turn, in Auto and Manual', async () => {
+
+test('a turn: read_document with comments is a reading call (no card, no journal), stubbed after the turn, in Auto and Manual', async () => {
   for (const applyMode of ['auto', 'manual']) {
     fake = fakeDocsServer(withComments(threads()));
     env.chrome.tabs.sendMessage = async (id, msg) => (msg.type === 'GET_SELECTION' ? { ok: true, text: '' }
       : msg.type === 'GET_DOC_TEXT' ? { ok: true, text: 'export', format: 'markdown', title: 'My Doc' } : { ok: true, title: 'My Doc' });
     await T.createChat();
     ident.granted = true; state.googleConnected = true; state.applyMode = applyMode;
-    const rounds = [msgStart + tu(0, 'toolu_c', 'read_comments', { status: 'open', lines: null }) + stopTool, textRound('Four open comments.')];
+    const rounds = [msgStart + tu(0, 'toolu_c', 'read_document', { scope: 'all', include: ['comments'], doc: null }) + stopTool, textRound('Four open comments.')];
     const bodies = [];
     env.ctx.fetch = routeDocs(async (url, init) => { bodies.push(JSON.parse(init.body)); return sseResponse(rounds[bodies.length - 1]); });
     T.el.input.value = 'What do the reviewers say?';
     await T.sendMessage();
     await new Promise((r) => setTimeout(r, 20));
     assert.strictEqual(bodies.length, 2, applyMode);
-    assert.strictEqual(bodies[0].tools.filter((t) => !['draft', 'revise_section'].includes(t.name)).pop().name, 'read_comments'); // draft, revise_section: Auto only
-    assert.ok(bodies[0].system.some((b) => b.text.includes('- read_comments(status, lines)')));
-    assert.strictEqual(bodies[1].messages[2].content[0].content, OPEN);
+    assert.ok(!bodies[0].tools.some((t) => t.name === 'read_comments'));
+    assert.ok(bodies[1].messages[2].content[0].content.startsWith('5 comment threads:\n[id c1] open'));
     const msg = state.messages.find((m) => m.role === 'tool');
-    deq([msg._reading, msg._ok, msg._message, msg._edit], [true, true, 'comments (open)', undefined]);
-    assert.strictEqual(msg.content, '[read_comments: content omitted after the turn; re-read if needed]');
+    deq([msg._reading, msg._ok, msg._message, msg._edit], [true, true, 'whole document + comments', undefined]);
+    assert.strictEqual(msg.content, '[read_document whole document + comments: content omitted after the turn; re-read if needed]');
     assert.strictEqual(state.messages[state.messages.length - 1].content, 'Four open comments.');
     assert.strictEqual(fake.log.filter((x) => x.method === 'POST').length, 0); // nothing written
     assert.strictEqual(commentGets().length, 1);

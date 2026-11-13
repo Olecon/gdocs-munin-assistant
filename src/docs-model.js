@@ -5,14 +5,15 @@
 // showText; the table notation TABLE_LINE_DECORATOR), flexible search (findFlexible with its normalized fallback,
 // disjointHits, closestMatch / notFoundError, commonEdges) and line reports (linesReport, changedLinesReport,
 // regionNote).
-/* global alignName, dimensionPt, docsApi, DOCS_GET_FIELDS, EDIT_REPORT_MAX_CHARS, EDIT_REPORT_MAX_LINES,
-   hexFromOptionalColor, lineDecorations, lineTag, listKind, OBJECT_CHAR, SOFT_BREAK_MARK, spanAttrs, state,
-   markDocRead, SUGGESTED_NOTE, unmarkedNote */
+/* global alignName, dimensionPt, paraControls, docsApi, DOCS_GET_FIELDS, EDIT_REPORT_MAX_CHARS, EDIT_REPORT_MAX_LINES,
+   hexFromOptionalColor, lineDecorations, lineTag, registerLineDecorator, listKind, OBJECT_CHAR, SOFT_BREAK_MARK, spanAttrs, state,
+   markDocRead, SUGGESTED_NOTE, suggestOverlapError, unmarkedColors, unmarkedDefault, unmarkedNote */
 /* exported docsTabFromUrl, fetchDocModel, fetchDocRevision, useDocModel, FORMAT_KEYS, TEXT_STYLE_KEYS, isPlainStyle, sameStyle,
-   isClosing, lineAtOffset, lineAtIndex, indexRange, textAtIndexRange, showText, FORMAT_NOTE, formatNote, markedText,
+   isClosing, lineAtOffset, lineAtIndex, indexRange, inexactLine, textAtIndexRange, showText, FORMAT_NOTE, formatNote, spanDefault, markedText,
    textDefault, findFlexible, disjointHits, rangeLabel, capFirst, linesReport, lineList, changedLinesReport,
    regionNote, indexAtOffset, normalizeForMatch, NORMALIZED_NOTE, FOLDED_NOTE, notFoundError, commonEdges, stripMarkers,
-   MARKERS_NOTE, hitLines, ambiguousError, segmentModel, findSegment, cellLabel, tableOfLine, tableNote, TABLE_LINE_DECORATOR, decorated */
+   MARKERS_NOTE, hitLines, ambiguousError, segmentModel, findSegment, cellLabel, tableOfLine, tableNote, TABLE_LINE_DECORATOR, decorated,
+   OBJECT_LINE_DECORATOR, objectLabel, sectionBreakNote */
 
 // The Docs tab ("?tab=t.xxx") open in the browser tab, if any.
 function docsTabFromUrl(url) {
@@ -27,7 +28,10 @@ function docsTabFromUrl(url) {
 // (SUGGESTIONS_INLINE): only its indices are valid for writes; lines with suggestions are flagged.
 async function fetchDocModel(docId, tabId, strict = true) {
   const doc = await docsApi(`${encodeURIComponent(docId)}?includeTabsContent=true&fields=${DOCS_GET_FIELDS}`);
-  return buildLineModel(doc, tabId, docId, strict);
+  const model = buildLineModel(doc, tabId, docId, strict);
+  // The body as returned, for the bug bundle (chat-log.js keepTurnStart); not enumerable, so copies of the model leave it.
+  Object.defineProperty(model, 'raw', { value: doc });
+  return model;
 }
 
 // The document's current revisionId alone (GET documents/{id}?fields=revisionId): the live document line's cheap
@@ -59,7 +63,9 @@ function useDocModel(model) {
 // of the line in model.text (the lines joined with "\n"), so text offset off + k is API index start + k
 // and the "\n" after a line is its paragraph's newline. exact: the element ranges add up (always,
 // unless the API returns something unexpected; edits refuse inexact lines). suggested: the paragraph
-// contains suggested insertions or deletions (suggesting mode); its text shows both, and edits refuse it.
+// contains suggested insertions or deletions (suggesting mode); its text shows both, and edits refuse it (in suggest
+// mode, docs-write.js, only where they overlap one). sugg (on suggested lines only): [{ s, e, ins: [ids], del: [ids] }],
+// the stretches of the line's text (offsets; e may include the newline at text.length) that carry suggestion ids.
 // Soft line breaks stay U+000B in the text (one index unit); tool output shows them as SOFT_BREAK_MARK.
 // Tabs: documents may have several tabs (tabs[].documentTab.body, child tabs nested). The model uses
 // the tab open in the browser (the "tab" URL parameter) and otherwise the first tab; all edits carry
@@ -78,10 +84,14 @@ function headingLevel(style) {
 }
 
 // Inline style of a text run as kept in the line model: FORMAT_KEYS (booleans), link (the URL or null),
-// font (fontFamily) and weight, size (pt), color and bg (#RRGGBB) or null, linkRaw (the API link object,
-// so heading, bookmark and tab links survive an undo) or null. TEXT_STYLE_KEYS: all of them.
+// font (fontFamily) and weight, size (pt), color and bg (#RRGGBB) or null, script ('super' | 'sub' for a baselineOffset
+// SUPERSCRIPT / SUBSCRIPT; null for NONE or unset), linkRaw (the API link object,
+// so heading, bookmark and tab links survive an undo) or null. TEXT_STYLE_KEYS: all of them. boldOff / italicOff (only
+// when true): the run sets bold / italic to false explicitly (text un-bolded in a bold heading), which bold: false alone
+// cannot tell from an inherited value (style_map reads them; the other keys ignore them).
 const FORMAT_KEYS = ['bold', 'italic', 'underline'];
-const TEXT_STYLE_KEYS = [...FORMAT_KEYS, 'link', 'font', 'weight', 'size', 'color', 'bg', 'linkRaw'];
+const TEXT_STYLE_KEYS = [...FORMAT_KEYS, 'link', 'font', 'weight', 'size', 'color', 'bg', 'script', 'linkRaw'];
+const SCRIPT_OF_OFFSET = { SUPERSCRIPT: 'super', SUBSCRIPT: 'sub' };
 function runStyle(ts = {}) {
   const wff = ts.weightedFontFamily && ts.weightedFontFamily.fontFamily ? ts.weightedFontFamily : null;
   return {
@@ -89,12 +99,15 @@ function runStyle(ts = {}) {
     font: wff ? wff.fontFamily : null, weight: wff && wff.weight ? wff.weight : null,
     size: ts.fontSize && typeof ts.fontSize.magnitude === 'number' ? ts.fontSize.magnitude : null,
     color: hexFromOptionalColor(ts.foregroundColor), bg: hexFromOptionalColor(ts.backgroundColor),
+    script: SCRIPT_OF_OFFSET[ts.baselineOffset] || null,
     linkRaw: ts.link && typeof ts.link === 'object' && Object.keys(ts.link).length ? JSON.parse(JSON.stringify(ts.link)) : null,
+    ...(ts.bold === false ? { boldOff: true } : {}), ...(ts.italic === false ? { italicOff: true } : {}),
   };
 }
+const OFF_KEYS = ['boldOff', 'italicOff'];
 const sameValue = (k, a, b) => (k === 'linkRaw' ? JSON.stringify(a || null) === JSON.stringify(b || null) : (a ?? null) === (b ?? null));
-const sameStyle = (a, b) => TEXT_STYLE_KEYS.every((k) => sameValue(k, a[k], b[k]));
-const isPlainStyle = (st) => TEXT_STYLE_KEYS.every((k) => (FORMAT_KEYS.includes(k) ? !st[k] : st[k] == null));
+const sameStyle = (a, b) => TEXT_STYLE_KEYS.every((k) => sameValue(k, a[k], b[k])) && OFF_KEYS.every((k) => !!a[k] === !!b[k]);
+const isPlainStyle = (st) => TEXT_STYLE_KEYS.every((k) => (FORMAT_KEYS.includes(k) ? !st[k] : st[k] == null)) && OFF_KEYS.every((k) => !st[k]);
 
 // Explicit paragraph fields of a paragraphStyle (absent keys are inherited from the named style):
 // { align: 'left'|'center'|'right'|'justify' (visual, RTL-aware), direction: 'LEFT_TO_RIGHT'|'RIGHT_TO_LEFT',
@@ -109,29 +122,42 @@ function paraFields(ps = {}) {
     if (v != null) out[k] = v;
   }
   if (typeof ps.lineSpacing === 'number') out.lineSpacing = ps.lineSpacing;
-  return out;
+  return Object.assign(out, paraControls(ps)); // pagination booleans, indentEnd, a drawn box (docs-style.js)
 }
-// The bullet of a paragraph as { listId, level (0-based), kind: 'bullet'|'number'|'checklist' }, or null.
+// The bullet of a paragraph as { listId, level (0-based), kind: 'bullet'|'number'|'checklist', nested: true (only
+// when set: a numbered list whose second level carries the first level's number, "1.1.", as NUMBERED_DECIMAL_NESTED
+// makes it), indent: { start, first } (pt; only when set: the level's own indents, which the line tag compares with
+// the paragraph's so that only a deviating indent, a numbered heading's, is shown) }, or null.
 function listOf(bullet, lists) {
   if (!bullet || !bullet.listId) return null;
   const level = bullet.nestingLevel || 0;
   const def = lists && lists[bullet.listId];
   const levels = def && def.listProperties && def.listProperties.nestingLevels;
-  return { listId: bullet.listId, level, kind: listKind(levels ? levels[level] : null) };
+  const lv = levels ? levels[level] : null;
+  const out = { listId: bullet.listId, level, kind: listKind(lv) };
+  if (out.kind === 'number' && levels && levels[1] && /%0/.test(levels[1].glyphFormat || '')) out.nested = true;
+  if (lv && (lv.indentStart || lv.indentFirstLine)) out.indent = { start: dimensionPt(lv.indentStart), first: dimensionPt(lv.indentFirstLine) };
+  return out;
 }
 
 // runs: [{ s, e, ...runStyle }] with s/e offsets in the line's text (e exclusive), only for formatted text
 // (an embedded object by its element's textStyle), adjacent equal styles merged. Booleans are true only
 // for an explicit true in textStyle, and the other keys are set only when explicit (formatting inherited
 // from the paragraph style, such as a bold heading style or the document font, is not seen).
-function paragraphLine(se, lists) {
+function paragraphLine(se, lists, inline = null) {
   const p = se.paragraph;
   let text = '';
   const runs = [];
+  const objects = [];
+  const sugg = [];
   for (const pe of p.elements || []) {
     // Other elements (inline objects, chips, breaks) carry their textStyle in their own field.
     const inner = pe.textRun || Object.values(pe).find((v) => v && typeof v === 'object' && v.textStyle) || {};
     const content = pe.textRun ? pe.textRun.content || '' : OBJECT_CHAR.repeat(Math.max(0, (pe.endIndex || 0) - (pe.startIndex || 0)));
+    const ins = inner.suggestedInsertionIds || [];
+    const del = inner.suggestedDeletionIds || [];
+    if (content && (ins.length || del.length)) sugg.push({ s: text.length, e: text.length + content.length, ins: ins.slice(), del: del.slice() });
+    if (!pe.textRun && content) objects.push({ at: text.length, ...objectNote(pe, inline) });
     const st = runStyle(inner.textStyle);
     const prev = runs[runs.length - 1];
     if (content && !isPlainStyle(st)) {
@@ -148,9 +174,79 @@ function paragraphLine(se, lists) {
   const style = (p.paragraphStyle && p.paragraphStyle.namedStyleType) || '';
   const hasIds = (v) => !!v && typeof v === 'object' && ((v.suggestedInsertionIds || []).length > 0 || (v.suggestedDeletionIds || []).length > 0);
   const suggested = (p.elements || []).some((pe) => Object.values(pe).some(hasIds));
-  return { start, end, text, heading: headingLevel(style), style, exact: text.length === end - start, suggested, runs,
+  const line = { start, end, text, heading: headingLevel(style), style, exact: text.length === end - start, suggested, runs,
     para: paraFields(p.paragraphStyle), list: listOf(p.bullet, lists) };
+  if (suggested && sugg.length) line.sugg = sugg;
+  // Only a line with a chip, a date, a dropdown or a described image carries its objects (the reading label).
+  if (objects.some((o) => o.rich)) line.objects = objects.filter((o) => o.at < text.length).map(({ at, note }) => ({ at, note }));
+  return line;
 }
+
+// ---- Embedded objects in the reading output ---------------------------------------------------------------
+// A chip, date, dropdown or image is one "￼" (U+FFFC) per API index in line.text, so offsets stay the API's. What it
+// is goes only into the line's label (OBJECT_LINE_DECORATOR): "5 [￼⟨@Anna Ivanova <anna@x.com>⟩ ￼⟨date: Nov 12,
+// 2026⟩]: Meet ￼ on ￼", one ⟨note⟩ per object of the line in order (the other objects of such a line by their kind,
+// so the notes stay aligned with the "￼" of the text). objectNote(pe, inline) -> { note, rich }: rich marks the
+// kinds that make a line carry its notes. inline: the tab's inlineObjects map (embeddedObject title, description and
+// size are read; the short-lived contentUri never is).
+const OBJECT_NOTE_CHARS = 60;
+const OBJECT_ALT_CHARS = 80;
+const OBJECT_LABEL_CHARS = 300;
+// Text for a note: one line, no brackets that would end the label, clipped.
+const noteText = (t, max = OBJECT_NOTE_CHARS) => {
+  const s = String(t == null ? '' : t).replace(/[\]⟨⟩]/g, ' ').replace(/\s+/g, ' ').trim();
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + '…' : s;
+};
+const sizeCmText = (d) => {
+  const pt = dimensionPt(d);
+  return pt ? String(Math.round((pt / 72) * 2.54 * 10) / 10) : '';
+};
+function imageNote(obj) {
+  const eo = (obj && obj.inlineObjectProperties && obj.inlineObjectProperties.embeddedObject) || {};
+  const size = eo.size && sizeCmText(eo.size.width) && sizeCmText(eo.size.height) ? ` ${sizeCmText(eo.size.width)}×${sizeCmText(eo.size.height)} cm` : '';
+  const title = noteText(eo.title);
+  const alt = noteText(eo.description, OBJECT_ALT_CHARS);
+  if (!title && !alt) return `image${size}, no alt text`;
+  return `image${size}${title ? `: "${title}"` : ','}${alt ? ` alt: ${alt}` : ''}`;
+}
+const OBJECT_KINDS = { pageBreak: 'page break', columnBreak: 'column break', horizontalRule: 'horizontal line', equation: 'equation' };
+function objectNote(pe, inline) {
+  if (pe.person) {
+    const pp = pe.person.personProperties || {};
+    const name = noteText(pp.name);
+    const email = noteText(pp.email);
+    return { note: name ? `@${name}${email ? ` <${email}>` : ''}` : `@${email || 'person'}`, rich: true };
+  }
+  if (pe.richLink) {
+    const rp = pe.richLink.richLinkProperties || {};
+    return { note: `link: ${noteText(rp.title) || noteText(rp.uri) || 'untitled'}`, rich: true };
+  }
+  if (pe.dateElement) {
+    const dp = pe.dateElement.dateElementProperties || {};
+    return { note: `date: ${noteText(dp.displayText) || noteText(String(dp.timestamp || '').slice(0, 10)) || 'unknown'}`, rich: true };
+  }
+  if (pe.dropdown) {
+    const dp = pe.dropdown.dropdownProperties || {};
+    return { note: `dropdown: ${noteText(dp.displayValue) || 'no value'}`, rich: true };
+  }
+  if (pe.inlineObjectElement) {
+    const obj = inline && inline[pe.inlineObjectElement.inlineObjectId];
+    return obj ? { note: imageNote(obj), rich: true } : { note: 'image', rich: false };
+  }
+  if (pe.footnoteReference) return { note: `footnote ${noteText(pe.footnoteReference.footnoteNumber) || ''}`.trim(), rich: false };
+  if (pe.autoText) return { note: pe.autoText.type === 'PAGE_COUNT' ? 'page count' : 'page number', rich: false };
+  const kind = Object.keys(OBJECT_KINDS).find((k) => pe[k]);
+  return { note: kind ? OBJECT_KINDS[kind] : 'object', rich: false };
+}
+// The label of a line with objects ("[￼⟨…⟩ ￼⟨…⟩]", clipped), or ''.
+function objectLabel(line) {
+  if (!line || !line.objects || !line.objects.length) return '';
+  let out = line.objects.map((o) => `${OBJECT_CHAR}⟨${o.note}⟩`).join(' ');
+  if (out.length > OBJECT_LABEL_CHARS) out = out.slice(0, OBJECT_LABEL_CHARS - 1) + '…';
+  return `[${out}]`;
+}
+const OBJECT_LINE_DECORATOR = { label: (line) => objectLabel(line) };
+registerLineDecorator(OBJECT_LINE_DECORATOR);
 
 // closing: the paragraph's newline cannot be deleted (the last paragraph of a table cell or of the
 // body, or the paragraph right before a table or a section break).
@@ -159,12 +255,12 @@ function paragraphLine(se, lists) {
 // (set by a table of contents), cell (the innermost table cell of these lines: { t, r, c }), depth }.
 // Every line gets segment (ctx.segment) and, inside a table, cell: { t (the table's n in model.tables),
 // r, c (0-based row and column) } of the innermost cell.
-const newLineCtx = (segment) => ({ segment, tables: [], refs: [], toc: null, depth: 0 });
+const newLineCtx = (segment, inline = null) => ({ segment, tables: [], refs: [], toc: null, depth: 0, inline, breaks: [] });
 function collectLines(content, out, lists, ctx = newLineCtx('body')) {
   const list = content || [];
   list.forEach((se, i) => {
     if (se.paragraph) {
-      const l = paragraphLine(se, lists);
+      const l = paragraphLine(se, lists, ctx.inline);
       const next = list[i + 1];
       l.closing = !next || !next.paragraph;
       l.segment = ctx.segment;
@@ -180,6 +276,9 @@ function collectLines(content, out, lists, ctx = newLineCtx('body')) {
       // Read-only: its paragraphs are not lines (Docs regenerates them; the API cannot update a TOC).
       const lines = collectLines(se.tableOfContents.content, [], lists, { ...newLineCtx('toc'), depth: 1 });
       ctx.toc = { start: se.startIndex || 0, end: se.endIndex || 0, at: out.length, lines: lines.map((l) => l.text) };
+    } else if (se.sectionBreak && !ctx.depth && ctx.segment === 'body') {
+      // One index unit between paragraphs (never a line): model.sectionBreaks keeps where it is and its style.
+      ctx.breaks.push({ index: se.startIndex || 0, at: out.length, style: se.sectionBreak.sectionStyle || {} });
     }
   });
   return out;
@@ -210,7 +309,9 @@ function collectTable(se, out, lists, ctx) {
 }
 
 // The model: { docId, title, revisionId, tabId, tabTitle, tabCount, lines, text, textDefault, tables, segments,
-// toc }. tables: see collectTable. segments: the tab's headers, footers and footnotes (segmentModels). toc: the
+// toc, sectionBreaks, pageStyle }. sectionBreaks: the body's section breaks in order, the one Docs puts at index 0
+// first: { n (the section it starts, 1-based), index (its one index unit), firstLine (the first line after it), style
+// (its raw sectionStyle) }; pageStyle: the documentStyle fields a section inherits (pageStyleOf). tables: see collectTable. segments: the tab's headers, footers and footnotes (segmentModels). toc: the
 // table of contents { start, end, beforeLine (the body line right after it), lines: [text] } or null. Body lines,
 // their numbers and model.text do not depend on tables, segments or the TOC.
 function buildLineModel(doc, wantedTab, docId, strict = false) {
@@ -221,7 +322,7 @@ function buildLineModel(doc, wantedTab, docId, strict = false) {
   }
   if (!tab) tab = tabs[0] || null;
   const dt = (tab && tab.documentTab) || {};
-  const ctx = newLineCtx('body');
+  const ctx = newLineCtx('body', dt.inlineObjects || null);
   const lines = collectLines((dt.body || {}).content, [], dt.lists || null, ctx);
   const base = {
     docId: doc.documentId || docId, title: doc.title || '', revisionId: doc.revisionId || '',
@@ -231,8 +332,20 @@ function buildLineModel(doc, wantedTab, docId, strict = false) {
   const model = { ...base, ...lineSet(lines, ctx.tables) };
   model.segments = segmentModels(dt, base, ctx.refs, lines);
   model.toc = ctx.toc ? { start: ctx.toc.start, end: ctx.toc.end, beforeLine: ctx.toc.at + 1, lines: ctx.toc.lines } : null;
+  model.sectionBreaks = ctx.breaks.map((b, i) => ({ n: i + 1, index: b.index, firstLine: b.at + 1, style: b.style }));
+  model.pageStyle = pageStyleOf(dt.documentStyle);
   return model;
 }
+// The documentStyle fields a section falls back to (page size, orientation flip, margins, first page number).
+const PAGE_STYLE_KEYS = ['pageSize', 'flipPageOrientation', 'marginTop', 'marginBottom', 'marginLeft', 'marginRight', 'pageNumberStart'];
+const pageStyleOf = (ds) => Object.fromEntries(PAGE_STYLE_KEYS.filter((k) => ds && ds[k] != null).map((k) => [k, ds[k]]));
+// The unnumbered line read_document shows before the first line of every section but the first (a "section break" line,
+// removed from a copied old_text by stripMarkers).
+const sectionBreakNote = (b) => `— section break (${b.style.sectionType === 'CONTINUOUS' ? 'continuous' : 'next page'}) —`;
+const SECTION_LINE_DECORATOR = {
+  before: (line, model) => (model.sectionBreaks || []).filter((b) => b.n > 1 && b.firstLine === line.line).map(sectionBreakNote).join('\n'),
+};
+registerLineDecorator(SECTION_LINE_DECORATOR);
 // Numbers the lines (line, off) and gives { lines, text, textDefault, tables } (the tables with their line range).
 function lineSet(lines, tables = []) {
   let off = 0;
@@ -256,7 +369,7 @@ function segmentModels(dt, base, refs, bodyLines) {
   const ds = dt.documentStyle || {};
   const out = [];
   const add = (type, id, seg, extra) => {
-    const ctx = newLineCtx(type);
+    const ctx = newLineCtx(type, dt.inlineObjects || null);
     const lines = collectLines((seg && seg.content) || [], [], dt.lists || null, ctx);
     for (const l of lines) { l.segmentId = id; if (type === 'footnote') l.footnote = extra.n; }
     out.push({ ...base, type, kind: null, segmentId: id, ...extra, ...lineSet(lines, ctx.tables), segments: [], toc: null });
@@ -304,7 +417,7 @@ const decorated = (model, l) => (model && l ? lineDecorations(l, model) : { labe
 
 // The document default of the inline notation: the most common explicit font, size and color by
 // characters ({ font, size, color }, each null when unformatted text is the most common). Spans leave
-// these out and the read_formatting header names them once.
+// these out and the formatting view header names them once.
 function textDefault(lines) {
   const out = {};
   for (const k of ['font', 'size', 'color']) {
@@ -352,6 +465,10 @@ function lineAtIndex(model, idx) {
   return idx <= ls[lo].end ? ls[lo] : null;
 }
 
+// The refusal of line n when its element ranges do not add up (exact false: unexpected API output), with a way forward
+// (way: the tool's own, default other lines or the user).
+const inexactLine = (n, way = 'edit other lines, or tell the user to change it in Google Docs') => `line ${n} cannot be edited through the API (its positions do not add up); ${way}`;
+
 // API index range [start, end) of model.text[s, e) (e > s), with the 1-based lines it touches, or
 // { error } when it would cross a table / cell / section boundary or delete a required paragraph end.
 function indexRange(model, s, e) {
@@ -359,8 +476,10 @@ function indexRange(model, s, e) {
   const b = lineAtOffset(model, e - 1);
   for (let i = a.line - 1; i <= b.line - 1; i++) {
     const l = model.lines[i];
-    if (!l.exact) return { error: `the positions in line ${l.line} cannot be mapped exactly; edit a different part of the text` };
-    if (l.suggested) return { error: `line ${l.line} contains suggested changes (suggesting mode); accept or reject them in Google Docs first, or edit other lines` };
+    if (!l.exact) return { error: inexactLine(l.line) };
+    if (l.suggested && !model.suggestMode) return { error: `line ${l.line} contains suggested changes (suggesting mode); accept or reject them first (the comment tool, or in Google Docs), or edit other lines` };
+    // Suggest mode (docs-write.js): only text inside a suggested change is refused.
+    if (l.suggested && (!l.sugg || l.sugg.some((x) => x.s < e - l.off && s - l.off < x.e))) return { error: suggestOverlapError(l.line) };
     const nl = l.off + l.text.length;
     if (nl >= s && nl < e && isClosing(model, i)) {
       return { error: `the text crosses the end of line ${l.line}, which ends a table cell, a table neighbour or a section; edit each part separately` };
@@ -383,14 +502,27 @@ function textAtIndexRange(model, S, E) {
 // eslint-disable-next-line no-control-regex -- U+000B is the Docs soft line break
 const showText = (t) => String(t).replace(/\u000b/g, SOFT_BREAK_MARK);
 
-// Formatting notation (read_formatting, format_text results): a line's tag (lineTag: style, list,
+// Formatting notation (read_document formatting, format_text results): a line's tag (lineTag: style, list,
 // alignment, indent, spacing) and its text with the runs as markers, nested in a fixed order (link
 // outermost, then the {text}(font= size= color= bg=) span, bold, italic, underline; no underline inside a
 // link); a marker pair closes only where its attribute (or an outer one) changes. def: the document
-// default (model.textDefault), left out of spans; without it every explicit font, size and color is shown.
+// default (spanDefault), left out of spans; without it every explicit font, size and color is shown.
 const FORMAT_NOTE = 'Markers are notation, not document text (never copy them into old_text): **bold** *italic* __underline__ [text](url) {text}(font= size= color= bg=); [tags] give a line\'s style, list, alignment, indent and spacing (pt), line spacing.';
-// FORMAT_NOTE with the model's default font ("Unmarked text: Arial 11.") when it has one.
-const formatNote = (model) => FORMAT_NOTE + unmarkedNote(model && model.textDefault);
+// FORMAT_NOTE with the model's default font ("Unmarked text: Arial 11.") when it has one (or the document's Normal text
+// style, style-sheet.js unmarkedDefault), and the colours of the named styles its lines show (unmarkedColors).
+const formatNote = (model) => FORMAT_NOTE + unmarkedNote(unmarkedDefault(model), unmarkedColors(model));
+// The default the spans leave out: model.textDefault, and where unformatted text is the most common, the font the header
+// names (Normal text's, unmarkedDefault): Docs stores the font a bold write's text shows (weight 400), and a font equal to
+// it shows nothing new. Sizes keep model.textDefault's (a heading's own size differs from Normal text's). With a default
+// colour, ownColor: the styles whose text shows another one (unmarkedColors), where markedText shows every explicit colour.
+function spanDefault(model) {
+  const def = (model && model.textDefault) || null;
+  if (!model) return def;
+  const font = def && def.font ? null : (unmarkedDefault(model) || {}).font;
+  const out = font ? { ...(def || {}), font } : def;
+  const own = out && out.color ? unmarkedColors(model) : [];
+  return own.length ? { ...out, ownColor: own.map(([t]) => t) } : out;
+}
 const MARKER_LEVELS = [
   { has: (st) => !!st.link, same: (a, b) => a.link === b.link, open: () => '[', close: (st) => `](${st.link})` },
   { has: (st, def) => spanAttrs(st, def) !== '', same: (a, b, def) => spanAttrs(a, def) === spanAttrs(b, def), open: () => '{', close: (st, def) => `}(${spanAttrs(st, def)})` },
@@ -400,7 +532,9 @@ const MARKER_LEVELS = [
 ];
 function markedText(line, def) {
   const tag = lineTag(line);
-  const body = markedInline(line, def);
+  // On a line whose style has a colour of its own (a grey heading) an explicit colour equal to the default is shown too.
+  const d = def && def.ownColor && def.ownColor.includes(line.style) ? { ...def, color: null } : def;
+  const body = markedInline(line, d);
   return tag ? `[${tag}]` + (body ? ' ' + body : '') : body;
 }
 function markedInline(line, def) {
@@ -556,20 +690,23 @@ const NORMALIZED_NOTE = 'Note: old_text matched after normalizing whitespace/quo
 const FOLDED_NOTE = 'Note: old_text matched after normalizing look-alike Cyrillic/Latin letters (the document\'s characters differ there).';
 
 // ---- Markers and quotes in old_text -----------------------------------------------------------
-// Models copy old_text from read_formatting with its notation (**bold**, [t](u), {t}(size=14), "3: " line
-// numbers, "[h1] " line tags) or with the quotes of the request ('lazy dog'). stripMarkers removes leading
+// Models copy old_text from read_document formatting with its notation (**bold**, [t](u), {t}(size=14), "3: " line
+// numbers, "[h1] " line tags, "5 [H1]: " labels and "• " list markers) or with the quotes of the request ('lazy dog'). stripMarkers removes leading
 // line numbers and line tags (on every line), links and spans (their text stays), paired ** / __ anywhere
 // and wrapping single * / _ and quotes, or returns null when there is nothing to remove. Callers try it
 // only after the literal text was not found, so a literal * or quote that the document has still matches first.
 const WRAP_PAIRS = [['*', '*'], ['_', '_'], ["'", "'"], ['"', '"'], ['\u00AB', '\u00BB'], ['\u201C', '\u201D'], ['\u2018', '\u2019'], ['\u201E', '\u201C']];
 // A table's "[table T1: …]" line (registerLineDecorator) is removed whole; a cell label may follow the number.
 const TABLE_NOTE_LINE_RE = /^\[table T\d+\b[^\]\n]*\](?:\n|$)/gm;
-const LINE_PREFIX_RE = /^(?:\d+(?: \[r\d+c\d+\])*: )?(?:\[(?:title|subtitle|h[1-6]|bullet|number|checklist|center|right|justify|left|indent|space|line)\b[^\]\n]*\] ?)?/gm;
+const SECTION_NOTE_LINE_RE = /^— section break \((?:next page|continuous)\) —(?:\n|$)/gm;
+// read_document labels: a cell label or a heading label may follow the number, a list marker ("• ", "1. ", "a. ",
+// "1.2. ", "☐ ", indented by nesting) the colon.
+const LINE_PREFIX_RE = /^(?:\d+(?: \[(?:r\d+c\d+|H[1-6]|Title|Subtitle|\uFFFC⟨[^\]\n]*)\])*: )?(?:[ \t]*(?:[•☐]|\d{1,3}(?:\.\d{1,3})*\.|[a-z]{1,4}\.) (?=\S))?(?:\[(?:title|subtitle|h[1-6]|bullet|number|checklist|center|right|justify|left|indent|space|line)\b[^\]\n]*\] ?)?/gm;
 const NOTATION_SPAN_RE = /\{([^{}\n]*)\}\((?:font|size|color|bg)=[^()\n]*\)/g;
 const NOTATION_LINK_RE = /\[([^[\]\n]+)\]\([^()\s]+\)/g;
 function stripMarkers(text) {
   const src = String(text);
-  let t = src.replace(TABLE_NOTE_LINE_RE, '').replace(LINE_PREFIX_RE, '').replace(NOTATION_SPAN_RE, '$1').replace(NOTATION_LINK_RE, '$1').replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '$1').replace(/__(?=\S)([\s\S]*?\S)__/g, '$1');
+  let t = src.replace(TABLE_NOTE_LINE_RE, '').replace(SECTION_NOTE_LINE_RE, '').replace(LINE_PREFIX_RE, '').replace(NOTATION_SPAN_RE, '$1').replace(NOTATION_LINK_RE, '$1').replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '$1').replace(/__(?=\S)([\s\S]*?\S)__/g, '$1');
   for (let again = true; again;) {
     again = false;
     const s = t.trim();
@@ -627,19 +764,26 @@ function closestMatch(hay, needle) {
 }
 // A fragment quoted in an error message: soft breaks as the mark, newlines as "\n".
 const quoteFragment = (t) => `«${showText(t).replace(/\n/g, '\\n')}»`;
+// The last sentence of a "not found" error that shows the current lines: they are what to copy (no read round).
+const NOT_FOUND_COPY = 'Copy old_text exactly from the current text above, without the "N: " prefixes.';
 // Model-facing "not found" error for old_text: the closest region, the point where it differs and the
-// current lines there; the plain advice when nothing similar occurs. advice: the tool's own last sentence.
-function notFoundError(model, needle, advice) {
+// current lines there, then near (what to do with them); the plain advice when nothing similar occurs. advice: the
+// tool's own last sentence.
+function notFoundError(model, needle, advice, near = NOT_FOUND_COPY) {
   // Markers and quotes would stop the search at the first character; compare the plain text instead.
   const plain = stripMarkers(needle);
   const cp = plain && closestMatch(model.text, plain);
   const c = cp || closestMatch(model.text, needle);
   if (!c) return `old_text was not found in the document, and no similar text either. ${advice}`;
-  if (cp) advice = `${MARKERS_ADVICE} ${advice}`;
+  advice = cp ? `${MARKERS_ADVICE} ${near}` : near;
   const a = lineAtOffset(model, c.at);
   const b = lineAtOffset(model, Math.max(c.at, c.end - 1));
   const where = lineAtOffset(model, Math.min(c.diff, Math.max(0, model.text.length - 1))).line;
-  const excerpt = model.text.slice(c.at, Math.min(c.end, c.at + 60)) + (c.end - c.at > 60 ? '…' : '');
+  // The excerpt starts at the start of the word the match starts in (a matched suffix may start inside "3.2.2.3").
+  let at = c.at;
+  while (at > 0 && c.at - at < CLOSEST_SHOW_CHARS && !/\s/.test(model.text[at - 1])) at--;
+  if (at > 0 && !/\s/.test(model.text[at - 1])) at = c.at;
+  const excerpt = model.text.slice(at, Math.min(c.end, at + 60)) + (c.end - at > 60 ? '…' : '');
   const act = c.actual ? quoteFragment(c.actual) : '(the end of the document)';
   const lines = linesReport(model, a.line, b.line).replace(/^Lines (\d+)-(\d+) now:\n/, 'Current text of lines $1-$2:\n');
   return `old_text not found. Closest match at line ${where}: ${quoteFragment(excerpt)}; differs at ${quoteFragment(c.expected)} (old_text) vs ${act} (document).\n${lines}\n${advice}`;
@@ -678,7 +822,9 @@ function disjointHits(hits) {
 // The lines of hits ({ at }: text offsets), unique, in the order of the hits.
 const hitLines = (model, hits) => [...new Set(hits.map((h) => lineAtOffset(model, h.at).line))];
 // The refusal of an ambiguous match ("old_text occurs 3 times (lines 4, 9). Include more …"; at most 10 lines named).
-const ambiguousError = (model, hits, what = 'old_text') => `${what} occurs ${hits.length} times (lines ${hitLines(model, hits).slice(0, 10).join(', ')}). Include more of the surrounding text so that it occurs exactly once`;
+// ways: the ways out of the calling tool (replace_text and format_text name line and replace_all / all).
+const ambiguousError = (model, hits, what = 'old_text', ways = 'Include more of the surrounding text so that it occurs exactly once') =>
+  `${what} occurs ${hits.length} times (lines ${hitLines(model, hits).slice(0, 10).join(', ')}). ${ways}`;
 
 const rangeLabel = (a, b) => (a === b ? `line ${a}` : `lines ${a}–${b}`);
 const capFirst = (t) => t.charAt(0).toUpperCase() + t.slice(1);
@@ -693,15 +839,16 @@ function linesReport(model, from, to, render = (l) => showText(l.text)) {
   const out = [];
   let chars = 0;
   let last = a - 1;
+  const def = spanDefault(model);
   for (let i = a; i <= b && out.length < EDIT_REPORT_MAX_LINES; i++) {
     const d = decorated(model, model.lines[i - 1]);
-    const l = `${d.before ? d.before + '\n' : ''}${i}${d.label}: ${render(model.lines[i - 1], model.textDefault)}${model.lines[i - 1].suggested ? SUGGESTED_NOTE : ''}`;
+    const l = `${d.before ? d.before + '\n' : ''}${i}${d.label}: ${render(model.lines[i - 1], def)}${model.lines[i - 1].suggested ? SUGGESTED_NOTE : ''}`;
     if (out.length && chars + l.length > EDIT_REPORT_MAX_CHARS) break;
     out.push(l);
     chars += l.length + 1;
     last = i;
   }
-  const more = last < b ? `\n[... lines ${last + 1}-${b} not shown; use read_lines]` : '';
+  const more = last < b ? `\n[... lines ${last + 1}-${b} not shown; use read_document]` : '';
   return `Lines ${a}-${last} now:\n${out.join('\n')}${more}`;
 }
 // "4, 9, 12" (at most 15 numbers, then "…").
@@ -721,7 +868,7 @@ function changedLinesReport(model, nums) {
   }
   if (!out.length) return linesReport(model, nums[0] || 1, nums[0] || 1);
   const rest = nums.length - shown.length;
-  const more = rest ? `\n[... ${rest} more changed line${rest === 1 ? '' : 's'} not shown; use find_in_document or read_lines]` : '';
+  const more = rest ? `\n[... ${rest} more changed line${rest === 1 ? '' : 's'} not shown; use find_in_document or read_document]` : '';
   return `Lines ${shown.join(', ')} now:\n${out.join('\n')}${more}`;
 }
 // The current text around lines from..to (two lines of context), for refusals.

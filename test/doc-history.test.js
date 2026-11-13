@@ -70,7 +70,7 @@ test('lineDiff: an edit script that rebuilds the new text; a coarse block above 
     [1602, { t: '=', o: 1, n: 1 }, '-', '-', '+', { t: '+', n: 801 }, { t: '=', o: 802, n: 802 }]);
   const text = T.renderDocChanges({ text: x.join('\n'), at: AT, format: 'text', tab: '', chars: 1, lines: 802 }, y.join('\n'));
   assert.ok(text.includes('Too many differences for a line-by-line comparison: everything between the first and the last difference is shown as one block.'));
-  assert.ok(/\[Stopped inside the change at current lines 2-801 \(limit per call\)\. Read the current text with read_lines\(2, 801\), then call document_changes with lines "802-802"\.\]$/.test(text));
+  assert.ok(/\[Stopped inside the change at current lines 2-801 \(limit per call\)\. Read the current text with read_document, scope {"start":2,"end":801}, then call document_changes with lines "802-802"\.\]$/.test(text));
 });
 
 test('rendering: caps with a continuation range, the lines argument, long lines, soft breaks', () => {
@@ -232,9 +232,10 @@ test('in a turn: offered with a baseline, listed in the prompt, a quiet reading 
   const bodies = recordFetch(B, [msgStart + tu(0, 'dc1', 'document_changes', { lines: null }) + stopTool, textRound('A colleague added a line.')]);
   await send(B, 'What changed?');
   const tools = bodies[0].tools.map((t) => t.name);
-  assert.strictEqual(tools[tools.length - 1], 'document_changes');
+  assert.strictEqual(tools[tools.length - 5], 'document_changes'); // before phrase_usage (src/prose-tools.js), chat_title and delegate (models: one usable model) (chat-title.js, accounts.js, agents.js: loaded last) and the web search
   const sys = JSON.stringify(bodies[0].system);
-  assert.ok(sys.includes('- document_changes(lines): what changed in the document since the end of your previous session (removed/added lines). Use it when the user asks what changed or what collaborators did.'));
+  // no prompt line: the definition says when to use it
+  assert.ok(!sys.includes('- document_changes(') && bodies[0].tools.find((t) => t.name === 'document_changes').description.includes('Use it when the user asks what changed or what collaborators did.'));
   assert.ok(B.state.messages[0]._context.includes('</document>\nThe document changed since the previous session; document_changes shows the diff.'));
   const result = B.state.messages.find((m) => m.role === 'tool');
   const when = B.T.fmtStamp(AT);
@@ -245,8 +246,7 @@ test('in a turn: offered with a baseline, listed in the prompt, a quiet reading 
     '… 3 unchanged lines …\n+ 4: Added by a colleague.\n… 3 unchanged lines …\n- was 7: Old method.\n+ 8: New method.');
   deq([result._ok, result._reading, result._message], [true, true, `changes since ${when}`]);
   assert.ok(B.T.isReadingTool({ function: { name: 'document_changes', arguments: '{"lines":null}' } }));
-  deq([B.T.activityIcon('document_changes'), B.T.logEntry({ function: { name: 'document_changes', arguments: '{"lines":"3-9"}' } }, null).summary],
-    ['🕓', `changes since ${when} (lines 3–9)`]);
+  deq(B.T.logEntry({ function: { name: 'document_changes', arguments: '{"lines":"3-9"}' } }, null).summary, `changes since ${when} (lines 3–9)`);
   // a bad range is an error the model can act on
   const s = B.T.takeSnapshot(); B.T.snapshotDocument(s);
   assert.ok(/^Error: lines must be a range of current line numbers like "120-180"/.test(await B.T.docChangesResult({ lines: 'intro' }, s)));

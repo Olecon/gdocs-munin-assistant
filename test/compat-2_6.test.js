@@ -87,12 +87,21 @@ test('the 2.6 chat loads and renders without errors', () => {
   assert.doesNotThrow(() => T.renderHistory());
   const kids = [...el.chat.children];
   assert.deepStrictEqual(kids.filter((k) => k.classList.contains('user')).map((k) => k.textContent), ['Review the introduction', 'Now capitalize gamma', 'Try once more, then stop']);
-  assert.strictEqual(kids.filter((k) => k.classList.contains('assistant')).length, 6);
-  // the old tools get a card each; none offers Undo (nothing was journaled)
-  const cards = kids.filter((k) => k.classList.contains('tool-card'));
-  assert.strictEqual(cards.length, 5);
+  assert.strictEqual(kids.filter((k) => k.classList.contains('assistant')).length, 3); // one bubble per turn
+  // the old paste gets its card, the failed call none (its failed row); none offers Undo (nothing was journaled); the
+  // decisions are in their bubbles
+  const cards = [...el.chat.querySelectorAll('.tool-card')];
+  assert.strictEqual(cards.length, 1);
+  assert.strictEqual(el.chat.querySelectorAll('.tool-card.fail').length, 0);
+  assert.strictEqual(kids.filter((k) => k.classList.contains('tool-card') || k.classList.contains('answered-row')).length, 0); // the result cards are in the stages too
+  assert.strictEqual(el.chat.querySelectorAll('.msg.assistant .stage-rows > .answered-row').length, 3);
+  assert.strictEqual(el.chat.querySelectorAll('.msg.assistant .stage-rows > .tool-card:not(.preview)').length, 1);
   assert.strictEqual(el.chat.querySelectorAll('button[data-act="undo-edit"]').length, 0);
-  assert.strictEqual(el.chat.querySelectorAll('.tool-card.preview').length, 0); // no stale permission cards
+  // no stale permission cards: the rejected and stopped decisions are answered rows (Denied, Stopped), no buttons
+  assert.strictEqual(el.chat.querySelectorAll('.tool-card.preview').length, 0);
+  const decided = [...el.chat.querySelectorAll('.answered-row')];
+  assert.ok(decided.every((c) => !c.querySelector('button')));
+  assert.deepStrictEqual(decided.map((c) => c.querySelector('.log-status').textContent), ['Denied', 'Denied', 'Stopped']);
   // the action log of the comment round lists both calls
   const rows = [...el.chat.querySelectorAll('.activity-row')].map((r) => r.querySelector('.activity-name').textContent);
   assert.ok(rows.filter((n) => n === 'add_comment').length === 2, rows.join(','));

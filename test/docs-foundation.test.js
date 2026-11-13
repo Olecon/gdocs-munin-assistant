@@ -101,7 +101,7 @@ test('fake Docs: insertTable splits the paragraph (table at index + 1, an empty 
   const m = modelOf(srv);
   deq(m.lines.map((l) => l.text), ['One', '', '', '', '', '', 'Two']);
   const t = m.tables[0];
-  deq([t.start, t.end, t.rows, t.cols, t.firstLine, t.lastLine], [one.end + 1, one.end + 12, 2, 2, 2, 5]);
+  deq([t.start, t.end, t.rows, t.cols, t.firstLine, t.lastLine], [one.end + 1, one.end + 13, 2, 2, 2, 5]); // one index after the last cell, as in Docs
   assert.strictEqual(m.lines[1].start, t.start + 3); // cell (0,0)'s paragraph, as in the API how-to
   assert.strictEqual(m.lines[5].cell, undefined); // the empty paragraph Docs leaves after the table
   deq(t.widths, [{ type: 'EVENLY_DISTRIBUTED', pt: null }, { type: 'EVENLY_DISTRIBUTED', pt: null }]);
@@ -259,7 +259,7 @@ test('commitSequence + multi journal: two batches, journaled as parts, undone ne
     { kind: 'insert', index: 0, text: 'New head', restore: '', paras: [], segmentId: hid },
   ]);
   const r = pushTool(toolMsg('m1', await T.finishEdit(as, segPlan({ journal, title: 'Header added' }), 'm1', seq.model)));
-  assert.ok(r._ok && r.content.startsWith('Done: header added.\nHeader now reads the new text.'), r.content);
+  assert.ok(r._ok && /^Done: header added; the document has \d+ lines\.\nHeader now reads the new text\./.test(r.content), r.content);
   deq([r._edit.kind, r._edit.parts[0].anchor, r._edit.parts[1].anchor], ['multi', false, { before: '', after: '', revision: seq.model.revisionId }]);
   const u = pushTool(await exec('undo_last_edit', {}, 'm1u'));
   assert.ok(u._ok && /undid "Header added"/.test(u.content), u.content);
@@ -294,12 +294,17 @@ test('multi undo: a part that fails after another was undone; the next undo cont
   assert.strictEqual(fake.segText('kix.h1'), 'Draft header');
 });
 
-test('journal: an entry with undoable: false is skipped; relocateEdit moves every index of the inverse requests', async () => {
+test('journal: an entry with undoable: false is skipped by the arrow, refused by undo_last_edit when newest; relocateEdit moves every index of the inverse requests', async () => {
   await fresh(partsSpec());
   pushTool(await exec('replace_text', { old_text: 'Second note', new_text: 'Next note' }, 'r1'));
   pushTool({ role: 'tool', tool_call_id: 'x1', content: 'Done.', _ok: true, _edit: { id: 'x1', kind: 'comment', undoable: false, title: 'Comment deleted' } });
-  assert.strictEqual(T.latestUndoable().tool_call_id, 'r1');
+  assert.strictEqual(T.latestUndoable().tool_call_id, 'r1'); // the Undo arrow on the older edit stays
   deq(T.answerEdits('r1').map((x) => x.tool_call_id), ['r1']);
+  // "undo that" means the newest change: the older edit is not reverted instead
+  const refused = await exec('undo_last_edit', {}, 'x1u');
+  deq([refused._ok, refused.content], [false, 'Error: the latest change (Comment deleted) cannot be undone from the panel; nothing was undone. Tell the user to use Undo (Ctrl+Z) in Google Docs.']);
+  assert.ok(fake.text('t.0').includes('Next note'));
+  state.messages.pop(); // without the comment entry the newest edit is r1 again
   const u = await exec('undo_last_edit', {}, 'r1u');
   assert.ok(u._ok && fake.text('t.0').includes('Second note'), u.content);
   // relocation shifts nested indices (a table start) along with ranges and locations
@@ -327,15 +332,15 @@ async function registryBench() {
   const own = Tx.EXTRA_TOOLS.flatMap((t) => t.names);
   Tx.registerTools([READ_DEF], {
     offer: (mode, snap) => snap.docFormat === 'docs-api',
-    reading: true, icon: '🧩', summary: (name, args) => `part ${args.part}`,
+    reading: true, summary: (name, args) => `part ${args.part}`,
     run: (name, args) => { calls.push([name, args]); return args.part === 'bad' ? 'Error: no such part' : `Parts: ${args.part}`; },
     prompt: [{ section: 'reading', line: '- list_parts(part): the parts.' }],
     docNote: () => '[Also: a header]',
   });
   Tx.registerTools(MIXED_DEF, {
     offer: (mode, snap) => mode === 'edit' && snap.docFormat === 'docs-api',
-    reading: (name, args) => args.action === 'read', icon: { parts: '📝' }, pending: 'Changing parts…',
-    gate: (name, plan) => ({ large: plan.big, what: 'changes parts', range: '', excerptLabel: 'Part', excerpt: 'x' }),
+    reading: (name, args) => args.action === 'read', pending: 'Changing parts…',
+    gate: (name, plan) => ({ undoable: !plan.big, what: 'changes parts', range: '', excerptLabel: 'Part', excerpt: 'x' }),
     run: async (name, args, snap, ui, call) => {
       calls.push([name, args, call]);
       if (args.action === 'boom') throw new Error('it broke');
@@ -359,7 +364,7 @@ test('registerTools: offered after the built-in tools, dispatched, logged, gated
   deq(names('edit', { ...snap, docFormat: 'markdown', model: null }).slice(-1), ['replace_selection']);
   // the static prompt lists them in their sections; the turn context carries the docNote
   const head = Tx.buildSystemParts('edit', 1e5, snap).head;
-  assert.ok(/characters per call; read a longer part in several calls\.\n(- .*\n)*- list_parts\(part\): the parts\.\n/.test(head), 'reading line');
+  assert.ok(/characters per call\.\n(- .*\n)*- list_parts\(part\): the parts\.\n/.test(head), 'reading line');
   assert.ok(/with the writing tools\.\n(- .*\n)*- parts\(action\): change parts\.\n\nFollow these rules/.test(head), 'edit line');
   assert.ok(!Tx.buildSystemParts('manual', 1e5, snap).head.includes('- parts(action)'));
   assert.ok(Tx.buildTurnContext('edit', snap, null).match(/<\/document>\n(.*\n)*\[Also: a header\]/));
@@ -380,25 +385,27 @@ test('registerTools: offered after the built-in tools, dispatched, logged, gated
   r = await Tx.executeTool(call('parts', { action: 'set', doc: 'doc2' }), 'edit', snap);
   assert.ok(!r._ok && /read-only/.test(r.content));
   const n = calls.length;
+  // not offered: a writing call outside an editing turn gets the turn's way forward, a reading call the plain way out
   r = await Tx.executeTool(call('parts', { action: 'set' }), 'manual', snap);
-  assert.ok(!r._ok && /not available for this message/.test(r.content));
+  deq([r._ok, r.content], [false, 'Error: the document cannot be modified here. Put the complete resulting text in your answer.']);
   r = await Tx.executeTool(call('list_parts', { part: 'x' }), 'edit', { ...snap, docFormat: 'markdown', model: null });
-  assert.ok(!r._ok && /not available/.test(r.content));
+  deq([r._ok, r.content], [false, 'Error: list_parts is not offered now; use the tools you were given.']);
   assert.strictEqual(calls.length, n);
   // action log, icons, cards, gate
   assert.strictEqual(Tx.logEntry(call('list_parts', { part: 'footer' }), null).summary, 'part footer');
   assert.strictEqual(Tx.logEntry(call('parts', { action: 'set' }), null).summary, '{"action":"set"}'); // no summary: activitySummary
-  deq([Tx.activityIcon('list_parts'), Tx.activityIcon('parts'), Tx.activityIcon('read_lines')], ['🧩', '📝', '📖']);
+  assert.strictEqual(Tx['typeof activityIcon'], 'undefined'); // no icons in the rows
   deq([Tx.isEditTool('parts'), Tx.isEditTool('list_parts'), Tx.pendingCardText('parts')], [true, false, 'Changing parts…']);
-  deq(Tx.editGateInfo('parts', { big: true }).large, true);
-  deq(Tx.editGateInfo('list_parts', {}), { large: false, what: 'runs list_parts', range: '', excerptLabel: '', excerpt: '' });
+  // the tool's gate info, its excerpt as the card's one text; no gate: a document edit that names what it runs
+  deq(Tx.editGateInfo('parts', { big: true }), { undoable: false, what: 'changes parts', range: '', excerptLabel: 'Part', excerpt: 'x', blocks: [{ label: 'Part', text: 'x' }] });
+  deq(Tx.editGateInfo('list_parts', {}), { what: 'runs list_parts', blocks: [] });
   // a long result of a registered reading tool is stubbed after the turn like read_lines
   const msgs = [{ role: 'assistant', content: null, tool_calls: [call('list_parts', { part: 'all' }, 's1')] }, { role: 'tool', tool_call_id: 's1', content: 'x'.repeat(500) }];
   Tx.slimHistory(msgs);
   assert.strictEqual(msgs[1].content, '[list_parts: content omitted after the turn; re-read if needed]');
   // names are unique
   assert.throws(() => Tx.registerTools([READ_DEF], { offer: () => true, run: () => '' }), /exists already/);
-  assert.throws(() => Tx.registerTools([{ type: 'function', function: { name: 'read_lines' } }], { offer: () => true, run: () => '' }), /exists already/);
+  assert.throws(() => Tx.registerTools([{ type: 'function', function: { name: 'read_document' } }], { offer: () => true, run: () => '' }), /exists already/);
   assert.throws(() => Tx.registerTools([{ type: 'function', function: { name: 'x_tool' } }], { run: () => '' }), /offer and run/);
 });
 
@@ -475,7 +482,7 @@ test('the registry module loads first and the feature modules have their (empty)
   const order = [...html.matchAll(/<script src="src\/([^"]+)"/g)].map((m) => m[1]);
   deq(order.slice(0, 2), ['constants.js', 'registry.js']);
   const at = order.indexOf('tools.js');
-  deq(order.slice(at, at + 14), ['tools.js', 'docs-tables.js', 'docs-segments.js', 'docs-comments.js', 'zotero.js', 'references.js', 'doc-history.js', 'prose-lint.js', 'draft.js',
+  deq(order.slice(at, at + 17), ['tools.js', 'docs-tables.js', 'docs-segments.js', 'docs-comments.js', 'docs-comment-write.js', 'named-styles.js', 'style-map.js', 'zotero.js', 'references.js', 'doc-history.js', 'prose-lint.js', 'draft.js',
     'revise.js', 'hidden-text.js', 'own-changes.js', 'provenance.js', 'action-log.js']);
 });
 
@@ -491,7 +498,7 @@ test('registerTools: an offer() that throws only leaves that feature out (tools,
   e2.state.settings.provider = 'anthropic';
   const snap = Tx.takeSnapshot(); Tx.snapshotDocument(snap);
   const names = Tx.toolsFor('edit', snap).map((t) => t.function.name);
-  assert.ok(names.includes('read_lines') && !names.includes('broken_tool'));
+  assert.ok(names.includes('read_document') && !names.includes('broken_tool'));
   assert.ok(!Tx.extraPromptLines('reading', 'edit', snap).some((l) => l.includes('broken_tool')));
   assert.strictEqual(Tx.offered(Tx.extraTool('broken_tool'), 'edit', snap), false);
   assert.ok(warned.some((w) => w.includes('broken_tool') && w.includes('feature bug')));

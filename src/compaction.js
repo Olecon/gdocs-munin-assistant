@@ -2,27 +2,28 @@
 // Module compaction.js: history compaction at the start of a turn (compactionPlan, compactionBudget,
 // maybeCompact: folding first (foldPlan, foldEntry), then buildSummaryRequest), the same in the background after a
 // turn near the trigger (backgroundCompact) and history slimming after a turn (slimHistory).
-/* global activeConfig, activeProvider, BACKGROUND_COMPACT_RATIO, chatLockIfFree, docStatusText, nextRequestEstimate, readChatForTurn,
-   renderContextGauge, renderHistoryKeepingNotices, snapshotDocument,
-   activeHistory, addNotice, anthropicHeaders, apiUrl, bearerHeaders, buildApiMessages,
-   buildSystemParts, cachesPrompt, CHARS_PER_TOKEN, COMPACT_AT_TOKENS, COMPACT_MSG_CHARS, COMPACT_PROMPT,
+/* global canRequest, chatBody, activeConfig, activeProvider, BACKGROUND_COMPACT_RATIO, chatLockIfFree, docStatusText, nextRequestEstimate, readChatForTurn,
+   renderContextGauge, renderHistoryKeepingUnstored, snapshotDocument,
+   activeHistory, addLateTurnRow, addTurnRow, anthropicHeaders, apiUrl, bearerHeaders, buildApiMessages,
+   buildSystemParts, cachesPrompt, CHARS_PER_TOKEN, CONTEXT_RETRY_SCALE, COMPACT_AT_TOKENS, MUNIN_COMPACT_AT_TOKENS, COMPACT_MSG_CHARS, COMPACT_PROMPT,
    COMPACT_TOOL_CHARS, COMPACTED_TOOL_KEEP_CHARS, COMPACTED_TOOL_MARKER, estimateTokens,
    FOLD_ARG_VALUE_CHARS, FOLD_ARGS_CHARS, FOLD_ERROR_CHARS, FOLD_HEADROOM_TOKENS, FOLD_NOTE,
-   fitMessages, fmtNum, isReadingTool, RAW_REPLAY_KEYS, joinSystem, lastUserIndex, PERSONA_DOC_CHAR_LIMIT,
-   readingStub, runStream, saveHistory, setStatus, shortContext, state, STUB_MIN_CHARS, SUMMARY_PREFIX,
-   SUMMARY_RESERVE_TOKENS, tokenBudget, toolNamesById, toolsFor, applyTurnMode */
-/* exported compactionBudget, maybeCompact, backgroundCompact, slimHistory, requestTokens */
+   fitMessages, fmtNum, isReadingTool, LOG_KEEP_CHARS, LOG_KEEP_CUT_NOTE, LOG_KEEP_TURNS, RAW_REPLAY_KEYS, joinSystem, lastUserIndex, PERSONA_DOC_CHAR_LIMIT,
+   readingStub, runStream, saveHistory, setStatus, shortContext, state, STUB_MIN_CHARS, SUMMARY_PREFIX, SUMMARY_PREFIX_RE,
+   SUMMARY_RESERVE_TOKENS, sentTools, tokenBudget, MUNIN_REASONING_EFFORT, samplingFields, toolNamesById, toolsFor, applyTurnMode */
+/* exported compactionBudget, foldCall, maybeCompact, backgroundCompact, slimHistory, requestTokens */
 
 // ---------------------------------------------------------------------------
 // History compaction: at the start of a turn (never between tool rounds, so that the request prefix
 // stays stable within a turn for Anthropic thinking blocks and prompt caching), when the turn's first
 // request is over budget and at least two older turns exist, the oldest turns are summarized by the
 // active provider (same model, no tools). The summary is inserted as a user message
-// ("[Summary of the earlier conversation]...", _summary, _covers: n) before the first message it did not
+// (SUMMARY_PREFIX, _summary, _covers: n) before the first message it did not
 // replace; the replaced messages get _compacted (kept for display, never sent). If the summary request
-// fails, the old trimming applies (fitMessages) with a notice.
+// fails, the old trimming applies (fitMessages) with a row of the turn.
 // Before any summary request the old turns are folded (no request): when the folded history fits, the fold
-// takes the summary's place (the same message shape, plus _folded) and no summary is requested.
+// takes the summary's place (the same message shape, plus _folded) and no summary is requested. With one older turn
+// only the fold is tried (compactionPlan's foldOnly), else trimming applies.
 // ---------------------------------------------------------------------------
 // The messages to summarize (a prefix of the active history ending at a turn boundary), or null.
 // No plan when the history is not what overflows: if the request with the history reduced to the current
@@ -37,9 +38,16 @@ function compactionPlan(mode, snap, budget = compactionBudget(mode, snap)) {
   if (lastUser < 0 || !fitMessages(mode, snap, { budget }).trimmed) return null;
   // A summary counts as one; an automatic continuation (_auto) is part of its turn.
   const olderTurns = active.slice(0, lastUser).filter((m) => m.role === 'user' && !m._auto).length;
-  if (olderTurns < 2) return null;
+  if (!olderTurns) return null;
   const minimal = [...active.slice(0, lastUser).filter((m) => m._summary).slice(-1), ...active.slice(lastUser)];
   if (requestTokens(mode, snap, minimal) > budget - SUMMARY_RESERVE_TOKENS) return null;
+  // One huge earlier turn (its tool results, usually): trimming would drop it whole, a summary of one turn is not worth
+  // a request, its fold keeps the user's text, the calls and the answer. foldOnly: no summary when the fold is not enough.
+  if (olderTurns === 1) {
+    const older = active.slice(0, lastUser);
+    if (older[0]._summary || estimateTokens(older) <= 2 * SUMMARY_RESERVE_TOKENS) return null;
+    return Object.assign(older, { foldOnly: true });
+  }
   // Drop as much as trimming would, with room for the summary, and extend to the start of a turn.
   let cut = active.length - fitMessages(mode, snap, { budget, reserve: SUMMARY_RESERVE_TOKENS }).history.length;
   while (cut < lastUser && (active[cut].role !== 'user' || active[cut]._auto)) cut++; // _auto belongs to its turn
@@ -49,11 +57,14 @@ function compactionPlan(mode, snap, budget = compactionBudget(mode, snap)) {
 }
 
 // The size at which a turn compacts the history: COMPACT_AT_TOKENS for OpenAI and Anthropic (far below
-// their context window: a long history costs input tokens on every request), the context budget for Munin.
+// their context window: a long history costs input tokens on every request), MUNIN_COMPACT_AT_TOKENS for Munin (a 27B
+// model follows a request of 40k tokens better than one of 55k; the fold, which needs no request, comes first), the
+// context budget for custom servers (unknown model, no known prompt cache).
 // Trimming (the fallback) still uses the full context budget (tokenBudget).
 function compactionBudget(mode, snap) {
   const hard = tokenBudget(mode, snap);
-  return snap.prov.id === 'munin' ? hard : Math.min(hard, COMPACT_AT_TOKENS);
+  if (cachesPrompt(snap.prov)) return Math.min(hard, COMPACT_AT_TOKENS);
+  return snap.prov.id === 'munin' ? Math.min(hard, MUNIN_COMPACT_AT_TOKENS) : hard;
 }
 
 // Estimated size of a request with the full prompt (no document cut) and the given history.
@@ -61,11 +72,13 @@ function requestTokens(mode, snap, history) {
   const tools = toolsFor(mode, snap);
   const system = joinSystem(buildSystemParts(mode, PERSONA_DOC_CHAR_LIMIT, snap));
   return estimateTokens(buildApiMessages(tools.length > 0, history, system, { shortOld: !cachesPrompt(snap.prov) }),
-    tools.length ? JSON.stringify(tools).length : 0);
+    tools.length ? JSON.stringify(sentTools(tools, snap.prov)).length : 0);
 }
 
-// Plain-text transcript of the messages to summarize (long texts clipped; capped to the budget).
-function compactionTranscript(msgs, mode, snap) {
+// Plain-text transcript of the messages to summarize (long texts clipped; capped to CONTEXT_RETRY_SCALE of the budget:
+// chars/3 can underestimate, and a refused summary disables compaction for the session). share: the part of that cap
+// to use (half for the retry after the server refused the summary request as too long).
+function compactionTranscript(msgs, mode, snap, share = 1) {
   const clip = (t, n) => { const s = String(t == null ? '' : t); return s.length > n ? `${s.slice(0, n)} [... ${fmtNum(s.length - n)} more characters]` : s; };
   const out = [];
   for (const m of msgs) {
@@ -84,8 +97,16 @@ function compactionTranscript(msgs, mode, snap) {
     }
   }
   const text = out.join('\n\n');
-  const max = Math.max(4000, (tokenBudget(mode, snap) - 2000) * CHARS_PER_TOKEN - COMPACT_PROMPT.length);
+  const max = Math.max(4000, Math.floor(share * (CONTEXT_RETRY_SCALE * (tokenBudget(mode, snap) - 2000) * CHARS_PER_TOKEN - COMPACT_PROMPT.length)));
   return text.length > max ? `${text.slice(0, max)}\n[... the rest of this part of the conversation is left out: too long]` : text;
+}
+// The transcript for the retry after a too-long summary request: the older half of the turns folded (as the fold
+// stage writes them, no request), the newer half as usual, within half the cap.
+function halvedTranscript(msgs, mode, snap) {
+  let cut = Math.floor(msgs.length / 2);
+  while (cut < msgs.length && (msgs[cut].role !== 'user' || msgs[cut]._auto)) cut++; // whole turns only
+  const parts = cut > 0 ? [foldEntry(msgs.slice(0, cut)), ...msgs.slice(cut)] : msgs;
+  return compactionTranscript(parts, mode, snap, 0.5);
 }
 
 // The summarization request for the turn's provider: a plain request without tools, streamed like any
@@ -104,8 +125,10 @@ function buildSummaryRequest(snap, transcript) {
   const body = {
     model: cfg.model, persona: 'raw', max_tokens: prov.maxTokens, stream: true, stream_options: { include_usage: true },
     messages: [{ role: 'system', content: COMPACT_PROMPT }, { role: 'user', content: user }],
+    // A summary needs neither deep thinking nor variety (Munin would inject "medium" effort and get the prose sampling).
+    chat_template_kwargs: { reasoning_effort: MUNIN_REASONING_EFFORT }, ...samplingFields(prov, 'summary'),
   };
-  return { kind: 'chat', url: apiUrl(snap, '/chat/completions'), headers: bearerHeaders(cfg), body, tools: [] };
+  return { kind: 'chat', url: apiUrl(snap, '/chat/completions'), headers: bearerHeaders(cfg), body: chatBody(prov, body), tools: [] };
 }
 
 // ---- Folding: the summary without a request ----------------------------------------------------------
@@ -138,13 +161,19 @@ function foldEntry(msgs) {
 const AUTO_CONTINUED_NOTE = '[The reply was cut by the length limit and continued.]';
 const WRAP_UP_NOTE = '[The tool budget of this message ran out; the assistant summarized what was done and what is left.]';
 const NUDGE_NOTE = '[The assistant announced an edit without calling a tool and was reminded.]';
-const autoNote = (m) => (m._autoKind === 'wrap-up' ? WRAP_UP_NOTE : m._autoKind === 'nudge' ? NUDGE_NOTE : AUTO_CONTINUED_NOTE);
+// An agent's report (agents.js) is data the later turns may need: its text, clipped. A revert's row (accounts.js) says
+// which model the chat runs on: its text. A failed turn's note (turn.js noteFailedTurn): its text, already bracketed.
+const autoNote = (m) => (m._revert ? `[${m.content}]` : m._failed ? String(m.content || '') : m._autoKind === 'agent-report' ? agentReportNote(m) : m._autoKind === 'wrap-up' ? WRAP_UP_NOTE : m._autoKind === 'nudge' ? NUDGE_NOTE : AUTO_CONTINUED_NOTE);
+function agentReportNote(m) {
+  const t = String(m.content || '').trim();
+  return t.length > COMPACT_MSG_CHARS ? `${t.slice(0, COMPACT_MSG_CHARS)} [... ${fmtNum(t.length - COMPACT_MSG_CHARS)} more characters]` : t;
+}
 
 // A summary's text without its prefix (and a fold's note).
-const summaryBody = (m) => String(m.content || '').replace(SUMMARY_PREFIX, '').replace(FOLD_NOTE, '').trim();
+const summaryBody = (m) => String(m.content || '').replace(SUMMARY_PREFIX_RE, '').replace(FOLD_NOTE, '').trim();
 
 // The folded transcript. Per turn: the user's text (an earlier summary or fold as it is), one line per tool
-// call ("[read_lines(start=10, end=60): ok]"; a failed call with the start of its error) and the turn's final
+// call ("[read_document(scope={...}): ok]"; a failed call with the start of its error) and the turn's final
 // answer. The turn context of a user message is left out: it described the document as it was then.
 // Intermediate texts between tool rounds are left out too; the final answer carries the conclusions.
 function foldText(msgs) {
@@ -204,8 +233,9 @@ function replaceWithSummary(msgs, entry) {
     if (!replaced.has(m)) return;
     m._compacted = true;
     at = i + 1;
-    // Cut only after the summary or fold was made (it needed the full text).
+    // Cut only after the summary or fold was made (it needed the full text); the chat log copy keeps it (_log).
     if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > COMPACTED_TOOL_KEEP_CHARS) {
+      keepLogText(m, m.content);
       m.content = m.content.slice(0, COMPACTED_TOOL_KEEP_CHARS) + COMPACTED_TOOL_MARKER;
     }
   });
@@ -216,7 +246,7 @@ function replaceWithSummary(msgs, entry) {
 // first and needs no request; when the fold is not enough, the planned messages (not their fold: the
 // summary can keep facts from successful results that the fold drops) are summarized. A Stop during the
 // summary request ends the turn (the AbortError is rethrown); any other failure leaves the history as it
-// was (the request is trimmed as before) and shows a notice.
+// was (the request is trimmed as before) and adds a row of the turn.
 // budget: the trigger to compact against (default compactionBudget; see backgroundCompact).
 async function maybeCompact(mode, snap, signal, ctx, { budget = compactionBudget(mode, snap) } = {}) {
   const msgs = compactionPlan(mode, snap, budget);
@@ -227,22 +257,32 @@ async function maybeCompact(mode, snap, signal, ctx, { budget = compactionBudget
     await saveHistory(ctx);
     return true;
   }
+  if (msgs.foldOnly) return false; // one earlier turn: trimming, as before
   if (state.compactionFailedChat === ctx.chatId) return false; // failed earlier in this session: trimming only
   setStatus('Summarizing the earlier conversation…');
   let summary = '';
   let usage = null;
   try {
-    const r = await runStream(buildSummaryRequest(snap, compactionTranscript(msgs, mode, snap)), signal, snap, {});
+    let r;
+    try {
+      r = await runStream(buildSummaryRequest(snap, compactionTranscript(msgs, mode, snap)), signal, snap, {});
+    } catch (e) {
+      if (!e.contextLength || e.partial || signal.aborted) throw e;
+      r = await runStream(buildSummaryRequest(snap, halvedTranscript(msgs, mode, snap)), signal, snap, {}); // once
+    }
     summary = String(r.content || '').trim();
     usage = r.usage || null;
     if (!summary) throw new Error(r.finishReason && r.finishReason !== 'stop' ? `the reply ended early (${r.finishReason})` : 'the reply was empty');
   } catch (e) {
     if (e.name === 'AbortError' || signal.aborted) throw e;
     if (ctx.messages !== state.messages) return false; // the panel moved to another chat meanwhile
-    // Not retried in this chat until the chat is switched or the panel is reloaded (one notice).
+    // Not retried in this chat until the chat is switched or the panel is reloaded (one row: of the turn, or after a
+    // background compaction of the chat's last turn).
     state.compactionFailedChat = ctx.chatId;
-    addNotice(`Could not summarize the earlier conversation (${e.message}); older messages are left out of the request instead ` +
-      'for the rest of this chat session.', { sticky: true });
+    const why = e.contextLength ? 'the conversation is too long for the model even in half' : e.message;
+    const text = `Could not summarize the earlier conversation (${why}); older messages are left out of the request instead ` +
+      'for the rest of this chat session.';
+    if (!addTurnRow(text)) addLateTurnRow(text, ctx.messages[ctx.messages.length - 1]);
     return false;
   }
   // Stopped, or the panel shows another chat (or a re-read history) by now: the summary is not applied.
@@ -273,7 +313,7 @@ function backgroundCompact() {
   let budget;
   try {
     snap = { prov: activeProvider(), cfg: { ...activeConfig() }, signal: null, docId };
-    if (!snap.cfg.apiKey) return null;
+    if (!canRequest(snap.cfg)) return null;
     snapshotDocument(snap);
     budget = Math.floor(BACKGROUND_COMPACT_RATIO * compactionBudget(mode, snap));
     if (nextRequestEstimate(mode, activeHistory(state.messages)) < budget) return null;
@@ -293,10 +333,10 @@ function backgroundCompact() {
       const ctx = { docId, chatId, messages: state.messages };
       snap.chatCtx = ctx;
       const done = await maybeCompact(mode, snap, abort.signal, ctx, { budget });
-      if (done && state.messages === ctx.messages) renderHistoryKeepingNotices();
+      if (done && state.messages === ctx.messages) renderHistoryKeepingUnstored();
       return done;
     } catch (e) {
-      return false; // stopped by a message, an Undo or a chat switch; a failed summary has its own notice
+      return false; // stopped by a message, an Undo or a chat switch; a failed summary has its own row
     } finally {
       if (release) release();
       if (state.bgCompaction === run) state.bgCompaction = null;
@@ -313,11 +353,13 @@ function backgroundCompact() {
 //   - the provider replay payloads (_openaiItems, _anthropicBlocks) are dropped: the converters replay
 //     them only for the rounds after the newest user message (the turn in progress), and the next request
 //     starts with a new user message;
-//   - the results of reading tools (read_lines, find_in_document, get_outline, get_selection,
-//     read_formatting, also on opened documents) longer than STUB_MIN_CHARS become a short stub
-//     ("[read_lines 40–75: content omitted after the turn; re-read if needed]"; open_document keeps its
-//     first line); _omittedChars keeps the original length for the action log. Compacted results keep
-//     their compaction cut.
+//   - the results of reading tools (read_document, find_in_document, get_selection,
+//     also on opened documents) longer than STUB_MIN_CHARS become a short stub
+//     ("[read_document lines 40–75: content omitted after the turn; re-read if needed]"; open_document keeps its
+//     first line; an external lookup its digest, marked _digest: the query and what it found, so the next turn does
+//     not look it up again); _omittedChars keeps the original length for the action log and _log the text itself for
+//     the chat log copy (keepLogText). Compacted results keep their compaction cut;
+//   - _log is dropped from the turns before the last LOG_KEEP_TURNS (pruneLogTexts), so storage stays bounded.
 // Edit results, _edit journals, user messages and their _context are not touched: the requests of the
 // next turns repeat the earlier turns' user messages unchanged (prompt caching). Modifies the messages in
 // place; returns the number of messages changed (the caller saves the history).
@@ -337,12 +379,42 @@ function slimHistory(messages) {
       const fn = names.get(m.tool_call_id);
       if (fn && isReadingTool({ function: fn })) { // registered reading tools too
         const was = m.content.length;
-        m.content = readingStub(fn, m.content, 'after the turn');
+        keepLogText(m, m.content);
+        const stub = readingStub(fn, m.content, 'after the turn');
+        // A lookup's digest (what it found): the request of a Munin turn sends only the newest ones (buildApiMessages).
+        if (stub !== readingStub(fn, m.content, 'after the turn', { plain: true })) m._digest = true;
+        m.content = stub;
         m._omittedChars = was;
         touched = true;
       }
     }
     if (touched) changed++;
+  }
+  return changed + pruneLogTexts(messages);
+}
+
+// The full text of a tool result whose content is replaced (a stub, the compaction cut), for the chat log copy only:
+// never sent (apiMessage and the provider converters copy only the content) and not counted by estimateTokens. Cut at
+// LOG_KEEP_CHARS. The first replacement wins: a later one only shortens the content further.
+function keepLogText(m, text) {
+  if (typeof m._log === 'string' || typeof text !== 'string') return;
+  m._log = text.length > LOG_KEEP_CHARS ? `${text.slice(0, LOG_KEEP_CHARS)}\n${LOG_KEEP_CUT_NOTE}` : text;
+}
+
+// Drops _log from the messages before the last LOG_KEEP_TURNS turns (a turn starts with a user message that is not
+// the panel's own: _auto belongs to its turn). Returns the number of messages changed.
+function pruneLogTexts(messages) {
+  let turns = 0;
+  let from = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user' && !m._auto && ++turns === LOG_KEEP_TURNS) { from = i; break; }
+  }
+  if (turns < LOG_KEEP_TURNS) return 0;
+  let changed = 0;
+  for (let i = 0; i < from; i++) {
+    const m = messages[i];
+    if (m && typeof m === 'object' && '_log' in m) { delete m._log; changed++; }
   }
   return changed;
 }

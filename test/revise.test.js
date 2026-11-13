@@ -45,10 +45,10 @@ before(async () => {
   Object.assign(state.settings.providers.munin, { apiKey: 'k-T' });
 });
 
-// The fake document; the provider answers the revise requests with answers[i] (Anthropic text rounds). onPost: called on
-// every Docs batchUpdate. Returns the provider request bodies.
-async function bench(answers, onPost) {
-  await fresh(docSpec({ items: ITEMS }));
+// The fake document (items: its paragraphs, default ITEMS); the provider answers the revise requests with answers[i]
+// (Anthropic text rounds). onPost: called on every Docs batchUpdate. Returns the provider request bodies.
+async function bench(answers, onPost, items = ITEMS) {
+  await fresh(docSpec({ items }));
   as.chatCtx = { docId: 'DOC123', chatId: state.chatId, messages: [] };
   const bodies = [];
   env.ctx.fetch = async (url, init) => {
@@ -64,7 +64,8 @@ test('definition, offer (Auto with the Docs API, Munin included) and the prompt 
   const def = T.toolsFor('edit', as).find((t) => t.function.name === 'revise_section');
   assert.ok(def);
   deq([def.function.parameters.required, def.function.parameters.additionalProperties], [['heading', 'goal'], false]);
-  const line = '\n- revise_section(heading, goal): a whole section, paragraph by paragraph, then its transitions (one request per paragraph, 1–2k tokens each); for a few sentences use replace_text.\n';
+  // the one rewrite-routing line of the head (a few sentences, a whole section kept, a section's new body)
+  const line = '\n- Rewrites: a few sentences → replace_text; polish or simplify a whole section keeping its content → revise_section (one request per paragraph); replace a section\'s body with new content → replace_section.\n';
   assert.ok(T.buildSystemParts('edit', 1e5, as).head.includes(line));
   assert.ok(!names('manual', as).includes('revise_section'));
   assert.ok(!T.buildSystemParts('manual', 1e5, as).head.includes('revise_section'));
@@ -79,15 +80,17 @@ test('definition, offer (Auto with the Docs API, Munin included) and the prompt 
 
 test('section type from the heading, in English and Russian', () => {
   const kinds = ['Abstract', 'Summary', 'Аннотация', '1. Introduction', 'Background', 'Введение', 'Materials and Methods', 'Experimental section',
-    'Методы исследования', 'Results', 'Результаты', 'Discussion', 'Conclusions', 'Заключение', 'Acknowledgements', 'Related work'].map((h) => T.reviseSectionKind(h));
+    'Методы исследования', 'Results', 'Результаты', 'Discussion', 'Conclusions', 'Заключение', 'Acknowledgements', 'Related work', 'Limitations', 'Data availability'].map((h) => T.reviseSectionKind(h));
   deq(kinds, ['abstract', 'abstract', 'abstract', 'introduction', 'introduction', 'introduction', 'methods', 'methods', 'methods', 'results', 'results',
-    'discussion', 'discussion', 'discussion', 'other', 'other']);
+    'discussion', 'discussion', 'discussion', 'other', 'other', 'other', 'other']); // limitations and data availability: the general prompt
   for (const k of Object.keys(T.REVISE_SECTION_PROMPTS)) assert.ok(T.REVISE_SECTION_PROMPTS[k].length < 330, k); // about 60 tokens each
 });
 
 test('three paragraphs: two changed, one unchanged, one transition pair; quiet requests with the section prompt; Undo restores the section', async () => {
   const bodies = await bench([R1, P2, R3, pairs([{ old: R3, new: T3 }])]);
+  as.docInstructions = 'Use British English.'; // the standing instructions reach the revision requests (DOC.md block)
   const r = await T.executeTool(call({ heading: 'methods', goal: 'shorter' }, 'rv1'), 'edit', as, {});
+  as.docInstructions = '';
   assert.ok(r._ok, r.content);
   assert.ok(r.content.startsWith('Revised the section «Methods» (lines 3–6) paragraph by paragraph: 2 of 3 paragraphs changed, 1 unchanged, 0 skipped; 1 transition fixed.'), r.content);
   assert.ok(r.content.endsWith('\nThe line numbers did not change. Do not call revise_section on this section again in this message.'), r.content);
@@ -98,8 +101,13 @@ test('three paragraphs: two changed, one unchanged, one transition pair; quiet r
   assert.strictEqual(bodies.length, 4);
   for (const b of bodies) { assert.strictEqual(b.messages.length, 1); assert.ok(!b.tools); assert.ok(b.system.includes('W1. Write like this document')); }
   assert.ok(bodies[0].system.startsWith('You revise one paragraph of a document.'));
-  assert.ok(bodies[0].system.endsWith(T.REVISE_SECTION_PROMPTS.methods));
-  assert.strictEqual(bodies[0].messages[0].content, `Document: Membrane order\nKeywords: lipid, order\nSection: Methods\nGoal: shorter\nParagraph to revise:\n${P1}`);
+  // the document subset of the writing rules (no chat rules), the section prompt, then MAIN.md / DOC.md and the untrusted-data note
+  assert.ok(bodies[0].system.includes(`${T.DOCUMENT_WRITING_RULES}\n\n${T.REVISE_SECTION_PROMPTS.methods}\n\n`) && bodies[0].system.endsWith(T.UNTRUSTED_DATA_NOTE));
+  assert.ok(!bodies[0].system.includes('In chat, give the answer') && !bodies[0].system.includes('say in the chat what was dropped'));
+  assert.ok(bodies[3].system.includes(T.DOCUMENT_WRITING_RULES) && bodies[3].system.endsWith(T.UNTRUSTED_DATA_NOTE));
+  for (const b of bodies) assert.ok(b.system.includes('<DOC.md>\nUse British English.\n</DOC.md>'));
+  // the section line quotes the section's first sentence that is not the paragraph itself (no type clause: the system has the prompt)
+  assert.strictEqual(bodies[0].messages[0].content, `Document: Membrane order\nKeywords: lipid, order\nSection «Methods»: continue its register; it so far says: "We then stained them with Laurdan at 5 µM for thirty minutes."\nGoal: shorter\nParagraph to revise:\n${P1}`);
   assert.ok(bodies[1].messages[0].content.includes(`Previous paragraph (context only, do not revise it):\n${R1}\nParagraph to revise:\n${P2}`));
   assert.ok(bodies[3].system.startsWith('You check only the transitions'));
   assert.ok(bodies[3].messages[0].content.endsWith(`Section: Methods\n\n${R1}\n\n${P2}\n\n${R3}`));
@@ -173,4 +181,55 @@ test('a whole turn: revise_section and one more edit; progress on the status lin
   assert.ok(T.decidePreview(id, 'accept'));
   assert.ok(await p);
   assert.strictEqual(fake.text('t.0'), ORIGINAL);
+});
+
+// A subsection takes the type of the classic section it sits under; a long previous paragraph is given by its end and a
+// long goal by its start, in whole sentences with […] where text was left out (never cut mid-sentence).
+const S = ['The samples were taken from three independent cultures grown on separate days in the same medium.',
+  'Each culture was split into a control half and a treated half before the labelling step began.',
+  'The treated half received the substrate at a final concentration of two millimolar for ten minutes.',
+  'Both halves were then washed twice in cold buffer to remove the unbound label and the free substrate.',
+  'The pellets were frozen in liquid nitrogen within one minute of the last wash.'];
+const LONG = S.join(' ');
+const Q2 = 'The frozen samples were stored at minus eighty degrees until the measurements.';
+const G = ['Make every sentence shorter and keep the numbers exactly as they are written in the text now.',
+  'Prefer the active voice where the agent is clear from the context and keep the past tense throughout.',
+  'Do not merge sentences that report different steps of the procedure, since each step is checked separately later.'];
+const SUB_ITEMS = [
+  { p: 'Membrane order', style: 'TITLE' },
+  { p: 'Introduction', style: 'HEADING_1' },
+  { p: 'Existing approaches and their limitations', style: 'HEADING_2' },
+  { p: 'Older probes of membrane order were bulky and changed the order they were meant to report.' },
+  { p: 'Methods', style: 'HEADING_1' },
+  { p: 'Sample preparation', style: 'HEADING_2' },
+  { p: LONG }, { p: Q2 },
+  { p: 'Results', style: 'HEADING_1' },
+  { p: 'Order rose in all the cells we measured.' },
+];
+
+test('a subsection takes its classic section\'s prompt; the previous paragraph by its end and a long goal by its start, whole sentences', async () => {
+  assert.ok(LONG.length > 400 && G.join(' ').length > 300);
+  const bodies = await bench([LONG, Q2, '[]'], null, SUB_ITEMS);
+  const r = await T.executeTool(call({ heading: 'Sample preparation', goal: G.join(' ') }), 'edit', as, {});
+  assert.ok(r._ok, r.content);
+  deq([bodies.length, T.reviseSectionKind('Sample preparation')], [3, 'other']); // the heading alone names no type
+  assert.ok(bodies[0].system.includes(`\n\n${T.REVISE_SECTION_PROMPTS.methods}\n\n`), bodies[0].system.slice(0, 200));
+  // the goal: its first two sentences and the mark (before: cut at 300 characters mid-sentence)
+  assert.ok(bodies[0].messages[0].content.includes(`\nGoal: ${G[0]} ${G[1]} […]\n`), bodies[0].messages[0].content);
+  // the previous paragraph: the sentences it ends with (before: its first 400 characters, cut mid-sentence)
+  assert.ok(bodies[1].messages[0].content.endsWith(`Previous paragraph (context only, do not revise it):\n[…] ${S.slice(1).join(' ')}\nParagraph to revise:\n${Q2}`),
+    bodies[1].messages[0].content);
+  // its first sentence only once: in the section line, as the register to keep
+  assert.strictEqual(bodies[1].messages[0].content.split(S[0]).length, 2);
+  assert.ok(bodies[1].messages[0].content.includes(`Section «Sample preparation»: continue its register; it so far says: "${S[0]}"`));
+  // a topical heading under the Introduction is introduction text, not a limitations section
+  const b2 = await bench(['Older probes of membrane order were bulky and changed the order they were meant to report.'], null, SUB_ITEMS);
+  const r2 = await T.executeTool(call({ heading: 'Existing approaches and their limitations' }), 'edit', as, {});
+  assert.ok(r2._ok, r2.content);
+  assert.ok(b2[0].system.includes(`\n\n${T.REVISE_SECTION_PROMPTS.introduction}\n\n`), b2[0].system.slice(0, 200));
+});
+
+test('the Munin paragraph request: the tools profile (the paragraph is mostly copied: no presence penalty)', () => {
+  const b = T.reviseRequest({ prov: env.PROVIDERS.munin, cfg: { model: 'qwen3.8-27b', apiKey: 'k' } }, 'S', 'U').body;
+  deq([b.temperature, b.top_p, b.top_k, b.presence_penalty], [0.6, 0.95, 20, 0]);
 });

@@ -1,13 +1,24 @@
 'use strict';
-// Settings: defaults and storage keys, loading, the settings form with the model lists, the Auto | Manual switch.
+// Settings: the accounts (defaults and storage keys, the one-time migration of the per-type settings, several accounts
+// of one type, names, the Munin server URL, removal), the settings form with its key check and model lists, the modes,
+// the Anthropic model list, the References grant.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
 const { deq, load } = require('./lib/sandbox');
 
 let env, T, C2, state, sandbox, storage, timers;
+const modelsResponse = (ids, status = 200) => ({ ok: status < 300, status, json: async () => ({ object: 'list', data: ids.map((id) => ({ id, object: 'model' })) }), text: async () => JSON.stringify({ error: { message: 'Invalid API key.' } }) });
+const pause = (ms = 10) => new Promise((r) => setTimeout(r, ms));
+// A panel without the emulated per-type settings (test/lib/legacy-settings.js): the accounts as they are.
+const fresh = async (storageItems = {}) => {
+  const e = await load({ legacySettings: false });
+  Object.assign(e.storage, storageItems);
+  await e.T.loadSettings();
+  return e;
+};
 
 before(async () => {
-  env = await load();
+  env = await load({ legacySettings: false });
   T = C2 = env.T;
   state = env.state;
   sandbox = env.ctx;
@@ -15,223 +26,267 @@ before(async () => {
   timers = env.timers;
 });
 
-test('settings defaults + storage keys', async () => {
-  // --- settings defaults and storage keys
-  assert.strictEqual(state.settings.provider, 'munin');
-  assert.strictEqual(state.settings.providers.anthropic.model, 'claude-opus-5-5');
-  assert.strictEqual(T.storageKey('munin', 'apiKey'), 'muninApiKey');
-  deq([...T.SETTING_FIELDS], ['apiKey', 'model']); // no Base URL (every endpoint is fixed), no Effort (the model's default)
-  deq(Object.keys(state.settings.providers.openai), ['apiKey', 'model']);
+test('settings defaults + storage keys', () => {
+  deq(state.settings, { accounts: [], lastModel: null, references: false });
+  deq([T.ACCOUNTS_KEY, T.LAST_MODEL_KEY, T.modelsKey('a1')], ['muninAccounts', 'muninLastModel', 'muninModels:a1']);
+  for (const k of ['muninApiKey', 'muninModel', 'openaiApiKey', 'openaiModel', 'anthropicApiKey', 'anthropicModel', 'muninProvider', 'muninModels', 'openaiModels', 'anthropicModels', 'openaiBaseUrl', 'anthropicEffort']) {
+    assert.ok(T.STALE_SETTING_KEYS.includes(k), k);
+  }
   assert.ok(Object.values(T.PROVIDERS).every((p) => !('effort' in p)));
-  assert.strictEqual(T['typeof EFFORT_LEVELS'], 'undefined'); // removed
+  deq(Object.values(T.PROVIDERS).map((p) => p.name), ['Munin', 'OpenAI', 'Anthropic', 'Custom']);
+  // no account: no chat choice, the default type, an empty config
+  assert.strictEqual(T.chatChoice(), null);
+  assert.strictEqual(T.activeProvider().id, 'munin');
+  deq(T.activeConfig(), { apiKey: '', model: '', accountId: null, name: '' });
 });
 
-test('loadSettings keeps the old Munin key and restores the provider', async () => {
-  // An old Munin key is picked up; the active provider is restored.
-  storage.muninApiKey = 'sk-munin-OLD'; storage.muninProvider = 'anthropic'; storage.anthropicModel = ' claude-sonnet-5-5 '; storage.muninModels = ['qwen3.8-27b', 7, ' x-model '];
-  await T.loadSettings();
-  assert.strictEqual(state.settings.providers.munin.apiKey, 'sk-munin-OLD');
-  assert.strictEqual(state.settings.provider, 'anthropic');
-  assert.strictEqual(state.settings.providers.anthropic.model, 'claude-sonnet-5-5');
-  deq(state.modelLists.munin, ['qwen3.8-27b', 'x-model']);
-  assert.strictEqual(state.settings.providers.openai.baseUrl, undefined);
+test('migration: the per-type keys become accounts once, the chat provider and its model the last choice; the old keys go', async () => {
+  const e = await fresh({
+    muninApiKey: 'k-munin-OLD', muninModel: 'qwen3.8-27b', muninProvider: 'anthropic', anthropicApiKey: ' sk-ant-1 ',
+    anthropicModel: ' claude-sonnet-5-5 ', muninModels: ['qwen3.8-27b', 7, ' x-model '], openaiModel: 'gpt-6-astra', openaiModels: ['gpt-6-astra'],
+  });
+  const st = e.state;
+  deq(st.settings.accounts, [
+    { id: 'munin', type: 'munin', name: 'Munin', apiKey: 'k-munin-OLD', model: 'qwen3.8-27b' },
+    { id: 'anthropic', type: 'anthropic', name: 'Anthropic', apiKey: 'sk-ant-1', model: 'claude-sonnet-5-5' },
+  ]); // OpenAI had a model but no key: no account
+  deq(st.settings.lastModel, { accountId: 'anthropic', model: 'claude-sonnet-5-5' });
+  deq(e.T.chatChoice(), { accountId: 'anthropic', model: 'claude-sonnet-5-5' }); // the chats without a model of their own
+  assert.strictEqual(e.T.activeProvider().id, 'anthropic');
+  deq(e.T.activeConfig(), { apiKey: 'sk-ant-1', model: 'claude-sonnet-5-5', accountId: 'anthropic', name: 'Anthropic' });
+  deq(st.modelLists.munin, ['qwen3.8-27b', 'x-model']); // the cached list moved to the account
+  deq(e.storage['muninModels:munin'], ['qwen3.8-27b', 'x-model']);
+  for (const k of ['muninApiKey', 'muninModel', 'muninProvider', 'anthropicApiKey', 'anthropicModel', 'muninModels', 'openaiModel', 'openaiModels']) assert.ok(!(k in e.storage), k);
+  deq(e.storage.muninAccounts.map((a) => a.id), ['munin', 'anthropic']);
+  // once: old keys written again by an older panel are dropped, the accounts stay
+  e.storage.openaiApiKey = 'sk-late';
+  await e.T.loadSettings();
+  deq(st.settings.accounts.map((a) => a.id), ['munin', 'anthropic']);
+  assert.ok(!('openaiApiKey' in e.storage));
+  // a chat provider without a key: the first type with one (PROVIDER_IDS order) is the last choice
+  const e2 = await fresh({ muninProvider: 'munin', openaiApiKey: 'sk-o', anthropicApiKey: 'sk-ant-x' });
+  deq(e2.state.settings.lastModel, { accountId: 'openai', model: 'gpt-6.1-sol' });
+  // a fresh install stores nothing
+  const e3 = await fresh();
+  assert.ok(!('muninAccounts' in e3.storage) && !('muninLastModel' in e3.storage));
+  deq(e3.state.settings.accounts, []);
 });
 
-test('settings form flow + model list', async () => {
-  // the provider settings as the request checks of the old harness left them (see providers.test.js)
-  Object.assign(state.settings.providers.anthropic, { apiKey: 'k-anthropic', model: 'claude-opus-5-5' });
-  Object.assign(state.settings.providers.openai, { apiKey: 'k-openai', model: 'gpt-6.1-sol' });
-  // --- settings form: every change is stored at once (provider, key, model);
-  //     Munin: fixed endpoint, model dropdown filled from GET /models
-  state.settings.provider = 'munin';
-  Object.assign(state.settings.providers.munin, { apiKey: 'sk-munin-OLD' });
-  state.modelLists.munin = [];
-  let modelCalls = [];
-  const modelsResponse = (ids, status = 200) => ({ ok: status < 300, status, json: async () => ({ object: 'list', data: ids.map((id) => ({ id, object: 'model' })) }), text: async () => JSON.stringify({ error: { message: 'Invalid API key.' } }) });
-  sandbox.fetch = async (url, init) => { modelCalls.push([url, init.headers.Authorization]); return modelsResponse(['qwen3.8-27b', 'qwen3.8-27b-fast', 'qwen3.8-27b']); };
-  T.openSettings(); // key present + no cached list: NO request on opening, just a hint
-  await new Promise((r) => setTimeout(r, 10));
-  assert.strictEqual(modelCalls.length, 0);
-  assert.strictEqual(T.el.modelStatus.textContent, ''); // no hint text
-  assert.strictEqual(T.el.modelSelect.value, ''); assert.strictEqual(T.el.modelSelect.disabled, true); // nothing shown before the list is loaded
-  deq(T.readSettingsForm ? T.readSettingsForm().model : 'qwen3.8-27b', 'qwen3.8-27b'); // the saved model is kept while the dropdown is empty
-  await T.checkModels();
-  assert.strictEqual(T.el.modelSelect.disabled, false);
-  assert.strictEqual(T.el.provider.value, 'munin');
-  assert.strictEqual(T.el.apiKeyLabel.textContent, 'Munin API key');
-  deq(modelCalls, [['https://api.muninai.org/v1/models', 'Bearer sk-munin-OLD']]);
-  deq(state.modelLists.munin, ['qwen3.8-27b', 'qwen3.8-27b-fast']); // deduplicated
-  deq(storage.muninModels, ['qwen3.8-27b', 'qwen3.8-27b-fast']);
-  assert.strictEqual(T.el.modelSelect.value, 'qwen3.8-27b');
-  assert.ok(/2 models available; qwen3.8-27b is selected/.test(T.el.modelStatus.textContent) && !T.el.modelStatus.classList.contains('warn'));
-  T.el.apiKey.value = 'sk-munin-NEW';
-  T.el.modelSelect.value = 'qwen3.8-27b-fast';
-  T.switchSettingsProvider('anthropic');
-  assert.strictEqual(T.el.apiKeyLabel.textContent, 'Anthropic (Claude) API key');
-  // Anthropic follows the OpenAI scheme: fixed endpoint, model dropdown from GET /models.
-  assert.strictEqual(T.el.modelSelect.value, ''); assert.strictEqual(T.el.modelSelect.disabled, true); // no cached list yet
-  T.el.apiKey.value = 'sk-ant-NEW';
-  const anthCalls = [];
-  sandbox.fetch = async (url, init) => { anthCalls.push([url, init.headers['x-api-key']]); return modelsResponse(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']); };
-  await T.checkModels();
-  deq(anthCalls, [['https://api.anthropic.com/v1/models?limit=100', 'sk-ant-NEW']]);
-  deq(state.modelLists.anthropic, ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']);
-  deq(storage.anthropicModels, ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']);
-  assert.strictEqual(T.el.modelSelect.value, 'claude-opus-5-5');
-  T.el.modelSelect.value = 'claude-sonnet-5-5';
-  T.switchSettingsProvider('munin');
-  assert.strictEqual(T.el.apiKey.value, 'sk-munin-NEW'); // stored on the switch
-  assert.strictEqual(T.el.modelSelect.value, 'qwen3.8-27b-fast');
-  assert.strictEqual(modelCalls.length, 1); // cached list: no second request
-  T.switchSettingsProvider('anthropic');
-  assert.strictEqual(T.el.apiKey.value, 'sk-ant-NEW');
-  assert.strictEqual(T.el.modelSelect.value, 'claude-sonnet-5-5'); // the model too
-  // Every change is stored at once: the provider switches stored the provider and each provider's key and model.
-  await new Promise((r) => setTimeout(r, 5));
-  assert.strictEqual(state.settings.provider, 'anthropic'); assert.strictEqual(storage.muninProvider, 'anthropic');
-  deq([storage.muninApiKey, storage.muninModel], ['sk-munin-NEW', 'qwen3.8-27b-fast']);
-  deq([storage.anthropicApiKey, storage.anthropicModel], ['sk-ant-NEW', 'claude-sonnet-5-5']);
-  // A typed key is stored when the field is left (or after the typing pause) and then checked: the status says
-  // the key works, the "fix your settings" errors leave the chat, the default model is selected and stored.
-  T.el.chat.children.length = 0;
-  T.addError('To get started, add your Munin API key in the settings.', true);
-  T.addError('Some other error', false);
-  let verifyUrl = null;
-  sandbox.fetch = async (url, init) => { verifyUrl = [url, init.headers['x-api-key']]; return { ok: true, status: 200, json: async () => ({ data: [{ id: 'claude-opus-5-5' }, { id: 'claude-sonnet-5-5' }] }) }; };
-  T.el.apiKey.value = ' sk-ant-KEY2 ';
-  T.onApiKeyInput();
-  assert.strictEqual(storage.anthropicApiKey, 'sk-ant-NEW'); // waits for the pause
-  await T.onApiKeyBlur();
-  deq(verifyUrl, ['https://api.anthropic.com/v1/models?limit=100', 'sk-ant-KEY2']);
-  assert.strictEqual(T.settingsForm.keyTimer, 0); // the pending pause is dropped
-  assert.ok(!T.el.chat.children.some((c) => c.classList.contains('settings-error')));
-  assert.ok(T.el.chat.children.some((c) => /Some other error/.test(c.innerHTML))); // unrelated errors stay
-  assert.ok(!T.el.chat.children.some((c) => /Connected to|Settings saved/.test(c.innerHTML))); // the open settings show it
-  assert.strictEqual(T.el.modelStatus.textContent, 'Connected to Anthropic (Claude): the key works. 2 models available; claude-opus-5-5 is selected.');
-  deq(state.settings.providers.anthropic, { apiKey: 'sk-ant-KEY2', model: 'claude-opus-5-5' });
-  deq(state.settings.providers.munin, { apiKey: 'sk-munin-NEW', model: 'qwen3.8-27b-fast' });
-  deq([storage.anthropicApiKey, storage.anthropicModel], ['sk-ant-KEY2', 'claude-opus-5-5']);
-  assert.ok(!('anthropicEffort' in storage) && !('muninEffort' in storage)); // no Effort stored
-  assert.ok(!('anthropicBaseUrl' in storage) && !('muninBaseUrl' in storage)); // no Base URL stored
-  assert.strictEqual(await T.onApiKeyBlur(), null); // nothing waits: leaving the field again does nothing
-  // A model picked in the dropdown is stored at once.
-  T.el.modelSelect.value = 'claude-sonnet-5-5';
-  await T.onModelChange();
-  assert.strictEqual(storage.anthropicModel, 'claude-sonnet-5-5'); assert.strictEqual(state.settings.providers.anthropic.model, 'claude-sonnet-5-5');
-  // A bad key typed and the settings closed before the pause: stored on closing, the check's error goes to the chat.
-  T.el.chat.children.length = 0;
-  sandbox.fetch = async () => ({ ok: false, status: 401, text: async () => JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }) });
-  T.el.apiKey.value = 'sk-ant-BAD'; T.onApiKeyInput();
-  T.closeSettings();
-  assert.ok(T.el.settings.classList.contains('hidden'));
-  await new Promise((r) => setTimeout(r, 10));
-  assert.strictEqual(storage.anthropicApiKey, 'sk-ant-BAD'); assert.strictEqual(state.settings.providers.anthropic.apiKey, 'sk-ant-BAD');
-  assert.ok(T.el.chat.children.some((c) => c.classList.contains('settings-error') && /HTTP 401/.test(c.innerHTML)));
-  assert.ok(/^Could not get the model list/.test(T.el.modelStatus.textContent) && T.el.modelStatus.classList.contains('warn'));
-  // An emptied key is stored too, without a request.
-  T.openSettings();
-  verifyUrl = null;
-  T.el.apiKey.value = ''; T.onApiKeyInput(); await T.onApiKeyBlur();
-  assert.strictEqual(storage.anthropicApiKey, ''); assert.strictEqual(verifyUrl, null);
-  // "Check models" with a stale saved model and with a bad key
-  T.switchSettingsProvider('munin');
-  state.modelLists.munin = ['qwen3.8-27b'];
-  state.settings.providers.munin.model = 'gone-model';
-  T.renderModelOptions('munin', 'gone-model');
-  assert.strictEqual(T.el.modelSelect.value, 'gone-model');
-  modelCalls = [];
-  sandbox.fetch = async (url, init) => { modelCalls.push([url, init.headers.Authorization]); return modelsResponse(['qwen3.8-27b', 'qwen3.8-27b-fast']); };
-  await T.checkModels();
-  deq(modelCalls, [['https://api.muninai.org/v1/models', 'Bearer sk-munin-NEW']]);
-  assert.strictEqual(T.el.modelSelect.value, 'qwen3.8-27b');
-  assert.ok(/"gone-model" is not offered/.test(T.el.modelStatus.textContent) && /qwen3.8-27b is selected/.test(T.el.modelStatus.textContent) && T.el.modelStatus.classList.contains('warn'));
-  sandbox.fetch = async () => modelsResponse([], 401);
-  await T.checkModels();
-  assert.ok(/HTTP 401/.test(T.el.modelStatus.textContent) && T.el.modelStatus.classList.contains('warn'));
-  assert.strictEqual(T.el.modelSelect.value, 'qwen3.8-27b'); // unchanged on error
-  T.el.apiKey.value = '';
-  await T.checkModels();
-  assert.strictEqual(T.el.modelStatus.textContent, 'Enter the API key first.');
-  T.el.apiKey.value = 'sk-munin-NEW';
-  // Typing a key: debounced check that selects the first model; a check during a check is queued
-  T.el.modelSelect.value = 'qwen3.8-27b-fast';
-  modelCalls = [];
+test('a failed migration keeps the old keys for the next load (the other stale keys go)', async () => {
+  const e = await load({ legacySettings: false });
+  Object.assign(e.storage, { muninApiKey: 'k-old', muninModel: 'qwen3.8-27b', muninProvider: 'munin', muninModels: ['qwen3.8-27b'], muninConfirmEdits: true });
+  const set = e.chrome.storage.local.set;
+  e.chrome.storage.local.set = async () => { throw new Error('QUOTA_BYTES quota exceeded'); };
+  await e.T.loadSettings();
+  deq(e.state.settings.accounts, []);
+  for (const k of ['muninApiKey', 'muninModel', 'muninProvider', 'muninModels']) assert.ok(k in e.storage, k);
+  assert.ok(!('muninConfirmEdits' in e.storage)); // not a migration input
+  // storage works again: the next load migrates them and only then they go
+  e.chrome.storage.local.set = set;
+  await e.T.loadSettings();
+  deq(e.state.settings.accounts.map((a) => [a.id, a.apiKey]), [['munin', 'k-old']]);
+  for (const k of ['muninApiKey', 'muninModel', 'muninProvider', 'muninModels']) assert.ok(!(k in e.storage), k);
+});
+
+test('stored accounts are sanitized: unknown types dropped, ids and names unique, the URL only for Custom', async () => {
+  const e = await fresh({ muninAccounts: [
+    { id: 'a1', type: 'openai', name: 'Work', apiKey: ' sk-1 ', baseUrl: 'https://proxy.example.org/v1' },
+    { id: 'a2', type: 'openai', name: 'work', apiKey: 'sk-2' },
+    { id: 'a1', type: 'anthropic', name: 'dup id', apiKey: 'x' },
+    { id: 'a3', type: 'gemini', name: 'G', apiKey: 'g' },
+    { id: 'a4', type: 'munin', name: 'Lab/server', apiKey: 'k', baseUrl: 'https://lab.example.org/v1/', health: { down: true, error: 'HTTP 502', at: 5 } },
+    { id: 'a5', type: 'munin', name: '', apiKey: 'k2', baseUrl: 'https://api.muninai.org/v1' },
+    { id: 'a6', type: 'munin', name: 'Bad URL', apiKey: 'k3', baseUrl: 'not a url' },
+  ] });
+  deq(e.state.settings.accounts, [
+    { id: 'a1', type: 'openai', name: 'Work', apiKey: 'sk-1' },
+    { id: 'a2', type: 'openai', name: 'work 2', apiKey: 'sk-2' },
+    { id: 'a4', type: 'munin', name: 'Lab server', apiKey: 'k', health: { down: true, error: 'HTTP 502', at: 5 } }, // Munin's server is fixed: its URL is dropped
+    { id: 'a5', type: 'munin', name: 'Munin', apiKey: 'k2' },
+    { id: 'a6', type: 'munin', name: 'Bad URL', apiKey: 'k3' },
+  ]);
+});
+
+test('settings form: Add provider, two accounts of one type, keys checked after the pause, names unique, Remove at once', async () => {
+  const e = await fresh();
+  const { T: X, state: st, storage: store } = e;
+  const calls = [];
+  e.ctx.fetch = async (url, init) => { calls.push([url, init.headers.Authorization || init.headers['x-api-key']]); return modelsResponse(['gpt-6.1-sol', 'gpt-6-mini']); };
+  X.openSettings();
+  assert.strictEqual(X.settingsForm.rows.size, 0);
+  assert.strictEqual(X.el.accountList.children[0].textContent, 'No provider yet: add one below and paste its API key.');
+  const a = await X.addAccount('openai');
+  const b = await X.addAccount('openai');
+  deq([a.name, b.name], ['OpenAI', 'OpenAI 2']);
+  assert.notStrictEqual(a.id, b.id);
+  deq(store.muninAccounts.map((x) => [x.type, x.name, x.apiKey]), [['openai', 'OpenAI', ''], ['openai', 'OpenAI 2', '']]); // stored at once
+  const row = (id) => X.formRow(id);
+  assert.strictEqual(row(a.id).apiKey.placeholder, 'sk-...');
+  assert.ok(!row(a.id).keyHint.classList.contains('hidden')); // where to get a key, while there is none
+  assert.strictEqual(row(a.id).url, undefined); // the server URL is Munin's only
+  assert.strictEqual(row(a.id).modelSelect.disabled, true); // no list yet
+  // a key is stored after the typing pause, then checked with that key
+  row(a.id).apiKey.value = ' sk-ONE ';
+  X.onApiKeyInput(a.id);
+  assert.strictEqual(st.settings.accounts[0].apiKey, '');
+  await pause(800);
+  deq(calls, [['https://api.openai.com/v1/models', 'Bearer sk-ONE']]);
+  assert.strictEqual(st.settings.accounts[0].apiKey, 'sk-ONE');
+  assert.strictEqual(row(a.id).modelStatus.textContent, ''); // no text: the dot turns green
+  deq(st.modelLists[a.id], ['gpt-6.1-sol', 'gpt-6-mini']);
+  deq(store[`muninModels:${a.id}`], ['gpt-6.1-sol', 'gpt-6-mini']);
+  assert.strictEqual(row(a.id).modelSelect.disabled, false); // a pick there is the open chat's (test/dom/model-pick.test.js)
+  deq(st.settings.lastModel, { accountId: a.id, model: 'gpt-6.1-sol' }); // no account could answer before: the chat took this one
+  // the second account: its own key, left with blur
+  row(b.id).apiKey.value = 'sk-TWO';
+  X.onApiKeyInput(b.id);
+  await X.onApiKeyBlur(b.id);
+  deq(calls[1], ['https://api.openai.com/v1/models', 'Bearer sk-TWO']);
+  assert.strictEqual(await X.onApiKeyBlur(b.id), null); // nothing waits any more
+  // a name: cleaned, unique, stored
+  row(b.id).name.value = '  openai ';
+  await X.onNameChange(b.id);
+  assert.strictEqual(st.settings.accounts[1].name, 'openai 2');
+  row(b.id).name.value = 'Team/Lab';
+  await X.onNameChange(b.id);
+  assert.strictEqual(st.settings.accounts[1].name, 'Team Lab');
+  assert.strictEqual(row(b.id).name.value, 'Team Lab');
+  assert.strictEqual(store.muninAccounts[1].name, 'Team Lab');
+  // a wrong prefix warns
+  row(b.id).apiKey.value = 'wrong';
+  X.onApiKeyInput(b.id);
+  assert.ok(!row(b.id).keyWarn.classList.contains('hidden'));
+  await X.onApiKeyBlur(b.id);
+  // Remove removes the account at once: its key, its list and its row
+  assert.strictEqual(row(b.id).confirm, undefined); // no confirmation step
+  store[`muninModels:${b.id}`] = ['x'];
+  await X.removeAccount(b.id);
+  deq(st.settings.accounts.map((x) => x.id), [a.id]);
+  deq(store.muninAccounts.map((x) => x.id), [a.id]);
+  assert.ok(!(`muninModels:${b.id}` in store) && !(b.id in st.modelLists));
+  assert.strictEqual(X.settingsForm.rows.size, 1);
+  X.closeSettings();
+});
+
+test('settings form: closing stores the keys still waiting, their checks report in the chat; an emptied key is not checked', async () => {
+  const e = await fresh({ muninAccounts: [{ id: 'm1', type: 'munin', name: 'Munin', apiKey: '' }, { id: 'n1', type: 'anthropic', name: 'Anthropic', apiKey: 'sk-ant-OLD' }] });
+  const { T: X, state: st, storage: store } = e;
+  X.openSettings();
+  X.el.chat.children.length = 0;
+  e.ctx.fetch = async () => ({ ok: false, status: 401, text: async () => JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }) });
+  X.formRow('n1').apiKey.value = 'sk-ant-BAD';
+  X.onApiKeyInput('n1');
+  X.closeSettings();
+  assert.ok(X.el.settings.classList.contains('hidden'));
+  await pause();
+  assert.strictEqual(store.muninAccounts[1].apiKey, 'sk-ant-BAD');
+  assert.strictEqual(X.el.chat.children.filter((c) => c.classList.contains('settings-error') && /HTTP 401/.test(c.innerHTML)).length, 1);
+  assert.ok(/^Could not get the model list/.test(X.formRow('n1').modelStatus.textContent));
+  assert.strictEqual(st.settings.accounts[1].health, undefined); // a refused key is no outage
+  // a working key of the chat's account removes the "fix your settings" errors
+  X.openSettings();
+  e.ctx.fetch = async () => modelsResponse(['claude-opus-5-5']);
+  X.formRow('n1').apiKey.value = 'sk-ant-GOOD';
+  X.onApiKeyInput('n1');
+  await X.onApiKeyBlur('n1');
+  assert.ok(!X.el.chat.children.some((c) => c.classList.contains('settings-error')));
+  // an emptied key: stored, no request
+  let asked = false;
+  e.ctx.fetch = async () => { asked = true; return modelsResponse([]); };
+  X.formRow('m1').apiKey.value = '';
+  X.onApiKeyInput('m1');
+  await X.onApiKeyBlur('m1');
+  assert.strictEqual(asked, false);
+  assert.strictEqual(await X.checkModels('m1').then((r) => r.noKey), true);
+  assert.strictEqual(X.formRow('m1').modelStatus.textContent, 'Enter the API key first.');
+  // saveSettings (the panel goes away) stores a waiting key without a check
+  X.formRow('m1').apiKey.value = 'k-late';
+  X.onApiKeyInput('m1');
+  await X.saveSettings();
+  assert.strictEqual(store.muninAccounts[0].apiKey, 'k-late');
+  assert.strictEqual(asked, false);
+  X.closeSettings();
+});
+
+test('a check asked for during a check runs after it with the newest key', async () => {
+  const e = await fresh({ muninAccounts: [{ id: 'm1', type: 'munin', name: 'Munin', apiKey: 'k1' }] });
+  const { T: X } = e;
+  X.openSettings();
+  const calls = [];
   let release;
-  sandbox.fetch = async (url, init) => { modelCalls.push([url, init.headers.Authorization]); await new Promise((r) => { release = r; }); return modelsResponse(['m-first', 'm-second']); };
-  T.el.apiKey.value = 'typed-k';
-  T.onApiKeyInput();
-  T.el.apiKey.value = 'typed-key';
-  T.onApiKeyInput(); // resets the debounce: only one request
-  await new Promise((r) => setTimeout(r, 800));
-  deq(modelCalls, [['https://api.muninai.org/v1/models', 'Bearer typed-key']]);
-  assert.strictEqual(storage.muninApiKey, 'typed-key'); // stored after the pause, before the check answers
-  assert.ok(T.settingsForm.checking);
-  T.el.apiKey.value = 'typed-key2';
-  T.onApiKeyInput();
-  await new Promise((r) => setTimeout(r, 800));
-  assert.strictEqual(modelCalls.length, 1); // queued behind the running check
+  e.ctx.fetch = async (url, init) => { calls.push(init.headers.Authorization); await new Promise((r) => { release = r; }); return modelsResponse(['m-a', 'm-b']); };
+  const first = X.checkModels('m1');
+  X.formRow('m1').apiKey.value = 'k2';
+  const second = X.commitApiKey('m1'); // stores k2, then checks: queued behind the running check
+  await pause();
+  deq(calls, ['Bearer k1']);
   release();
-  await new Promise((r) => setTimeout(r, 10));
-  assert.strictEqual(modelCalls.length, 2); assert.strictEqual(modelCalls[1][1], 'Bearer typed-key2');
+  await first;
+  await pause();
+  deq(calls, ['Bearer k1', 'Bearer k2']);
   release();
-  await new Promise((r) => setTimeout(r, 10));
-  assert.strictEqual(T.el.modelSelect.value, 'm-first'); // first model selected after a key change
-  assert.ok(/^Connected to Munin: the key works\. 2 models available; m-first is selected/.test(T.el.modelStatus.textContent) && !T.el.modelStatus.classList.contains('warn'));
-  deq([storage.muninApiKey, storage.muninModel], ['typed-key2', 'm-first']);
-  assert.ok(T.el.keyWarn.classList.contains('hidden')); // Munin: no prefix warning
-  T.el.apiKey.value = 'sk-munin-NEW';
-  // Notices fade out after NOTICE_TTL_MS; errors stay
-  T.el.chat.children.length = 0;
-  timers.length = 0;
-  const notice = T.addNotice('Settings saved.');
-  const sticky = T.addNotice('Keep me', { sticky: true });
-  const err = T.addError('Boom', false);
-  const t = timers.find((x) => x.ms === T.NOTICE_TTL_MS);
-  assert.ok(t && timers.length === 1);
-  t.fn();
-  assert.ok(notice.classList.contains('fading'));
-  timers.find((x) => x.ms === 600).fn(); // fallback removal
-  deq(T.el.chat.children.map((c) => c.innerHTML), ['Keep me', 'Boom']);
-  assert.strictEqual(sticky.isConnected && err.isConnected, true);
-  // OpenAI: fixed endpoint, dropdown, filtered + sorted list, default model selected after a key change
-  state.settings.providers.openai.apiKey = '';
-  T.switchSettingsProvider('openai');
-  assert.strictEqual(T.el.modelStatus.textContent, '');
-  assert.strictEqual(T.el.modelSelect.value, ''); assert.strictEqual(T.el.modelSelect.disabled, true);
-  deq(T.openaiChatModels(['whisper-1', 'gpt-4o-realtime-preview', 'o4-mini', 'gpt-6.1-sol', 'gpt-6-astra', 'text-embedding-3-small', 'gpt-4.1-2025-04-14', 'gpt-image-1', 'o3', 'gpt-6-luna', 'dall-e-3', 'gpt-5.5', 'tts-1', 'gpt-5-codex', 'omni-moderation-latest', 'gpt-4-0613']),
-    ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.5', 'o4-mini', 'o3']);
-  modelCalls = [];
-  sandbox.fetch = async (url, init) => { modelCalls.push([url, init.headers.Authorization]); return modelsResponse(['whisper-1', 'o3', 'gpt-6-astra', 'gpt-6.1-sol']); };
-  T.el.apiKey.value = 'sk-OPENAI';
-  T.onApiKeyInput();
-  await new Promise((r) => setTimeout(r, 800));
-  deq(modelCalls, [['https://api.openai.com/v1/models', 'Bearer sk-OPENAI']]);
-  deq(state.modelLists.openai, ['gpt-6.1-sol', 'gpt-6-astra', 'o3']);
-  assert.strictEqual(T.el.modelSelect.value, 'gpt-6.1-sol'); // the default model, offered -> selected
-  sandbox.fetch = async () => modelsResponse(['custom-a', 'custom-b']); // a list without GPT models is kept as is
-  await T.checkModels({ selectFirst: true });
-  deq(state.modelLists.openai, ['custom-a', 'custom-b']); assert.strictEqual(T.el.modelSelect.value, 'custom-a');
-  T.switchSettingsProvider('munin');
-  // Anthropic model list request shape (provider-aware headers: x-api-key instead of a bearer token)
-  sandbox.fetch = async (url, init) => { assert.strictEqual(url, 'https://api.anthropic.com/v1/models?limit=100'); assert.strictEqual(init.headers['x-api-key'], 'sk-ant-NEW'); return { ok: true, status: 200, json: async () => ({ data: [{ id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5' }] }) }; };
-  deq(await T.fetchModelList('anthropic', { apiKey: 'sk-ant-NEW' }), ['claude-opus-5-5']);
-  T.el.settings.classList.add('hidden');
+  await second;
+  assert.strictEqual(X.formRow('m1').modelStatus.textContent, '');
+  X.closeSettings();
 });
 
-test('the modes: cycleApplyMode goes Manual -> Edit automatically -> Plan -> Manual, persisted, unknown values, disabled while busy', async () => {
+test('the type of an account changes until it has a key or a URL; a name of the old type follows, a name of its own stays', async () => {
+  const e = await fresh({ muninAccounts: [{ id: 'o1', type: 'openai', name: 'OpenAI', apiKey: 'sk-x' }] });
+  const { T: X, state: st, storage: store } = e;
+  X.openSettings();
+  const a = await X.addAccount('openai');
+  assert.strictEqual(a.name, 'OpenAI 2');
+  assert.ok(!X.formRow(a.id).typeSelect.classList.contains('hidden') && X.formRow(a.id).typeFixed.classList.contains('hidden'));
+  assert.ok(X.formRow('o1').typeSelect.classList.contains('hidden')); // keyed: the type is text
+  assert.strictEqual(X.formRow('o1').typeFixed.textContent, 'OpenAI');
+  assert.strictEqual(await X.changeAccountType('o1', 'munin'), false);
+  // no key, no URL: the type changes; the old type's leftovers go; the name follows
+  a.model = 'gpt-6-mini';
+  st.modelLists[a.id] = ['gpt-6-mini'];
+  store[`muninModels:${a.id}`] = ['gpt-6-mini'];
+  assert.strictEqual(await X.changeAccountType(a.id, 'custom'), true);
+  const stored = () => store.muninAccounts.find((x) => x.id === a.id);
+  deq([stored().type, stored().name, stored().model], ['custom', 'Custom', undefined]);
+  assert.ok(!(`muninModels:${a.id}` in store));
+  deq(st.modelLists[a.id], []);
+  const r = X.formRow(a.id);
+  assert.ok(r.url && r.block.dataset.provider === 'custom'); // the row follows the type: the URL field, the key hint
+  assert.strictEqual(r.keyHint.textContent, X.PROVIDERS.custom.keyHint);
+  assert.strictEqual(r.typeSelect.value, 'custom');
+  // a name of its own stays
+  r.name.value = 'Lab';
+  await X.onNameChange(a.id);
+  await X.changeAccountType(a.id, 'anthropic');
+  deq([stored().type, stored().name], ['anthropic', 'Lab']);
+  // a typed key fixes it at once (before the pause), the stored key too
+  X.formRow(a.id).apiKey.value = 'sk-ant-k';
+  X.onApiKeyInput(a.id);
+  assert.ok(X.formRow(a.id).typeSelect.classList.contains('hidden'));
+  assert.strictEqual(await X.changeAccountType(a.id, 'munin'), false);
+  assert.strictEqual(stored().type, 'anthropic');
+  await X.saveSettings();
+  X.closeSettings();
+});
+
+test('the modes: cycleApplyMode goes Manual -> Auto -> Plan -> Manual, persisted, unknown values, disabled while busy', async () => {
   C2.applyApplyMode('manual');
   assert.strictEqual(state.applyMode, 'manual');
   assert.strictEqual(T.el.modeLabel.textContent, 'Manual');
-  assert.strictEqual(T.el.modeCycle.title, 'Choose how the assistant works');
+  assert.strictEqual(T.el.modeCycle.dataset.tip, 'Choose the mode');
   const seen = [];
   for (let i = 0; i < 3; i++) {
     await C2.cycleApplyMode();
     seen.push([state.applyMode, storage.muninApplyMode, T.el.modeLabel.textContent, T.el.modeCycle.dataset.mode]);
   }
-  deq(seen, [['auto', 'auto', 'Edit automatically', 'auto'], ['plan', 'plan', 'Plan', 'plan'], ['manual', 'manual', 'Manual', 'manual']]);
-  deq([C2.isAutoMode(), C2.isPlanMode(), C2.applyTurnMode()], [false, false, 'manual']);
+  deq(seen, [['auto', 'auto', 'Auto', 'auto'], ['plan', 'plan', 'Plan', 'plan'], ['manual', 'manual', 'Manual', 'manual']]);
+  // Manual and Auto both run editing turns (Manual asks before each write: turn.js snap.askEdits)
+  deq([C2.isAutoMode(), C2.isPlanMode(), C2.applyTurnMode()], [false, false, 'edit']);
   await C2.setApplyMode('auto'); deq([C2.isAutoMode(), C2.isPlanMode(), C2.applyTurnMode()], [true, false, 'edit']);
   await C2.setApplyMode('plan'); deq([C2.isAutoMode(), C2.isPlanMode(), C2.applyTurnMode()], [false, true, 'plan']);
+  deq(['manual', 'auto', 'plan', 'x'].map((m) => C2.applyTurnMode(m)), ['edit', 'edit', 'plan', 'edit']);
+  // the mode a stored message was sent with (Continue, the chat export)
+  deq([{ role: 'user', _mode: 'edit', _asks: true }, { role: 'user', _mode: 'edit' }, { role: 'user', _mode: 'plan' }, { role: 'user', _mode: 'manual' },
+    { role: 'user', _persona: 'research' }, { role: 'assistant', _mode: 'edit' }, null].map((m) => C2.sentApplyMode(m)), ['manual', 'auto', 'plan', 'manual', null, null, null]);
   storage.muninApplyMode = 'plan'; await C2.loadApplyMode(); assert.strictEqual(state.applyMode, 'plan');
   await C2.setApplyMode('manual');
   assert.strictEqual(storage.muninApplyMode, 'manual'); assert.strictEqual(C2.APPLY_MODE_KEY, 'muninApplyMode');
@@ -247,39 +302,40 @@ test('the modes: cycleApplyMode goes Manual -> Edit automatically -> Plan -> Man
   assert.strictEqual(T.el.modeCycle.disabled, false);
 });
 
-test('dead settings UI is gone: no Base URL / Model text inputs, no model hint', async () => {
+
+test('no fading notices: addNotice, dismissLater and NOTICE_TTL_MS are gone; an error stays, with no timer', () => {
+  T.el.chat.children.length = 0;
+  timers.length = 0;
+  const err = T.addError('Boom', false);
+  assert.strictEqual(timers.length, 0);
+  deq(T.el.chat.children.map((c) => c.innerHTML), ['Boom']);
+  assert.strictEqual(err.isConnected, true);
+  for (const name of ['addNotice', 'dismissLater', 'NOTICE_TTL_MS']) assert.strictEqual(env.run(`typeof ${name}`), 'undefined', name);
+  // nowhere in the panel's sources or styles either
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { ROOT } = require('./lib/sandbox');
+  const files = ['sidepanel.css', 'sidepanel.html', ...fs.readdirSync(path.join(ROOT, 'src'), { recursive: true })
+    .filter((f) => f.endsWith('.js')).map((f) => path.join('src', f))];
+  for (const f of files) {
+    const text = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    assert.ok(!/\baddNotice\b|\bdismissLater\b|\bNOTICE_TTL_MS\b|\.fading\b|msg\.notice|'notice'/.test(text), f);
+  }
+});
+
+test('dead settings UI is gone: no Chat provider dropdown, no fixed per-type blocks, no Base URL / Model text inputs', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const { ROOT } = require('./lib/sandbox');
   const html = fs.readFileSync(path.join(ROOT, 'sidepanel.html'), 'utf8');
-  for (const id of ['baseUrl', 'baseUrlLabel', 'model', 'modelLabel', 'modelHint']) assert.ok(!html.includes(`id="${id}"`), id);
-  assert.ok(html.includes('id="modelSelect"'));
+  for (const id of ['provider', 'baseUrl', 'baseUrlLabel', 'model', 'modelLabel', 'modelHint', 'modelSelect-munin', 'apiKey-openai', 'block-anthropic']) assert.ok(!html.includes(`id="${id}"`), id);
+  assert.ok(html.includes('id="accountList"'));
+  assert.ok(html.includes('id="addProviderBtn"') && !html.includes('id="addProviderMenu"')); // one Add provider button, no menu of types
+  assert.ok(!/id="addProvider-/.test(html)); // no per-type buttons
   const src = fs.readFileSync(path.join(ROOT, 'src', 'settings.js'), 'utf8');
-  assert.ok(!/el\.(baseUrl|baseUrlLabel|modelLabel|modelHint|model)\b/.test(src));
+  assert.ok(!/el\.(provider|providerForms|baseUrl|modelLabel|modelHint|model)\b/.test(src));
+  assert.ok(!/setChatProvider|keyedProvider/.test(src));
   assert.ok(Object.values(T.PROVIDERS).every((p) => !('modelHint' in p)));
-});
-
-test('settings migration: a stored Base URL is ignored and removed silently, the other fields are kept', async () => {
-  Object.assign(storage, { openaiBaseUrl: 'https://proxy.example.com/v1', anthropicBaseUrl: 'https://api.anthropic.com/v1', muninBaseUrl: '', muninConfirmEdits: false, muninDocMode: 'outline', openaiModel: 'gpt-6-astra' });
-  T.el.chat.children.length = 0;
-  await T.loadSettings();
-  for (const k of ['openaiBaseUrl', 'anthropicBaseUrl', 'muninBaseUrl', 'muninConfirmEdits', 'muninDocMode']) assert.ok(!(k in storage), k);
-  deq(state.settings.providers.openai, { apiKey: state.settings.providers.openai.apiKey, model: 'gpt-6-astra' });
-  assert.strictEqual(T.apiUrl({ prov: T.PROVIDERS.openai, cfg: state.settings.providers.openai }, '/responses'), 'https://api.openai.com/v1/responses');
-  assert.strictEqual(T.el.chat.children.length, 0); // silently
-});
-
-test('settings migration: a stored Effort is ignored and removed silently, the other fields are kept', async () => {
-  Object.assign(storage, { muninEffort: '', openaiEffort: 'high', anthropicEffort: 'low', openaiModel: 'gpt-6-astra', anthropicModel: 'claude-sonnet-5-5' });
-  T.el.chat.children.length = 0;
-  await T.loadSettings();
-  for (const k of ['muninEffort', 'openaiEffort', 'anthropicEffort']) assert.ok(!(k in storage), k);
-  deq(state.settings.providers.openai, { apiKey: state.settings.providers.openai.apiKey, model: 'gpt-6-astra' });
-  deq(state.settings.providers.anthropic, { apiKey: state.settings.providers.anthropic.apiKey, model: 'claude-sonnet-5-5' });
-  assert.strictEqual(storage.openaiModel, 'gpt-6-astra'); assert.strictEqual(storage.anthropicModel, 'claude-sonnet-5-5');
-  // A settings object of an earlier version that still carries effort is sanitized without it.
-  deq(T.sanitizeProviderSettings('anthropic', { apiKey: ' sk-ant-OLD ', model: 'claude-opus-5-5', effort: 'high' }), { apiKey: 'sk-ant-OLD', model: 'claude-opus-5-5' });
-  assert.strictEqual(T.el.chat.children.length, 0); // silently
 });
 
 test('Anthropic model list: limit=100, pages followed with after_id (at most 5)', async () => {

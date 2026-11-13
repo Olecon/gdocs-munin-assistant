@@ -12,10 +12,10 @@
    flaggedFindings, findingsMarkdown, findingsCard, findingsWhenIdle */
 
 const FINDINGS_PARSE_ERROR = 'The review did not come back as findings.';
-// Display order and labels of the groups (findingGroup).
+// Display order, labels and marks (the colour of the row's dot, CSS .mk; no emoji) of the groups (findingGroup).
 const FINDING_GROUPS = [
-  ['critical', 'Critical', '⛔'], ['major', 'Major', '⚠️'], ['minor', 'Minor', '•'], ['ok', 'Supported', '✅'],
-  ['unverified', 'Unverified: quote not found', '❔'],
+  ['critical', 'Critical', 'fail'], ['major', 'Major', 'warn'], ['minor', 'Minor', 'note'], ['ok', 'Supported', 'ok'],
+  ['unverified', 'Unverified: quote not found', 'skip'],
 ];
 const SEVERITY_ALIASES = {
   critical: ['critical', 'blocker', 'severe', 'fatal', 'high'], major: ['major', 'medium', 'moderate', 'important', 'serious'],
@@ -303,7 +303,7 @@ function fdLineLink(line, text, verified) {
   b.type = 'button';
   b.className = 'btn small ghost finding-line';
   b.textContent = `line ${line}`;
-  b.title = 'Show this line in the document';
+  b.dataset.tip = 'Show in the document';
   b.addEventListener('click', () => { try { scrollToLine(line, text); } catch (e) { /* the tab may be gone */ } });
   return b;
 }
@@ -312,8 +312,11 @@ function fdRow(f, labels) {
   const g = findingGroup(f);
   const row = fdDiv(`st-row finding finding-${g}${g === 'critical' || g === 'unverified' ? ' st-fail' : ''}`);
   const icon = document.createElement('span');
-  icon.className = 'st-icon';
-  icon.textContent = FINDING_GROUPS.find((x) => x[0] === g)[2];
+  const [, label, mark] = FINDING_GROUPS.find((x) => x[0] === g);
+  icon.className = `st-icon mk ${mark}`;
+  icon.setAttribute('role', 'img');
+  icon.setAttribute('aria-label', label);
+  icon.dataset.tip = label;
   const name = document.createElement('span');
   name.className = 'st-name';
   name.textContent = fdCriterionLabel(f.criterion, labels);
@@ -340,7 +343,7 @@ function fdRow(f, labels) {
 function findingsCard(result, { title = 'Findings', labels = null, actions = [] } = {}) {
   const list = result.findings || [];
   const card = fdDiv('selftest findings-card');
-  card.appendChild(fdDiv('st-head', `📋 ${title}`));
+  card.appendChild(fdDiv('st-head', title));
   card.appendChild(fdDiv('st-sub', list.length ? fdGroupCounts(list) : 'No findings.'));
   const crit = Object.entries(result.criteria || {});
   if (crit.length) {
@@ -356,7 +359,7 @@ function findingsCard(result, { title = 'Findings', labels = null, actions = [] 
   copy.type = 'button';
   copy.className = 'btn small';
   copy.dataset.act = 'copy-msg';
-  copy.title = 'Copy the findings as Markdown';
+  copy.dataset.tip = 'Copy as Markdown';
   copy.textContent = 'Copy';
   bar.appendChild(copy);
   for (const a of actions) bar.appendChild(a);

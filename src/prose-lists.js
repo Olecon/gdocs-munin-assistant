@@ -14,7 +14,7 @@
 // "stop words" method). Full licence texts: vendor/NOTICES.txt.
 /* exported PROSE_TELLS, PROSE_TELL_ORDER */
 
-const PROSE_TELL_ORDER = ['chat', 'staging', 'tail', 'opener', 'stock', 'filler', 'hedge', 'wordy', 'redundant'];
+const PROSE_TELL_ORDER = ['chat', 'markdown', 'staging', 'tail', 'opener', 'stock', 'filler', 'hedge', 'wordy', 'redundant'];
 
 // Plural "данные" is the demonstrative ("эти") only before a noun in the same case ("данные образцы", "в данных
 // условиях", "данным методом"); before a genitive it is the noun "data" ("данные эксперимента", "данные
@@ -52,6 +52,12 @@ const PROSE_TELLS = {
     ['если (?:нужно|хотите), (?:я )?(?:могу|смогу)', 'drop it'],
     ['отличный вопрос', 'drop it'],
     ['как (?:языковая модель|ии-ассистент)', 'drop it'],
+  ],
+  // Markdown a chat answer would use: the document gets plain text (edit rule 5), formatting has its own tools.
+  markdown: [
+    ['\\*\\*[^*\\n]{1,80}\\*\\*', 'plain text; bold with format_text'],
+    ['(?:^|(?<=\\n))#{1,6} \\p{L}+', 'plain text; a heading with format_lines'],
+    ['`[^`\\n]{1,60}`', 'plain text, no backticks'],
   ],
   // "not X but Y" staging: the contrast is usually a straw man.
   staging: [

@@ -8,15 +8,18 @@
 
 // The built-in pre-submission report (not a persona): /check runs the deterministic checks on the open document
 // without a model call (runCheck in src/check.js); anything typed after it is ignored.
+// /polish (runPolish in src/polish.js) lists prose fixes for the selection, a section named after it or a short document.
 const CHECK_COMMANDS = {
-  check: { emoji: '☑️', desc: 'Pre-submission report: acronyms, figures, citations, budgets, placeholders; no model call' },
+  check: { desc: 'Pre-submission report: acronyms, figures, citations, budgets, placeholders; no model call' },
+  polish: { desc: 'Prose fixes for the selection or a section, each with Apply' },
 };
 const CHECK_RE = /^\/check(?=\s|$)/i;
+const POLISH_RE = /^\/polish(?=\s|$)/i;
 
 // A command of PERSONAS with muninOnly (/code) needs the Munin provider (PROVIDERS[…].personas). commandUnavailable
 // gives the popup row's note ('' when the command works now); a typed one is refused with MUNIN_ONLY_NOTICE (startTurn).
 const MUNIN_ONLY_NOTE = 'Munin only';
-const MUNIN_ONLY_NOTICE = (name) => `/${name} works with the Munin provider only. Switch the provider in the settings or use /chat.`;
+const MUNIN_ONLY_NOTICE = (name) => `/${name} works with a Munin model only. Choose one for this chat under the input box, or use /chat.`;
 function commandUnavailable(name) {
   const p = PERSONAS[name];
   return p && p.muninOnly && !activeProvider().personas ? MUNIN_ONLY_NOTE : '';
@@ -27,11 +30,14 @@ function commandUnavailable(name) {
 // when there is no known command (unknown "/words" are sent as ordinary text). The built-in /test
 // (SELFTEST_RE) gives { persona: null, selftest: true, text: '' } (anything typed after it is ignored); the
 // built-in /side (SIDE_RE) gives { persona: null, side: true, text } (the side question, '' when none); /check (CHECK_RE)
-// gives { persona: null, check: true, text: '' }.
+// gives { persona: null, check: true, text: '' }; /polish (POLISH_RE) { persona: null, polish: true, text } (a section's
+// heading, '' when none).
 function parseSlashCommand(raw) {
   const s = String(raw || '').replace(/^\s+/, '');
   if (SELFTEST_RE.test(s)) return { persona: null, selftest: true, text: '' };
   if (CHECK_RE.test(s)) return { persona: null, check: true, text: '' };
+  const polish = POLISH_RE.exec(s);
+  if (polish) return { persona: null, polish: true, text: s.slice(polish[0].length).trim() };
   const side = SIDE_RE.exec(s);
   if (side) return { persona: null, side: true, text: s.slice(side[0].length).trim() };
   const m = COMMAND_RE.exec(s);
@@ -79,7 +85,7 @@ function updatePopup() {
   renderPopup();
 }
 
-// The popup lists the personas, then the built-in /side, /check and /test commands.
+// The popup lists the personas, then the built-in /side, /check, /polish and /test commands.
 const popupNames = () => [...Object.keys(PERSONAS), ...Object.keys(SIDE_COMMANDS), ...Object.keys(CHECK_COMMANDS), ...Object.keys(SELFTEST_COMMANDS)];
 // The first row that can be picked (a dimmed /code is skipped by the highlight).
 const firstEnabled = (items) => Math.max(0, items.findIndex((name) => !commandUnavailable(name)));
@@ -99,16 +105,13 @@ function renderPopup() {
     row.setAttribute('aria-selected', String(!note && i === popup.index));
     if (note) row.setAttribute('aria-disabled', 'true');
     row.dataset.idx = String(i);
-    const emoji = document.createElement('span');
-    emoji.className = 'cmd-emoji';
-    emoji.textContent = p.emoji;
     const cmd = document.createElement('span');
     cmd.className = 'cmd-name';
     cmd.textContent = '/' + name;
     const desc = document.createElement('span');
     desc.className = 'cmd-desc';
     desc.textContent = p.desc;
-    row.append(emoji, cmd, desc);
+    row.append(cmd, desc);
     if (note) {
       const tag = document.createElement('span');
       tag.className = 'cmd-note';
@@ -236,17 +239,14 @@ function renderZoteroRows(box) {
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', String(i === popup.index));
     row.dataset.idx = String(i);
-    row.title = `${it.who} (${it.year}). ${it.title}`;
-    const icon = document.createElement('span');
-    icon.className = 'cmd-emoji';
-    icon.textContent = '📚';
+    row.dataset.tip = `${it.who} (${it.year}). ${it.title}`;
     const who = document.createElement('span');
     who.className = 'cmd-name';
     who.textContent = `${it.who} ${it.year}`;
     const title = document.createElement('span');
     title.className = 'cmd-desc';
     title.textContent = it.title;
-    row.append(icon, who, title);
+    row.append(who, title);
     box.appendChild(row);
   });
   box.classList.remove('hidden');

@@ -1,13 +1,14 @@
 'use strict';
 // Module docs-style.js: formatting vocabularies and pure helpers shared by the line model (docs-model.js)
 // and the formatting tools: names <-> Docs API values (headings, alignment, lists, colors, fonts), loose
-// value parsers for tool arguments, and the read_formatting notation pieces (line tags, span attributes).
+// value parsers for tool arguments, and the formatting notation pieces (line tags, span attributes).
 // Constants and pure functions only; loaded right after constants.js.
 /* exported HEADING_STYLES, headingName, ALIGN_API, alignToApi, alignName, LIST_PRESETS, NUMBER_GLYPH_TYPES,
    listKind, COLOR_NAMES, LINK_COLOR, KNOWN_FONTS, knownFont, parseColor, hexFromRgbColor, hexFromOptionalColor,
    apiColor, dimensionPt, ptDimension, parsePt, parseSize, lineSpacingPercent, lineSpacingMultiplier,
    parseLineSpacing, parseHeading, parseAlign, parseListKind, TEXT_STYLE_API_FIELDS, numText, lineTag, spanAttrs,
-   unmarkedNote */
+   unmarkedNote, PARA_CONTROL_KEYS, BOX_FIELDS, paraControls, boxKind, parseBox, boxParagraphStyle, priorParaStyle, LENGTH_UNITS_PT,
+   parseLength */
 
 // ---- Vocabularies ------------------------------------------------------------------------------
 // Paragraph style names of format_lines -> namedStyleType.
@@ -128,6 +129,77 @@ const parseLineSpacing = (v) => {
   return m[2] || n >= 50 ? { value: n / 100, percent: true } : { value: n, percent: false };
 };
 
+// ---- Paragraph controls ------------------------------------------------------------------------
+// The boolean paragraph controls of updateParagraphStyle (pagination), and the fields a box (format_lines box) writes.
+const PARA_CONTROL_KEYS = ['pageBreakBefore', 'keepWithNext', 'keepLinesTogether', 'avoidWidowAndOrphan'];
+const BOX_FIELDS = ['shading', 'borderTop', 'borderBottom', 'borderLeft', 'borderRight', 'borderBetween'];
+const BOX_SIDES = ['borderTop', 'borderBottom', 'borderLeft', 'borderRight'];
+// The fixed look of a box: light grey shading; a thin grey border with a small padding.
+const BOX_SHADE = '#F2F2F2';
+const BOX_BORDER = '#BFBFBF';
+const BOX_BORDER_PT = 0.75;
+const BOX_PADDING_PT = 4;
+const boxBorder = () => ({ color: apiColor(BOX_BORDER), width: ptDimension(BOX_BORDER_PT), padding: ptDimension(BOX_PADDING_PT), dashStyle: 'SOLID' });
+// A border that draws (a width above 0), a shading with a color.
+const drawnBorder = (b) => !!b && (dimensionPt(b.width) || 0) > 0;
+const coloredShading = (s) => !!hexFromOptionalColor(s && s.backgroundColor);
+// The paragraph controls a paragraphStyle sets, for the line model (paraFields): the booleans as set, indentEnd in pt,
+// and the box fields as the API gives them, only when they show (a border with a width, a shading with a color), so
+// undo can write them back exactly and an invisible default reads as none.
+function paraControls(ps = {}) {
+  const out = {};
+  for (const k of PARA_CONTROL_KEYS) if (typeof ps[k] === 'boolean') out[k] = ps[k];
+  const ie = dimensionPt(ps.indentEnd);
+  if (ie != null) out.indentEnd = ie;
+  for (const k of BOX_FIELDS) {
+    const v = ps[k];
+    if (k === 'shading' ? coloredShading(v) : drawnBorder(v)) out[k] = JSON.parse(JSON.stringify(v));
+  }
+  return out;
+}
+// The box a paragraph shows (its para fields): 'bordered' (all four sides drawn), 'shaded', 'bordered shaded', or ''.
+function boxKind(p = {}) {
+  const sides = BOX_SIDES.every((k) => drawnBorder(p[k]));
+  const shade = coloredShading(p.shading);
+  return [sides ? 'bordered' : '', shade ? 'shaded' : ''].filter(Boolean).join(' ');
+}
+// A box argument -> shaded / bordered / none, or null. Also "shading", "grey", "border", "borders", "frame", "remove".
+function parseBox(v) {
+  const s = looseKey(v);
+  const map = { shaded: 'shaded', shade: 'shaded', shading: 'shaded', grey: 'shaded', gray: 'shaded', bordered: 'bordered',
+    border: 'bordered', borders: 'bordered', frame: 'bordered', framed: 'bordered', boxed: 'bordered', box: 'bordered',
+    none: 'none', remove: 'none', off: 'none', no: 'none', plain: 'none' };
+  return map[s] || null;
+}
+// The updateParagraphStyle of a box: every box field is in the mask, the ones the box does not draw are reset (so shaded
+// replaces a border and none removes both). Borders are written whole (the API takes no partial border).
+function boxParagraphStyle(kind) {
+  const ps = {};
+  if (kind === 'shaded') ps.shading = { backgroundColor: apiColor(BOX_SHADE) };
+  if (kind === 'bordered') for (const k of BOX_SIDES) ps[k] = boxBorder();
+  return { paragraphStyle: ps, fields: BOX_FIELDS.slice() };
+}
+// The paragraphStyle that puts back the values para p (the line model's para) had for fields (API names); a field p does
+// not set is left out, so the request resets it and the paragraph inherits again. namedStyleType is the caller's.
+function priorParaStyle(p = {}, fields = []) {
+  const ps = {};
+  for (const f of fields) {
+    if (f === 'alignment') { if (p.align) ps.alignment = alignToApi(p.align, p.direction); } else if (f === 'lineSpacing') { if (p.lineSpacing != null) ps.lineSpacing = p.lineSpacing; } else if (['indentStart', 'indentFirstLine', 'indentEnd', 'spaceAbove', 'spaceBelow'].includes(f)) { if (p[f] != null) ps[f] = ptDimension(p[f]); } else if (p[f] !== undefined && f !== 'namedStyleType') ps[f] = JSON.parse(JSON.stringify(p[f]));
+  }
+  return ps;
+}
+
+// ---- Lengths -----------------------------------------------------------------------------------
+// Points per unit of a length in the formatting sheet's page entry.
+const LENGTH_UNITS_PT = { cm: 72 / 2.54, mm: 72 / 25.4, in: 72, inch: 72, inches: 72, '"': 72, pt: 1 };
+// "2.5cm", "2,5 cm", "1in", "72pt", "2" (unit: def) -> points rounded to 0.01, or null.
+function parseLength(v, def = 'cm') {
+  const m = /^\s*(\d+(?:[.,]\d+)?)\s*(cm|mm|inches|inch|in|"|pt)?\s*$/i.exec(String(v == null ? '' : v));
+  if (!m) return null;
+  const unit = (m[2] || def).toLowerCase();
+  return Math.round(Number(m[1].replace(',', '.')) * LENGTH_UNITS_PT[unit] * 100) / 100;
+}
+
 // ---- Loose names -------------------------------------------------------------------------------
 const looseKey = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/[\s_-]+/g, ' ');
 // A style argument -> a HEADING_STYLES key or null. Accepts "Heading 1", "heading1", "H1", "#", "##",
@@ -161,29 +233,47 @@ function parseListKind(v) {
 
 // format_text property -> the updateTextStyle field it writes.
 const TEXT_STYLE_API_FIELDS = { bold: 'bold', italic: 'italic', underline: 'underline', font: 'weightedFontFamily',
-  size: 'fontSize', color: 'foregroundColor', highlight: 'backgroundColor', link: 'link' };
+  size: 'fontSize', color: 'foregroundColor', highlight: 'backgroundColor', script: 'baselineOffset', link: 'link' };
 
 // ---- Notation ----------------------------------------------------------------------------------
 // A number as shown in tags and spans: at most two decimals, no trailing zeros.
 const numText = (n) => String(Math.round(n * 100) / 100);
-// The line tag of read_formatting (without brackets), '' for a plain left-aligned paragraph. line: a line
+// The line tag of the formatting notation (without brackets), '' for a plain left-aligned paragraph. line: a line
 // of the model ({style, list, para}). Order: style, list (L2.. for nesting), alignment, indent start/first
-// (not on list lines), space above/below ("-" = inherited), line spacing.
+// (see showIndent), space above/below ("-" = inherited), line spacing, the end indent, a box, a page break before.
+// A line's indent is shown when the paragraph sets one; in a list only when it differs from the list level's own
+// indents (an ordinary list item repeats them; a numbered heading, numberIndent in headings.js, does not). A heading in a
+// list with no indent of its own reads "indent style": Docs draws it at its named style's indent, not its list level's
+// (format_lines indent "style" makes a line so), and headings' indents get compared. A body list item without one keeps
+// no tag: Docs gives list items made in the editor or by createParagraphBullets their level's indents.
+function showIndent(line) {
+  const p = line.para || {};
+  if (!line.list) return !!(p.indentStart || p.indentFirstLine);
+  if (line.numberIndent) return false; // the numbering's own indents (headings.js numberingShown)
+  if (p.indentStart == null && p.indentFirstLine == null) return !!headingName(line.style);
+  const li = line.list.indent;
+  return !li || (p.indentStart || 0) !== (li.start || 0) || (p.indentFirstLine || 0) !== (li.first || 0);
+}
 function lineTag(line) {
   const out = [];
   const h = headingName(line.style);
-  if (h) out.push(h);
+  if (h) out.push(line.docTitle ? `${h} title` : h); // docTitle: set by the read_document view (tools.js linesView)
   if (line.list) out.push(line.list.kind + (line.list.level > 0 ? ` L${line.list.level + 1}` : ''));
   const p = line.para || {};
   if (p.align && p.align !== 'left') out.push(p.align);
   const show = (v) => (v == null ? '-' : numText(v));
-  if (!line.list && (p.indentStart || p.indentFirstLine)) out.push(`indent ${show(p.indentStart)}/${show(p.indentFirstLine)}`);
+  if (showIndent(line)) out.push(p.indentStart == null && p.indentFirstLine == null ? 'indent style' : `indent ${show(p.indentStart)}/${show(p.indentFirstLine)}`);
   if (p.spaceAbove || p.spaceBelow) out.push(`space ${show(p.spaceAbove)}/${show(p.spaceBelow)}`);
   if (p.lineSpacing != null) out.push(`line ${numText(lineSpacingMultiplier(p.lineSpacing))}`);
+  if (p.indentEnd) out.push(`indent-end ${numText(p.indentEnd)}`);
+  const box = boxKind(p);
+  if (box) out.push(box);
+  if (p.pageBreakBefore) out.push('page-break');
   return out.join(' ');
 }
 // The attributes of a {text}(…) span: the run's font, size, color and background that differ from the
-// document default def ({font, size, color}, missing = none); '' when nothing is to be shown.
+// document default def ({font, size, color}, missing = none), and a superscript or subscript as format_text names it
+// (script=super, script=sub); '' when nothing is to be shown.
 function spanAttrs(run, def) {
   const d = def || {};
   const out = [];
@@ -191,14 +281,18 @@ function spanAttrs(run, def) {
   if (run.size != null && run.size !== d.size) out.push(`size=${numText(run.size)}`);
   if (run.color && run.color !== d.color && !(run.link && run.color === LINK_COLOR)) out.push(`color=${run.color}`);
   if (run.bg) out.push(`bg=${run.bg}`);
+  if (run.script) out.push(`script=${run.script}`);
   return out.join(' ');
 }
-// " Unmarked text: Arial 11." for the read_formatting header, '' without a default.
-function unmarkedNote(def) {
-  if (!def) return '';
+// " Unmarked text: Arial 11." for the formatting view header, '' without a default. colors: [[namedStyleType, '#RRGGBB']]
+// of the styles whose text shows another colour (style-sheet.js unmarkedColors): " Unmarked text: Arial 11; h4 text
+// #666666 (named style)." (a grey heading otherwise reads as black text).
+function unmarkedNote(def, colors = []) {
   const parts = [];
-  if (def.font) parts.push(def.font);
-  if (def.size != null) parts.push(def.font ? numText(def.size) : `size ${numText(def.size)}`);
-  if (def.color) parts.push(def.color);
-  return parts.length ? ` Unmarked text: ${parts.join(' ')}.` : '';
+  if (def && def.font) parts.push(def.font);
+  if (def && def.size != null) parts.push(def.font ? numText(def.size) : `size ${numText(def.size)}`);
+  if (def && def.color) parts.push(def.color);
+  const styled = colors.length ? `${colors.map(([t, c]) => `${headingName(t)} text ${c}`).join(', ')} (named style${colors.length > 1 ? 's' : ''})` : '';
+  const all = [parts.join(' '), styled].filter(Boolean);
+  return all.length ? ` Unmarked text: ${all.join('; ')}.` : '';
 }

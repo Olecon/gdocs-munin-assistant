@@ -1,15 +1,15 @@
 'use strict';
 // Module main.js: buttons under messages, tab context (refreshContext), the resizable bottom pane and
 // the initialization (bindUi, init). Loaded last: it wires the events and starts the panel.
-/* global $, activeConfig, activeProvider, addError, applyTheme, applyToDocument, bindChatMenu, bindModeMenu, bindPopup, runTurnHooks,
-   CHAT_MIN_HEIGHT, checkModels, continueFromButton, doPlanFromButton, closeChatMenu, closeInstructions, closeSettings, connectGoogle, createChat, decidePreview,
-   discardQueued, disconnectGoogle, docIdFromUrl, docLineReady, docStatusText, editQueued, el, getDocTab, handlePopupKey, HOST_TAB_ID, INPUT_HEIGHT_DEFAULT,
+/* global bindAgentMap, $, canRequest, accounts, activeConfig, bindModelMenu, chatAccount, addError, bindAttachments, applyTheme, applyToDocument, bindChatMenu, bindModeMenu, bindPopup, bindSettingsForm, runTurnHooks,
+   CHAT_MIN_HEIGHT, continueFromButton, doPlanFromButton, closeChatMenu, closeFiles, closeSettings, connectGoogle, createChat, decidePreview,
+   discardQueued, disconnectGoogle, migrateChatFiles, readDocFiles, docIdFromUrl, docLineReady, docStatusText, editQueued, el, getDocTab, handlePopupKey, HOST_TAB_ID, INPUT_HEIGHT_DEFAULT,
    INPUT_HEIGHT_KEY, INPUT_HEIGHT_MIN, INPUT_ROW_MIN, loadApplyMode, loadChatStore, loadSettings, loadTheme,
-   onApiKeyBlur, onApiKeyInput, onChatCopy, onInstructionsInput, onModelChange, onRuntimeMessage, openInstructions, openSettings, positionPopup, queueInput, readDocInstructions,
-   refreshSelection, renderChatSwitcher, renderContextGauge, renderEmpty, revertRememberFromButton, renderHistory, renderInstructionsBadge, renderSelection,
+   onChatCopy, onFilesAdd, onInstructionsInput, onRuntimeMessage, openFiles, openSettings, positionPopup, queueInput, readDocInstructions, readMainInstructions,
+   refreshSelection, renderChatSwitcher, renderContextGauge, renderEmpty, renderHistory, renderSelection,
    saveInstructions, saveSettings, sendMessage, sendToTab, startDocLive, setDocTitle, setStatus, state,
-   switchGoogleAccount, switchSettingsProvider, syncQueueChat, SYSTEM_THEME_QUERY, systemTheme, toggleTheme, toolCard, undoAllFromButton, undoFromButton,
-   updateActionState */
+   switchGoogleAccount, syncQueueChat, SYSTEM_THEME_QUERY, systemTheme, toggleTheme, toolCard, undoAllFromButton, undoFromButton,
+   updateActionState, watchFilesStorage, watchInstructionsStorage */
 /* exported refreshContext */
 
 // ---------------------------------------------------------------------------
@@ -29,9 +29,10 @@ async function applyFromButton(text, btn) {
   if (btn) btn.disabled = true;
   const res = await applyToDocument(text);
   if (btn) btn.disabled = false;
-  if (res.ok) toolCard('ok', res.message, text, res.detail); // detail: how it was pasted; message: confirmed or not
-  else toolCard('fail', res.message, text); // the message already includes the detail
-  if (res.ok) setTimeout(() => refreshSelection(), 400);
+  // The user clicked it, so a success needs no card: the button's check mark is the confirmation. A failure keeps its card.
+  if (!res.ok) { toolCard('fail', res.message, text); return; } // the message already includes the detail
+  if (btn) { btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 1200); }
+  setTimeout(() => refreshSelection(), 400);
 }
 
 el.chat.addEventListener('click', (ev) => {
@@ -39,19 +40,18 @@ el.chat.addEventListener('click', (ev) => {
   if (!btn) return;
   if (btn.dataset.act === 'undo-edit') { undoFromButton(btn.dataset.edit, btn); return; }
   if (btn.dataset.act === 'undo-all') { undoAllFromButton(btn.dataset.edit, btn); return; }
-  if (btn.dataset.act === 'revert-remember') { revertRememberFromButton(btn.dataset.call, btn); return; }
-  if (btn.dataset.act === 'continue-turn') { continueFromButton(btn); return; } // the tool-budget notice
+  if (btn.dataset.act === 'continue-turn') { continueFromButton(btn); return; } // the wrap-up row of the turn
   if (btn.dataset.act === 'plan-do') { doPlanFromButton(btn); return; } // under the latest Plan answer
   const decision = { 'preview-accept': 'accept', 'preview-reject': 'reject', 'preview-accept-all': 'accept-all',
-    'preview-continue': 'continue', 'preview-skip': 'skip' }[btn.dataset.act]; // permission and Your-turn cards
+    'preview-skip': 'skip' }[btn.dataset.act]; // permission and Your-turn cards
   if (decision) { decidePreview(btn.dataset.preview, decision); return; }
   const bubble = btn.closest('.msg');
   if (!bubble) return;
   const act = btn.dataset.act;
-  // bubble._text is the answer only (reasoning is kept separately and never copied/applied).
+  // bubble._text is the answer only (reasoning is kept separately and never copied). Apply exists only for an edit
+  // block or a code block (apply-code): an ordinary answer is no text for the document.
   if (act === 'copy-msg') copyText(bubble._text || '', btn);
   else if (act === 'copy-selftest') copyText(bubble._report || '', btn); // the self-test report as Markdown
-  else if (act === 'apply-msg') applyFromButton(bubble._text || '', btn);
   else if (act === 'copy-code' || act === 'apply-code') {
     const code = (bubble._codes || [])[Number(btn.dataset.idx)];
     if (code == null) return;
@@ -64,7 +64,10 @@ el.chat.addEventListener('copy', onChatCopy);
 // ---------------------------------------------------------------------------
 // Tab context and initialization
 // ---------------------------------------------------------------------------
+let pingErrorShown = ''; // the content-script error last put into the chat (refreshContext)
 async function refreshContext({ force = false } = {}) {
+  watchInstructionsStorage(); // once: another tab changed the instructions
+  watchFilesStorage(); // once: another tab added or removed a file of the document
   let tab;
   try {
     tab = await getDocTab();
@@ -81,21 +84,23 @@ async function refreshContext({ force = false } = {}) {
     if (id) {
       // sendMessage waits for this, so an early send cannot capture a half-loaded chat
       // (chatId null / the array that is about to be replaced) and lose its turn.
-      const load = Promise.all([loadChatStore(id), readDocInstructions(id)]);
+      // Files attached in chats by an earlier build move to the document first (once; attachments.js).
+      const load = migrateChatFiles(id).then(() => Promise.all([loadChatStore(id), readDocInstructions(id), readDocFiles(id)]));
       state.loadingCtx = load;
       let store;
       let instructions;
-      try { [store, instructions] = await load; } finally { if (state.loadingCtx === load) state.loadingCtx = null; }
+      let files;
+      try { [store, instructions, files] = await load; } finally { if (state.loadingCtx === load) state.loadingCtx = null; }
       state.chats = store.chats;
       state.chatId = store.chatId;
       state.messages = store.messages;
       state.docInstructions = instructions;
+      state.docFiles = files;
       runTurnHooks('panelDoc', id); // registerTurnHook (best effort)
     } else {
-      state.chats = []; state.chatId = null; state.messages = []; state.docInstructions = '';
+      state.chats = []; state.chatId = null; state.messages = []; state.docInstructions = ''; state.docFiles = [];
     }
-    closeInstructions(); // the form belonged to the previous document
-    renderInstructionsBadge();
+    closeFiles(); // the list and the open entry belonged to the previous document
     state.selection = '';
     renderHistory();
     renderSelection();
@@ -106,8 +111,13 @@ async function refreshContext({ force = false } = {}) {
     const r = await sendToTab({ type: 'PING' });
     if (r && r.title) setDocTitle(r.title);
     setStatus(docLineReady() ? docStatusText() : 'Ready'); // keep the live document line (src/doc-live.js)
+    pingErrorShown = '';
   } catch (e) {
     setStatus(e.message, true);
+    // "Reload the document tab (F5)": the line under the title shows no such text, so it goes to the chat, once
+    // while it repeats (every tab switch runs refreshContext).
+    if (e.message !== pingErrorShown) addError(e.message);
+    pingErrorShown = e.message;
   }
   refreshSelection();
 }
@@ -117,9 +127,8 @@ async function refreshContext({ force = false } = {}) {
 // ---------------------------------------------------------------------------
 function maxInputHeight() {
   const topbar = document.querySelector('.topbar');
-  const settingsH = (el.settings.classList.contains('hidden') ? 0 : el.settings.offsetHeight) +
-    (el.instructions.classList.contains('hidden') ? 0 : el.instructions.offsetHeight);
-  const avail = window.innerHeight - (topbar ? topbar.offsetHeight : 0) - settingsH -
+  // The Settings and Files sections open over the chat (an overlay): they take no height.
+  const avail = window.innerHeight - (topbar ? topbar.offsetHeight : 0) -
     el.splitter.offsetHeight - CHAT_MIN_HEIGHT;
   return Math.max(minInputHeight(), avail);
 }
@@ -213,17 +222,15 @@ function bindSplitter() {
   });
   // Re-clamp the preferred height when the panel (iframe) is resized or shown again.
   window.addEventListener('resize', () => { if (window.innerHeight > 0) setInputHeight(desiredInputHeight, false); });
-  // Opening/closing the settings section changes the space available: re-clamp too, so the
-  // bottom pane cannot squeeze the chat to zero or push the page into overflow.
-  const reclampOnSection = new MutationObserver(() => { if (window.innerHeight > 0) setInputHeight(desiredInputHeight, false); });
-  reclampOnSection.observe(el.settings, { attributes: true, attributeFilter: ['class'] });
-  reclampOnSection.observe(el.instructions, { attributes: true, attributeFilter: ['class'] });
   // Expanding the Selected preview or showing the trim note raises the content minimum: re-clamp
   // so the pane grows instead of clipping the textarea or the control bar.
   const reclampOnContent = new MutationObserver(() => { if (window.innerHeight > 0) setInputHeight(desiredInputHeight, false); });
   reclampOnContent.observe(el.selBox, { attributes: true, attributeFilter: ['open'] });
+  // Nothing selected: the Selected line opens nothing (Enter on the summary arrives as a click too).
+  el.selBox.addEventListener('click', (ev) => { if (!state.selection && ev.target.closest && ev.target.closest('summary')) ev.preventDefault(); });
   reclampOnContent.observe(el.trimNote, { attributes: true, attributeFilter: ['class'] });
   reclampOnContent.observe($('queueRow'), { attributes: true, attributeFilter: ['class'] });
+  reclampOnContent.observe($('attachRow'), { attributes: true, attributeFilter: ['class'] });
   reclampOnContent.observe(el.selFull, { childList: true, characterData: true, subtree: true });
 }
 
@@ -234,30 +241,28 @@ function bindUi() {
   }
   $('settingsBtn').addEventListener('click', () => {
     closeChatMenu();
-    closeInstructions();
+    closeFiles();
     if (el.settings.classList.contains('hidden')) openSettings(); else closeSettings();
   });
-  // A press anywhere outside the settings (chat, composer, header, a dialog) closes them; the gear toggles itself.
-  document.addEventListener('pointerdown', (e) => {
-    if (el.settings.classList.contains('hidden')) return;
-    if (el.settings.contains(e.target) || $('settingsBtn').contains(e.target)) return;
-    closeSettings();
+  // A press anywhere outside an open layer (Settings, Files: the chat, the composer, the header, a dialog)
+  // closes it; its own header button toggles it. Both save as they go, so nothing is lost.
+  const closeOnPressOutside = (section, button, close) => document.addEventListener('pointerdown', (e) => {
+    if (section.classList.contains('hidden')) return;
+    if (section.contains(e.target) || button.contains(e.target)) return;
+    close();
   }, true);
-  el.instructionsBtn.addEventListener('click', () => {
+  closeOnPressOutside(el.settings, $('settingsBtn'), closeSettings);
+  closeOnPressOutside(el.files, el.filesBtn, closeFiles);
+  el.filesBtn.addEventListener('click', () => {
     closeChatMenu();
-    if (el.instructions.classList.contains('hidden')) openInstructions(); else closeInstructions();
+    if (el.files.classList.contains('hidden')) openFiles(); else closeFiles();
   });
   el.instructionsText.addEventListener('input', onInstructionsInput);
   el.instructionsText.addEventListener('blur', () => saveInstructions());
-  $('closeInstructions').addEventListener('click', closeInstructions);
-  el.apiKey.addEventListener('input', onApiKeyInput);
-  el.apiKey.addEventListener('blur', () => onApiKeyBlur());
-  // The gauge's window and compaction point belong to the active provider.
-  el.provider.addEventListener('change', async () => { await switchSettingsProvider(el.provider.value); renderContextGauge(); });
-  el.modelSelect.addEventListener('change', async () => { await onModelChange(); renderContextGauge(); });
+  el.filesAdd.addEventListener('click', () => onFilesAdd()); // + Add file (the composer's picker), or Close while an entry is open
+  bindSettingsForm();
   // The panel goes away (tab closed, extension reloaded): keep what is still waiting for a typing pause.
   window.addEventListener('pagehide', () => { saveSettings(); saveInstructions(); });
-  el.checkModels.addEventListener('click', () => checkModels());
   el.googleConnect.addEventListener('click', () => connectGoogle());
   el.googleSwitch.addEventListener('click', () => switchGoogleAccount());
   el.googleDisconnect.addEventListener('click', () => disconnectGoogle());
@@ -267,7 +272,6 @@ function bindUi() {
   // round raven button in the page.
   if (HOST_TAB_ID != null) {
     el.collapseBtn.disabled = false;
-    el.collapseBtn.title = 'Hide the panel';
     el.collapseBtn.setAttribute('aria-label', 'Hide the panel');
     el.collapseBtn.addEventListener('click', () => {
       chrome.tabs.sendMessage(HOST_TAB_ID, { type: 'COLLAPSE_PANEL' }).catch(() => {});
@@ -275,11 +279,14 @@ function bindUi() {
   }
   bindSplitter();
   bindPopup();
+  bindAttachments();
   el.action.addEventListener('click', () => {
     if (state.busy) { if (state.abort) state.abort.abort(); } else sendMessage();
   });
   el.input.addEventListener('input', updateActionState);
-  bindModeMenu(renderContextGauge); // Manual and Plan offer fewer tools
+  bindModeMenu(renderContextGauge); // Plan offers fewer tools
+  bindAgentMap(); // the agents pill and the agent map (agent-map.js)
+  bindModelMenu();
   // The content script pushes the document selection as soon as the user finishes selecting.
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
   el.input.addEventListener('keydown', (e) => {
@@ -313,9 +320,11 @@ function bindUi() {
   renderEmpty();
   renderSelection();
   await loadSettings();
+  state.mainInstructions = await readMainInstructions(); // after loadSettings: it moves the old notes for all documents
   await loadApplyMode();
   await loadInputHeight();
   await refreshContext({ force: true });
   startDocLive(); // the live document line: a first read, then the poll while visible and idle
-  if (!activeConfig().apiKey) addError(`To get started, add your ${activeProvider().label} API key in the settings.`, true);
+  if (!accounts().length) addError('To get started, add a provider and its API key in the settings.', true);
+  else if (chatAccount() && !canRequest(activeConfig())) addError(`To get started, add your ${activeConfig().name} API key in the settings.`, true);
 })();

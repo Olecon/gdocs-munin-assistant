@@ -30,14 +30,18 @@ test('probe: running, API off, not running; one probe per minute; every request 
 
 test('a request without the header hangs like Zotero\'s silent drop: the probe gives up quickly', async () => {
   fresh();
-  const t0 = Date.now();
   // the same fetch, but the header stripped
   env.ctx.fetch = async (url, init) => z.fetch(url, { ...init, headers: {} });
-  const keepAlive = setInterval(() => {}, 50); // the sandbox unrefs timers of 500 ms and more
-  const st = await T.zoteroStatus();
-  clearInterval(keepAlive);
+  // the panel's time limits run out at once, by their length (counted, not waited for: a busy machine stretches a
+  // real wait); the probe's is ZOTERO_PROBE_MS (800 ms), not the 15 s of a search
+  const limits = [];
+  const setT = env.ctx.setTimeout;
+  env.ctx.setTimeout = (fn, ms, ...a) => { limits.push(ms); return setT(fn, 0, ...a); };
+  let st;
+  try { st = await T.zoteroStatus(); } finally { env.ctx.setTimeout = setT; }
   deq([st.ok, st.reason, st.message], [false, 'absent', 'no answer in time']);
-  assert.ok(Date.now() - t0 < 3000);
+  deq(limits, [T.ZOTERO_PROBE_MS]);
+  assert.ok(T.ZOTERO_PROBE_MS < 3000, 'the probe gives up quickly');
 });
 
 test('search: titleCreatorYear, at most 10 regular items (no notes), compact listing', async () => {

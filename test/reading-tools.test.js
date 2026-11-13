@@ -6,8 +6,10 @@ const { deq, load } = require('./lib/sandbox');
 const { fakeDocsServer } = require('./lib/fake-docs');
 
 let env, T, D, state, PROVIDERS, LONG_LINES, LONG_SEL, LONG_TOOLS_TAIL, LONG_PERSONA_TAIL, savedDoc;
-// The selection line ends the turn context of the user message (buildTurnContext): its position and size only.
-const selTail = (snap) => { const c = T.buildTurnContext('edit', snap); return c.slice(c.lastIndexOf('\n') + 1); };
+// The selection line ends the turn context of the user message (buildTurnContext): its position and size, then the text
+// of a short selection (shown).
+const selTail = (snap) => { const c = T.buildTurnContext('edit', snap); return c.slice(c.lastIndexOf('\nSelection: ') + 1); };
+const shown = (text) => `\nIts text (no need for get_selection):\n<selection>\n${text}\n</selection>`;
 // A Munin persona turn (no reading tools): the selection follows the document excerpt in the system prompt.
 const personaTail = (snap) => T.buildSystemParts('chat', 100000, { ...snap, prov: PROVIDERS.munin }).tail;
 
@@ -32,9 +34,9 @@ test('tools mode: outline, selection location, reading tools', async () => {
   ts.selection = 'bold words'; deq(T.locateSelection(ts), { start: 3, end: 3 }); // markup ignored
   ts.selection = 'nowhere to be found'; assert.strictEqual(T.locateSelection(ts), null);
   ts.selection = 'quick brown fox jumps.\nSecond paragraph';
-  deq(T.toolsFor('edit', ts).map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user']);
-  deq(T.toolsFor('manual', ts).map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user']);
-  deq(T.toolsFor('research', ts).map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user']);
+  deq(T.toolsFor('edit', ts).map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user', 'phrase_usage', 'delegate']);
+  deq(T.toolsFor('manual', ts).map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user', 'phrase_usage', 'delegate']);
+  deq(T.toolsFor('research', ts).map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user', 'delegate']);
   const tsMunin = { ...ts, prov: PROVIDERS.munin };
   deq(T.toolsFor('research', tsMunin), []); // Munin persona pipeline: no client tools
   assert.ok(/3 headings \(16 lines in total\):\nL1: # Title\nL5: ## Methods\nL14: ### Details/.test(T.runReadingTool('get_outline', {}, ts)));
@@ -47,21 +49,21 @@ test('tools mode: outline, selection location, reading tools', async () => {
   assert.ok(/^Selection \(lines 11-12, 39 characters\):\nquick brown fox jumps\.\nSecond paragraph$/.test(T.runReadingTool('get_selection', {}, ts)));
   const big = { ...ts, docText: Array.from({ length: 400 }, (_, i) => `line ${i + 1}`).join('\n'), lines: null, selection: '' };
   const r400 = T.runReadingTool('read_lines', { start: 1, end: 400 }, big);
-  assert.ok(r400.startsWith('Lines 1-300 of 400:\n1: line 1\n') && /\n300: line 300\n\[Stopped at line 300 \(limit per call\)\. Call read_lines\(301, 400\) to continue\.\]$/.test(r400));
+  assert.ok(r400.startsWith('Lines 1-300 of 400:\n1: line 1\n') && /\n300: line 300\n\[Stopped at line 300 \(limit per call\)\. Call read_document with scope \{"start":301,"end":400\} to continue\.\]$/.test(r400));
   const plain = { ...ts, docFormat: 'text' };
   assert.ok(/outline is unavailable/.test(T.runReadingTool('get_outline', {}, plain)));
   // executeTool: reading works in every mode, replacing only in Auto
-  let tr = await T.executeTool({ id: 't1', function: { name: 'read_lines', arguments: '{"start":1,"end":1}' } }, 'manual', ts);
+  let tr = await T.executeTool({ id: 't1', function: { name: 'read_document', arguments: '{"scope":{"start":1,"end":1},"include":null,"doc":null}' } }, 'manual', ts);
   assert.ok(tr._reading && tr._ok && tr.content === 'Lines 1-1 of 16:\n1: # Title' && tr._message === 'lines 1–1');
   tr = await T.executeTool({ id: 't2', function: { name: 'replace_selection', arguments: '{"text":"x"}' } }, 'manual', ts);
-  assert.ok(!tr._ok && /cannot be modified in this mode/.test(tr.content));
+  assert.ok(!tr._ok && /cannot be modified here/.test(tr.content));
   tr = await T.executeTool({ id: 't3', function: { name: 'nope', arguments: '{}' } }, 'edit', ts);
-  assert.ok(!tr._ok && /Available tools: get_outline, read_lines, find_in_document, get_selection, open_document, remember, replace_selection/.test(tr.content));
+  assert.ok(!tr._ok && /Available tools: read_document, find_in_document, get_selection, open_document, remember, replace_selection/.test(tr.content));
   // Action log entries (every tool call; without results the calls are still pending)
   deq(T.actionLogFromToolCalls([{ id: 'a', function: { name: 'read_lines', arguments: '{"start":5,"end":7}' } }, { id: 'b', function: { name: 'replace_selection', arguments: '{"text":"x"}' } }, { id: 'c', function: { name: 'find_in_document', arguments: '{"query":"fox"}' } }]), [
-    { log: true, name: 'read_lines', summary: 'lines 5–7', args: { start: 5, end: 7 }, result: null, status: 'pending' },
-    { log: true, name: 'replace_selection', summary: '"x"', args: { text: 'x' }, result: null, status: 'pending' },
-    { log: true, name: 'find_in_document', summary: '"fox"', args: { query: 'fox' }, result: null, status: 'pending' },
+    { log: true, id: 'a', name: 'read_lines', summary: 'lines 5–7', args: { start: 5, end: 7 }, result: null, status: 'pending' },
+    { log: true, id: 'b', name: 'replace_selection', summary: '"x"', args: { text: 'x' }, result: null, status: 'pending' },
+    { log: true, id: 'c', name: 'find_in_document', summary: '"fox"', args: { query: 'fox' }, result: null, status: 'pending' },
   ]);
   // Prompt in tools mode: outline + selection with its line range, no document text
   let treq = T.buildRequest('edit', ts);
@@ -71,17 +73,17 @@ test('tools mode: outline, selection location, reading tools', async () => {
   assert.ok(tctx.includes('<document title="Doc &lt;1&gt;" format="markdown" lines="16" characters="'));
   assert.ok(tctx.includes('Outline (line: heading):\nL1: # Title\nL5: ## Methods\nL14: ### Details'));
   assert.ok(!treq.body.system[0].text.includes('quick brown fox jumps') && !treq.body.system[0].text.includes('Outline (line: heading)'));
-  assert.ok(tctx.endsWith('\nSelection: lines 11–12 (39 characters)') && !tctx.includes('quick brown fox jumps.'), tctx);
-  assert.strictEqual(treq.body.tools.length, 8); // + open_document (Phase C1), remember, ask_user
+  assert.ok(tctx.endsWith('\nSelection: lines 11–12 (39 characters)' + shown('quick brown fox jumps.\nSecond paragraph')), tctx);
+  assert.strictEqual(treq.body.tools.length, 10); // read_document, find_in_document, get_selection, open_document, remember, replace_selection, ask_user, phrase_usage, delegate, web_search (models: one usable model)
   treq = T.buildRequest('manual', ts);
-  assert.ok(treq.body.system[0].text.includes('You CANNOT modify the document: there is no replace_selection tool'));
-  assert.strictEqual(treq.body.tools.length, 7); // + open_document (Phase C1), remember, ask_user
+  assert.ok(treq.body.system[0].text.includes('You CANNOT modify the document. Never say'));
+  assert.strictEqual(treq.body.tools.length, 9); // without replace_selection
   treq = T.buildRequest('code', ts);
   assert.ok(treq.body.system[0].text.includes('Act as a coding assistant') && treq.body.system[0].text.includes('read it with the tools'));
 });
 
-test('selection in the turn context: line range and size only; Munin persona turns: the text, or position and excerpt', async () => {
-  // --- tools mode: the line range and size, never the text; Munin persona turns (no tools): position + excerpt over 600 characters
+test('selection in the turn context: line range and size, the text up to 1,500 characters; Munin persona turns: the text, or position and excerpt', async () => {
+  // --- tools mode: the line range and size, the text of a short selection; Munin persona turns (no tools): position + excerpt over 600 characters
   const S3 = 'the selected part begins here' + ' c3'.repeat(100); // 329 characters
   const mid = (k) => `Line ${k}:` + ' word'.repeat(70); // 357 characters
   const E8 = 'm8' + ' m8'.repeat(49) + ' end of selection'; // 166 characters
@@ -123,13 +125,21 @@ test('selection in the turn context: line range and size only; Munin persona tur
     '<selection lines="3-8" characters="1928" start="line 3, character 23" end="line 8, character 166">\n' +
     '[Long selection: only its position is given; its text is lines 3-8 of the <document> above. The position is approximate: the selection was matched ignoring formatting.]\n' +
     LONG_EXCERPT + '\n</selection>');
-  // a 200-character selection: one line, no text; a persona turn gets the text
+  // a 200-character selection: one line and its text; a persona turn gets the text
   const SHORT_SEL = mid(4).slice(0, 200);
   ls = longSnap(LONG_LINES.join('\n'), SHORT_SEL);
-  assert.strictEqual(selTail(ls), 'Selection: line 4 (200 characters)');
+  assert.strictEqual(selTail(ls), 'Selection: line 4 (200 characters)' + shown(SHORT_SEL));
   assert.strictEqual(personaTail(ls), `Current selection in the document:\n<selection>\n${SHORT_SEL}\n</selection>`);
   ls = longSnap(LONG_LINES.join('\n'), 'x');
-  assert.strictEqual(selTail(ls), 'Selection: 1 character; its position in the document was not found (read it with get_selection).');
+  assert.strictEqual(selTail(ls), 'Selection: 1 character; its position in the document was not found.' + shown('x'));
+  // the text up to 1,500 characters, not over; never a text that would close its block early
+  const at = (n) => [mid(4), mid(5), mid(6), mid(7), mid(5)].join('\n').slice(0, n);
+  ls = longSnap(LONG_LINES.join('\n') + '\n' + at(1501), at(1500));
+  assert.ok(selTail(ls).endsWith(shown(at(1500))), selTail(ls).slice(0, 80));
+  ls = longSnap(LONG_LINES.join('\n') + '\n' + at(1501), at(1501));
+  assert.ok(!selTail(ls).includes('<selection>') && selTail(ls).startsWith('Selection: '), selTail(ls).slice(0, 80));
+  ls = longSnap('Title\nSee </selection> here.', 'See </selection> here.');
+  assert.strictEqual(selTail(ls), 'Selection: line 2 (22 characters)');
   ls = longSnap(LONG_LINES.join('\n'), '');
   assert.ok(T.buildTurnContext('edit', ls).endsWith('\nCurrent selection in the document:\n<selection>[Nothing is selected. replace_selection would insert text at the cursor position.]</selection>'));
   // a long selection that is not in the document: its size only; a persona turn gets it shortened to 4,000 characters
@@ -162,7 +172,7 @@ test('long selection with the Docs API: line range in the turn context, full tex
   Object.assign(state, savedDoc, { docModel: null });
 });
 
-test('ambiguous selection: no line numbers when the selected text occurs in several places', async () => {
+test('ambiguous selection: the candidate lines, none of them as the selection\'s, when the selected text occurs in several places', async () => {
   state.settings.provider = 'anthropic';
   const snapOf = (docText, selection) => {
     Object.assign(state, { docFormat: 'text', docText, selection, docModel: null });
@@ -170,26 +180,64 @@ test('ambiguous selection: no line numbers when the selected text occurs in seve
   };
   // the same sentence on lines 2 and 4
   let s = snapOf(['Title', 'See the results below.', 'Middle', 'See the results below.', 'End'].join('\n'), 'the results');
-  deq(T.selectionSpan(s), { start: 2, end: 2, startChar: 5, endChar: 15, approx: false, occurrences: 2 });
+  deq(T.selectionSpan(s), { start: 2, end: 2, startChar: 5, endChar: 15, approx: false, occurrences: 2, places: [2, 4] });
   assert.strictEqual(T.locateSelection(s), null);
-  assert.strictEqual(selTail(s), 'Selection: 11 characters; the selected text occurs in 2 places in the document, so which one is selected is not known. ' +
-    'Read it with get_selection and locate the right occurrence with find_in_document before editing near it; replace_selection replaces exactly what the user selected.');
-  assert.strictEqual(T.runReadingTool('get_selection', {}, s), 'Selection (position in the document not found, 11 characters):\nthe results');
+  // any other edit goes to the place the request means or a question, never to every place (a live Qwen italicised both
+  // with format_text all when the line named only replace_selection)
+  const OTHER = ' Other edits: only the place the request means ("this heading": the heading line), or ask the user; never all of them.';
+  assert.strictEqual(selTail(s), 'Selection: 11 characters; the same text is on lines 2 and 4, so which one is selected is not known. ' +
+    'replace_selection replaces exactly what the user selected.' + OTHER + shown('the results'));
+  assert.strictEqual(T.runReadingTool('get_selection', {}, s), 'Selection (the same text is on lines 2 and 4, 11 characters):\nthe results');
+  // a selection several lines long: where each occurrence starts; many places: the first six and a count
+  s = snapOf(['Head', 'Alpha one', 'Beta two', 'X', 'Alpha one', 'Beta two', 'Y', 'Alpha one', 'Beta two'].join('\n'), 'Alpha one\nBeta two');
+  assert.strictEqual(T.runReadingTool('get_selection', {}, s), 'Selection (the same text starts on lines 2, 5 and 8, 18 characters):\nAlpha one\nBeta two');
+  s = snapOf(Array.from({ length: 9 }, (_, i) => `Row ${i + 1} total`).join('\n'), 'total');
+  assert.ok(T.runReadingTool('get_selection', {}, s).startsWith('Selection (the same text is on lines 1, 2, 3, 4, 5, 6 and 3 more, 5 characters):'));
   // repeats within one line keep its line number
   s = snapOf(['Title', 'one two one two', 'End'].join('\n'), 'one');
   assert.strictEqual(T.selectionSpan(s).occurrences, undefined);
-  assert.strictEqual(selTail(s), 'Selection: line 2 (3 characters)');
+  assert.strictEqual(selTail(s), 'Selection: line 2 (3 characters)' + shown('one'));
   // multi-line: only where all selected lines follow each other
   const lines = ['Title', 'Alpha line here', 'Beta line here', 'Gap', 'Alpha line here', 'Other', 'Alpha line here', 'Beta line here'];
   s = snapOf(lines.join('\n'), 'Alpha line here\nBeta line here');
   assert.strictEqual(T.selectionSpan(s).occurrences, 2);
   s = snapOf(lines.join('\n'), 'line here\nGap');
   assert.strictEqual(T.selectionSpan(s).occurrences, undefined);
-  assert.strictEqual(selTail(s), 'Selection: lines 3–4 (13 characters)');
-  // a long ambiguous selection: no line numbers either
+  assert.strictEqual(selTail(s), 'Selection: lines 3–4 (13 characters)' + shown('line here\nGap'));
+  // a long ambiguous selection: no line numbers either; without its text (over 1,500 characters) it is read with get_selection
   const para = 'Repeated paragraph ' + 'text '.repeat(150); // 769 characters
   s = snapOf(['Title', para, 'Middle', para].join('\n'), para.trim());
-  assert.ok(selTail(s).startsWith('Selection: 768 characters; the selected text occurs in 2 places'), selTail(s));
+  assert.ok(selTail(s).startsWith('Selection: 768 characters; the same text is on lines 2 and 4, so'), selTail(s));
+  const longPara = 'Repeated paragraph ' + 'text '.repeat(400);
+  s = snapOf(['Title', longPara, 'Middle', longPara].join('\n'), longPara.trim());
+  assert.strictEqual(selTail(s), 'Selection: 2,018 characters; the same text is on lines 2 and 4, so which one is selected is not known. ' +
+    'Read it with get_selection; replace_selection replaces exactly what the user selected.' + OTHER);
+});
+
+// A selection shown in the turn context (T3 of the third wave): the model's get_selection is answered with a pointer to it,
+// a second call with the firm text of a repeated read (the user message is never stubbed, so it never reads again), and
+// the selected lines count as read for the read-first check.
+test('a shown selection: get_selection answered with a pointer, then the firm one; its lines read; a long one is not noted', async () => {
+  state.settings.provider = 'munin';
+  Object.assign(state, { docFormat: 'markdown', docText: ['# T', 'One two three.', 'Four five.', 'Six.'].join('\n'), selection: 'two three.\nFour five', docModel: null });
+  const s = T.takeSnapshot(); T.snapshotDocument(s); s.readFirst = true; // a visible main-chat turn (toolLoop)
+  T.buildTurnContext('edit', s);
+  deq([...s.seenLines], [2, 3]);
+  const call = async (id) => (await T.executeTool({ id, function: { name: 'get_selection', arguments: '{}' } }, 'edit', s)).content;
+  assert.strictEqual(await call('g1'), 'The selection is in the user message, in full (<selection>).');
+  assert.strictEqual(await call('g2'), T.READ_AGAIN_STOP_TEXT);
+  // an ambiguous selection: the pointer, no lines; a long one: nothing noted, get_selection reads
+  Object.assign(state, { docText: ['# T', 'Same.', 'Same.'].join('\n'), selection: 'Same.' });
+  const a = T.takeSnapshot(); T.snapshotDocument(a); a.readFirst = true;
+  T.buildTurnContext('edit', a);
+  assert.ok(!a.seenLines || !a.seenLines.size);
+  assert.strictEqual((await T.executeTool({ id: 'a1', function: { name: 'get_selection', arguments: '{}' } }, 'edit', a)).content, 'The selection is in the user message, in full (<selection>).');
+  Object.assign(state, { docText: '# T\n' + 'w'.repeat(1600), selection: 'w'.repeat(1600) });
+  const l = T.takeSnapshot(); T.snapshotDocument(l); l.readFirst = true;
+  T.buildTurnContext('edit', l);
+  assert.ok(!l.readCalls && !l.seenLines);
+  assert.ok((await T.executeTool({ id: 'l1', function: { name: 'get_selection', arguments: '{}' } }, 'edit', l)).content.startsWith('Selection (lines 2-2, 1,600 characters):'));
+  Object.assign(state, savedDoc, { docModel: null });
 });
 
 test('read limits per provider: Munin 8,000 characters / 100 lines, OpenAI and Anthropic 24,000 / 300; generic tool descriptions', async () => {
@@ -200,7 +248,7 @@ test('read limits per provider: Munin 8,000 characters / 100 lines, OpenAI and A
   const snapOf = (prov) => { state.settings.provider = prov; const s = T.takeSnapshot(); T.snapshotDocument(s); return s; };
   // lines cap
   const mu = T.runReadingTool('read_lines', { start: 1, end: 400 }, snapOf('munin'));
-  assert.ok(mu.startsWith('Lines 1-100 of 400:\n') && mu.endsWith('\n100: line 100\n[Stopped at line 100 (limit per call). Call read_lines(101, 400) to continue.]'));
+  assert.ok(mu.startsWith('Lines 1-100 of 400:\n') && mu.endsWith('\n100: line 100\n[Stopped at line 100 (limit per call). Call read_document with scope {"start":101,"end":400} to continue.]'));
   assert.ok(T.runReadingTool('read_lines', { start: 1, end: 400 }, snapOf('anthropic')).startsWith('Lines 1-300 of 400:\n'));
   // characters cap: 80-character lines, 8,000 characters reached before 100 lines
   state.docText = Array.from({ length: 200 }, (_, i) => `${i + 1} `.padEnd(80, 'x')).join('\n');
@@ -212,24 +260,29 @@ test('read limits per provider: Munin 8,000 characters / 100 lines, OpenAI and A
   assert.ok(T.runReadingTool('read_lines', { start: 1, end: 200 }, { docText: state.docText, docFormat: 'text', lines: null }, { chars: 24000, lines: 10 }).startsWith('Lines 1-10 of 200:\n'));
   assert.ok(T.runReadingTool('read_lines', { start: 1, end: 200 }, { docText: state.docText, docFormat: 'text', lines: null }).startsWith('Lines 1-200 of 200:\n'));
   // executeTool uses the turn's provider
-  const tr = await T.executeTool({ id: 'm1', function: { name: 'read_lines', arguments: '{"start":1,"end":400,"doc":null}' } }, 'edit', snapOf('munin'));
+  const tr = await T.executeTool({ id: 'm1', function: { name: 'read_document', arguments: '{"scope":{"start":1,"end":400},"include":null,"doc":null}' } }, 'edit', snapOf('munin'));
   assert.ok(/^Lines 1-\d+ of 200:/.test(tr.content) && /\(limit per call\)/.test(tr.content));
   // the tool description is the same for every provider; the instructions state the provider's limits
-  assert.ok(!T.TOOL_DEFS.read_lines.function.description.includes('300') && T.TOOL_DEFS.read_lines.function.description.includes('limited number of lines and characters'));
-  assert.ok(T.buildRequest('edit', snapOf('munin')).body.messages[0].content.includes('read_lines returns at most 100 lines or about 8,000 characters per call'));
-  assert.ok(T.buildRequest('edit', snapOf('anthropic')).body.system[0].text.includes('read_lines returns at most 300 lines or about 24,000 characters per call'));
+  assert.ok(!T.TOOL_DEFS.read_document.function.description.includes('300') && T.TOOL_DEFS.read_document.function.description.includes('per-call limit'));
+  assert.ok(T.buildRequest('edit', snapOf('munin')).body.messages[0].content.includes('read_document returns at most 100 lines or about 8,000 characters per call'));
+  assert.ok(T.buildRequest('edit', snapOf('anthropic')).body.system[0].text.includes('read_document returns at most 300 lines or about 24,000 characters per call'));
   Object.assign(state, savedDoc, { docModel: null });
 });
 
-test('selection rules: read the selection with get_selection or read_lines; a long one section by section with replace_text', async () => {
-  const RULE = "The user's selection is given as a line range and size; read it with get_selection (all of it) or read_lines (parts).";
+test('selection rules: read the selection with get_selection or read_document; a long one section by section with replace_text', async () => {
+  const RULE = "the selection's line range and size, and its text when short); the user's own text follows. Read a longer selection with get_selection (all of it) or read_document (parts).";
   Object.assign(state, { docFormat: 'markdown', docText: '# T\n\nBody', selection: 'Body', docModel: null });
   state.settings.provider = 'anthropic';
   const s = T.takeSnapshot(); T.snapshotDocument(s);
-  for (const mode of ['edit', 'manual']) assert.ok(T.buildRequest(mode, s).body.system[0].text.includes(RULE), mode);
+  for (const mode of ['edit', 'manual']) {
+    const sys = T.buildRequest(mode, s).body.system[0].text;
+    // the user message's structure is not described in the head: its <document> block and selection line say what they are
+    assert.ok(!sys.includes("the selection's line range and size") && sys.includes('usually the selection (get_selection) and the lines around it'), mode);
+  }
   assert.ok(T.TOOLS_PERSONA_NOTE.includes(RULE));
-  assert.ok(T.TOOLS_EDIT_RULES.includes('Read the selection first (get_selection), then pass the COMPLETE new text for the whole selection'));
-  assert.ok(T.apiEditRules().includes('For a long selection that spans several sections, work section by section: read a section, rewrite it with replace_text, then the next. Use replace_selection only to replace the whole selection at once'));
+  assert.ok(T.TOOLS_EDIT_RULES.includes('Read the selection first (get_selection), and the lines around it when the new wording has to fit; then pass the COMPLETE new text for the whole selection'));
+  assert.ok(T.apiEditRules().includes('A long selection that spans several sections: work one section at a time. Use replace_selection only to replace the whole selection at once'));
+  assert.ok(!T.apiEditRules().includes('replace_text, then the next')); // the rewrite routing is revise.js's prompt line
   assert.ok(!/copy/.test(T.TOOL_DEFS.get_selection.function.description));
   Object.assign(state, savedDoc, { docModel: null });
 });

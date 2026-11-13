@@ -1,6 +1,6 @@
 'use strict';
-// The /side bubbles on a real DOM: the Side badge and class on the question and the answer, Copy works on a
-// side answer (the #chat delegation), a re-render keeps the side exchange at the end, the next main turn's
+// The /side bubbles on a real DOM: the Side badge and class on the question and the answer, a plain side answer
+// has no corner buttons and a side edit block's Copy works (the #chat delegation), a re-render keeps the side exchange at the end, the next main turn's
 // final render drops it, and a new chat starts without it.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -29,11 +29,11 @@ before(async () => {
 });
 after(() => env.close());
 
-test('side bubbles: badge and tint, Copy, kept by a re-render, dropped by the next main turn and a new chat', async () => {
+test('side bubbles: badge and tint, Copy of an edit block, kept by a re-render, dropped by the next main turn and a new chat', async () => {
   await T.createChat();
   recordFetch(env, [textRound('Main answer.')]);
   await send(env, 'main question');
-  recordFetch(env, [textRound('A **side** answer.')]);
+  recordFetch(env, [textRound('A **side** answer.\n\n<insertion>\nA fox.\n</insertion>')]);
   await send(env, '/side what is a fox?');
   const side = $$('.msg.side');
   assert.strictEqual(side.length, 2);
@@ -44,10 +44,11 @@ test('side bubbles: badge and tint, Copy, kept by a re-render, dropped by the ne
   // the side exchange is the end of the chat, after the main one
   assert.strictEqual(el.chat.lastElementChild, side[1]);
   assert.strictEqual($$('.msg.user').length, 2);
-  // Copy on the side answer copies its text
-  click(side[1].querySelector('button[data-act="copy-msg"]'));
+  // Copy in the bar of the side answer's block copies the block; it is the answer's only pair
+  assert.strictEqual(side[1].querySelectorAll('button[data-act="copy-code"]').length, 1);
+  click(side[1].querySelector('.edit-block .code-bar button[data-act="copy-code"]'));
   await tick(5);
-  assert.deepStrictEqual(env.clipboard.writes.slice(-1), ['A **side** answer.']);
+  assert.deepStrictEqual(env.clipboard.writes.slice(-1), ['A fox.']);
   // a re-render (an undo, another tab's change) puts it back at the end
   T.renderHistory();
   assert.deepStrictEqual($$('.msg.side'), side);

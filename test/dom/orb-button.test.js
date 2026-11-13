@@ -51,7 +51,9 @@ test('while a turn runs the button is Stop without an orb; the orb is at the mes
   assert.strictEqual(el.action.getAttribute('aria-label'), 'Stop generating');
   assert.ok(el.action.querySelector('.icon-stop'));
   stream.push(msgStart + block(0, 'text') + delta(0, { type: 'text_delta', text: 'Writing' }));
-  await waitFor(() => el.chat.querySelector('.msg.assistant canvas.orb').dataset.orb === 'ribbon', 'the ribbon at the message');
+  // the text streams: the orb stays at the message, the status line reads "Waiting…"
+  await waitFor(() => el.chat.querySelector('.msg.assistant .thinking-label').textContent === 'Waiting…', 'the text');
+  assert.ok(!el.chat.querySelector('.msg.assistant canvas.orb').classList.contains('hidden'));
   assert.strictEqual(el.action.querySelector('canvas'), null);
   stream.end();
   await waitFor(idle, 'idle');
@@ -73,5 +75,5 @@ test('a click while running stops the turn', async () => {
   await waitFor(idle, 'stopped');
   await tick(5);
   assert.strictEqual(el.action.querySelector('canvas'), null);
-  assert.ok([...el.chat.querySelectorAll('.msg.notice')].some((m) => m.textContent.includes('Stopped.')));
+  assert.ok([...el.chat.querySelectorAll('.msg.assistant .thinking-label')].some((m) => m.textContent.startsWith('Stopped after '))); // the label says it
 });

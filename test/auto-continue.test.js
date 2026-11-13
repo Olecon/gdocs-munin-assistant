@@ -1,11 +1,11 @@
 'use strict';
 // A reply cut by the length limit gets one automatic continuation per turn (toolLoop): the partial reply is kept,
 // a user-role message marked _auto (AUTO_CONTINUE_TEXT, no turn context) is appended and saved, one more round
-// runs; the request prefix stays byte-identical (appended, never rewritten); a second cut only gets the sticky
-// notice; a cut tool call is not executed; Munin persona turns keep today's notice; the queue settles normally.
+// runs; the request prefix stays byte-identical (appended, never rewritten); a second cut only gets the cut row of
+// the turn; a cut tool call is not executed; Munin persona turns get the cut row; the queue settles normally.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, load } = require('./lib/sandbox');
+const { deq, load, turnRowTexts } = require('./lib/sandbox');
 const { ev, msgStart, sseResponse } = require('./lib/streams');
 const { docBench, recordFetch, useProvider, send, muText, stripCache } = require('./lib/context');
 
@@ -21,7 +21,6 @@ const anCut = (t) => msgStart + ev('content_block_start', { type: 'content_block
   ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
   ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'max_tokens' }, usage: { output_tokens: 9 } }) + ev('message_stop', { type: 'message_stop' });
 const anText = (t) => anCut(t).replace('"stop_reason":"max_tokens"', '"stop_reason":"end_turn"');
-const notices = () => T.el.chat.children.filter((c) => c.className && c.className.includes('notice')).map((c) => c.innerHTML);
 const CUT_NOTICE = 'The reply was cut off by the length limit.';
 
 before(async () => {
@@ -56,13 +55,14 @@ test('Munin: a cut reply gets exactly one continuation round; the _auto message 
   deq(b1.messages.slice(0, b0.messages.length), b0.messages);
   deq(b1.messages.slice(b0.messages.length), [{ role: 'assistant', content: 'Item 1, item 2, it' }, { role: 'user', content: T.AUTO_CONTINUE_TEXT }]);
   deq(b1.tools, b0.tools);
-  // the transient notice, no sticky cut notice
-  assert.ok(T.el.chat.children.some((c) => c.className.includes('auto-continue')), 'the stored row after renderHistory');
-  assert.ok(!notices().includes(CUT_NOTICE));
-  // renderHistory: one user bubble, the row in place of the continuation request
+  // the continuation's row, no cut row
+  assert.ok(turnRowTexts(T.el.chat).includes(T.AUTO_CONTINUE_NOTICE), 'the row of the continuation');
+  assert.ok(!turnRowTexts(T.el.chat).includes(CUT_NOTICE));
+  // renderHistory: one user bubble and the turn's one bubble, the row inside it in place of the continuation request
   T.el.chat.children.length = 0;
   T.renderHistory();
-  deq(T.el.chat.children.map((c) => c.className), ['msg user', 'msg assistant', 'msg notice auto-continue', 'msg assistant']);
+  deq(T.el.chat.children.map((c) => c.className.replace(' has-rail', '')), ['msg user', 'msg assistant']); // has-rail: the timeline
+  deq(turnRowTexts(T.el.chat), [T.AUTO_CONTINUE_NOTICE]);
 });
 
 test('Anthropic: the request prefix is unchanged by the continuation (cache stays valid)', async () => {
@@ -95,22 +95,26 @@ test('a second cut in the same turn: no further continuation; the next turn may 
   assert.strictEqual(state.messages.filter((m) => m._auto).length, 2);
 });
 
-test('notices: AUTO_CONTINUE_NOTICE on the first cut, the sticky cut notice on the second', async () => {
+test('rows of the turn: the continuation on the first cut, the cut row on the second; one bubble, live and after renderHistory', async () => {
   await fresh('munin');
-  const calls = [];
-  const original = env.ctx.addNotice;
-  env.ctx.addNotice = (t, o) => { calls.push([t, !!(o && o.sticky)]); return original(t, o); };
-  try {
-    recordFetch(env, [muCut('One'), muCut('Two')]);
-    await send(env, 'Go');
-  } finally {
-    env.ctx.addNotice = original;
-  }
-  deq(calls.filter(([t]) => t !== 'Stopped.'), [[T.AUTO_CONTINUE_NOTICE, false], [CUT_NOTICE, true]]);
-  assert.strictEqual(T.AUTO_CONTINUE_NOTICE, 'Reply cut by the length limit: asked the model to continue'); // the same text as the stored row
+  recordFetch(env, [muCut('One'), muCut('Two')]);
+  await send(env, 'Go');
+  // stored: the continuation is its _auto message, the cut a row on the last answer
+  deq(state.messages.map((m) => m._notes || null), [null, null, null, [CUT_NOTICE]]);
+  // drawn again from the history: both rows in the turn's one bubble, in order, between its rounds
+  T.el.chat.children.length = 0;
+  T.renderHistory();
+  const bubbles = T.el.chat.children.filter((c) => c._rounds);
+  assert.strictEqual(bubbles.length, 1);
+  deq(turnRowTexts(T.el.chat), [T.AUTO_CONTINUE_NOTICE, CUT_NOTICE]);
+  const items = bubbles[0]._parts.rows.children.map((n) => n._text || (n === bubbles[0]._rounds[0].el ? 'round 1' : n === bubbles[0]._rounds[1].el ? 'round 2' : '?'));
+  deq(items, ['round 1', T.AUTO_CONTINUE_NOTICE, 'round 2', CUT_NOTICE]);
+  // nothing in the chat is a notice any more
+  assert.ok(!T.el.chat.children.some((c) => c.classList && c.classList.contains('notice')));
+  assert.strictEqual(T.AUTO_CONTINUE_NOTICE, 'Reply cut by the length limit: asked the model to continue');
 });
 
-test('a tool call cut by the length limit is not executed; the continuation round runs', async () => {
+test('a tool call cut by the length limit is not executed; the continuation asks for smaller calls instead of continuing', async () => {
   await fresh('munin');
   const bodies = recordFetch(env, [muCutTool(), muText('Done in smaller steps.')]);
   await send(env, 'Insert a long text');
@@ -121,25 +125,21 @@ test('a tool call cut by the length limit is not executed; the continuation roun
   // the empty partial reply is not sent; the continuation request follows the user message
   const last2 = bodies[1].messages.slice(-2);
   deq(last2.map((m) => m.role), ['user', 'user']);
-  assert.strictEqual(last2[1].content, T.AUTO_CONTINUE_TEXT);
+  assert.strictEqual(last2[1].content, T.AUTO_CONTINUE_TOOL_TEXT);
+  assert.strictEqual(T.AUTO_CONTINUE_TOOL_TEXT, 'Your tool call was cut by the length limit and was not run. Make the same change in smaller calls (one section or paragraph per call).');
+  assert.strictEqual(state.messages[2].content, T.AUTO_CONTINUE_TOOL_TEXT);
 });
 
-test('Munin persona turns are unchanged: one request and the sticky notice', async () => {
+test('Munin persona turns are unchanged: one request and the cut row', async () => {
   await fresh('munin');
-  const calls = [];
-  const original = env.ctx.addNotice;
-  env.ctx.addNotice = (t, o) => { calls.push([t, !!(o && o.sticky)]); return original(t, o); };
   const pev = (name, data) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
   const bodies = [];
   env.ctx.fetch = async (url, init) => { bodies.push(init.body); return sseResponse(pev('token', { content: 'Cut' }) + pev('done', { finish_reason: 'length' })); };
-  try {
-    await send(env, '/chat tell me more');
-  } finally {
-    env.ctx.addNotice = original;
-  }
+  await send(env, '/chat tell me more');
   assert.strictEqual(bodies.length, 1);
   assert.ok(!state.messages.some((m) => m._auto));
-  deq(calls, [[CUT_NOTICE, true]]);
+  deq(state.messages[state.messages.length - 1]._notes, [CUT_NOTICE]);
+  assert.ok(turnRowTexts(T.el.chat).includes(CUT_NOTICE));
 });
 
 test('the queue settles normally after a turn that continued: the queued message is sent next', async () => {

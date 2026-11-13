@@ -5,9 +5,9 @@
 // register at load time wherever it sits in sidepanel.html; the consumers read the registries at run time.
 // Registered names never shadow the built-in tools: those keep their own code paths.
 /* global TOOL_DEFS */
-/* exported EXTRA_TOOLS, registerTools, offered, extraTool, extraToolDefs, isExtraReading, extraIcon, registerPromptLine, extraPromptLines,
+/* exported EXTRA_TOOLS, registerTools, offered, extraRuns, extraTool, extraToolDefs, isExtraReading, readingDigest, extraUsesLines, registerPromptLine, extraPromptLines,
    registerUndoHandler, undoHandler, registerSelfTestRows, extraSelfTestRows, registerLineDecorator, lineDecorations,
-   lineDecoratorNotes, registerTurnHook, runTurnHooks, beforeTurnLines, beforeWriteChecks */
+   lineDecoratorNotes, registerTurnHook, runTurnHooks, beforeTurnLines, beforeTurnStart, beforeWriteChecks, afterWriteNotes */
 
 // ---- Tools ------------------------------------------------------------------------------------------
 // registerTools(defs, spec): defs are tool definitions in Chat Completions format ({ type: 'function',
@@ -18,12 +18,24 @@
 //     (the content; ok unless it starts with "Error:"); may be async. ui: the call's card holder for gateEdit;
 //     call: { id (the tool call id: use it as the journal id), mode };
 //   reading: true | false | (name, args) => boolean: a reading call (quiet action-log row, no card, its result
-//     is stubbed after the turn like read_lines); writing calls need Auto mode and the main document;
+//     is stubbed after the turn like read_document); writing calls need an editing turn (Manual or Auto) and the main
+//     document;
+//   digest(name, args, content, why) -> string: a reading call's own short stub, built from its result text (an external
+//     lookup: what it found, so the next turn need not look it up again; why: "after the turn" or "to fit the context
+//     window"); '' or none: the plain stub;
 //   summary(name, args) -> string: the action-log row's summary;
-//   icon: '▦' or { name: icon }; pending: the card text while the call streams (writing tools);
-//   gate(name, plan) -> { large, what, range, excerptLabel, excerpt } | null: editGateInfo for gateEdit;
+//   pending: the card text while the call streams (writing tools); no icons: cards and rows show none;
+//   status: the status line while the call runs (default: the reading or editing text);
+//   gate(name, plan) -> { what, range?, excerptLabel?, excerpt? | blocks?, why?, always?, asks?, undoable? } | null:
+//     editGateInfo for gateEdit (gate.js says what each field does; the excerpt is shown whole, so pass it uncut);
 //   prompt: [{ section: 'reading' | 'edit', line, when?(mode, snap) }] (registerPromptLine; when defaults to offer);
-//   docNote(snap) -> string: a line added to the <document> block of the turn context when offered.
+//   docNote(snap) -> string: a line added to the <document> block of the turn context when offered;
+//   usesLines(name, args) -> boolean: a writing call that takes body line numbers; after a Docs API write in the same
+//     model response (snap.responseWrite) runExtraTool refuses it as the built-in line-numbered tools are refused.
+//   defsFor(mode, snap) -> definitions: the definitions sent in this turn when they depend on the mode (the same names;
+//     Plan and the read-only chat turn get read-only variants: fewer actions and fields); defs otherwise;
+//   runs(mode, snap) -> boolean: whether a call is accepted (default: offer). A tool offered on demand (Munin and custom
+//     servers: only when the message names it) keeps its old condition here, so a call it makes unoffered still runs.
 const EXTRA_TOOLS = [];
 function registerTools(defs, spec) {
   const list = Array.isArray(defs) ? defs : [defs];
@@ -49,23 +61,37 @@ function featureCall(names, what, fn, fallback) {
 const offered = (t, mode, snap) => !!featureCall(t.names, 'offer()', () => t.offer(mode, snap), false);
 const extraTool = (name) => EXTRA_TOOLS.find((t) => t.names.includes(name)) || null;
 // The registered definitions offered in this turn, in registration order.
-const extraToolDefs = (mode, snap) => EXTRA_TOOLS.filter((t) => offered(t, mode, snap)).flatMap((t) => t.defs);
+const extraToolDefs = (mode, snap) => EXTRA_TOOLS.filter((t) => offered(t, mode, snap))
+  .flatMap((t) => (t.defsFor ? featureCall(t.names, 'defsFor()', () => t.defsFor(mode, snap), t.defs) || t.defs : t.defs));
+// Whether a call of a registered tool is accepted in this turn: runs(mode, snap) when the entry has one (a tool offered
+// on demand still runs when the model calls it unoffered), else offered.
+const extraRuns = (t, mode, snap) => (t.runs ? !!featureCall(t.names, 'runs()', () => t.runs(mode, snap), false) : offered(t, mode, snap));
 // Whether a call of a registered tool only reads (args: the parsed arguments, or {} when unknown).
 function isExtraReading(name, args = {}) {
   const t = extraTool(name);
   if (!t) return false;
   return typeof t.reading === 'function' ? !!t.reading(name, args || {}) : !!t.reading;
 }
-function extraIcon(name) {
+
+// A registered reading tool's digest of its result for the stub (spec.digest), or '' (the plain stub: none, it threw).
+function readingDigest(name, args, content, why) {
   const t = extraTool(name);
-  if (!t || !t.icon) return '';
-  return typeof t.icon === 'string' ? t.icon : t.icon[name] || '';
+  if (!t || typeof t.digest !== 'function') return '';
+  const d = featureCall(t.names, 'digest()', () => t.digest(name, args || {}, String(content == null ? '' : content), why), '');
+  return typeof d === 'string' ? d.trim() : '';
+}
+
+// Whether a writing call of a registered tool takes line numbers (spec.usesLines; false when it throws).
+function extraUsesLines(name, args = {}) {
+  const t = extraTool(name);
+  return !!(t && typeof t.usesLines === 'function' && featureCall(t.names, 'usesLines()', () => t.usesLines(name, args || {}), false));
 }
 
 // ---- Prompt lines -------------------------------------------------------------------------------------
-// One "- tool(args): what it does" line in the static system prompt: section 'reading' joins the reading
-// tools of the instructions, 'edit' the list of apiEditRules (Auto turns with the Docs API). when(mode, snap)
-// must give the same answer for every round of a turn (the prompt is cached).
+// One "- …" line in the static system prompt: section 'reading' joins the reading part of the instructions, 'edit'
+// the list of apiEditRules (editing turns with the Docs API). A line holds behavior the tool's definition cannot say
+// (when to use it over another tool, a procedure, a rule); what the tool takes and does belongs in its definition only.
+// when(mode, snap) must give the same answer for every round of a turn (the prompt is cached).
 const PROMPT_LINES = [];
 function registerPromptLine({ section, line, when, names = 'a prompt line' }) {
   if (section !== 'reading' && section !== 'edit') throw new Error('registerPromptLine: section must be reading or edit');
@@ -101,9 +127,9 @@ const extraSelfTestRows = (mode) => SELFTEST_ROWS.filter((r) => r.modes.includes
 
 // ---- Line notation ------------------------------------------------------------------------------------------
 // registerLineDecorator({ label(line, model) -> string, before(line, model) -> string, note }): how the lines of
-// a Docs API model are shown in read_lines, read_formatting, find_in_document and the edit reports. label goes
+// a Docs API model are shown in read_document, find_in_document and the edit reports. label goes
 // between the line number and the colon ("6 [r1c1]: text"); before is an unnumbered line put in front of the
-// line ("[table T1: …]"; read_lines and the reports only); note is added to the instructions' sentence about
+// line ("[table T1: …]"; read_document and the reports only); note is added to the instructions' sentence about
 // table cells (", marked [rNcM] …"). Without decorators the output is unchanged.
 const LINE_DECORATORS = [];
 function registerLineDecorator(d) { LINE_DECORATORS.push(d); }
@@ -124,8 +150,15 @@ const lineDecoratorNotes = () => LINE_DECORATORS.map((d) => d.note || '').join('
 
 // ---- Turn hooks ----------------------------------------------------------------------------------------------
 // registerTurnHook(event, fn):
-//   'finish' fn(userMsg, snap, chatCtx) at the end of every tools turn (finishTurn, also after an error or Stop);
-//   'panelDoc' fn(docId) when the panel loads a document's chats (refreshContext);
+//   'finish' fn(userMsg, snap, chatCtx) at the end of every tools turn (finishTurn, also after an error or Stop); not
+//     awaited (runTurnHooks): a promise it returns runs detached, so background work started here (the chat title of
+//     src/chat-title.js) never delays the end of the turn, the busy flag or a queued message;
+//   'panelDoc' fn(docId) when the panel loads a document's chats (refreshContext), not awaited either;
+//   'beforeStart' fn({mode, text, persona, snap, signal}) (may be async; awaited, one after the other): before a main
+//     turn reads the document (startTurn, with the chat lock held, the message still in the input box); Stop meanwhile
+//     gives up the turn and leaves the message in the input box. Keep it short: the turn waits for it. Long work is
+//     started detached instead (src/doc-init.js decides here and starts its background pass from beforeTurn). Not for
+//     /side, /test or /check;
 //   'beforeTurn' fn(mode, snap) -> a line for the turn context, or '' / null (may return a promise of one): asked
 //     once per turn after the snapshot is taken (runTurn, runSideTurn: beforeTurnLines), before buildTurnContext;
 //     the lines go into the user message's turn context (after the document notes, before the selection line),
@@ -133,12 +166,18 @@ const lineDecoratorNotes = () => LINE_DECORATORS.map((d) => d.note || '').join('
 //   'beforeWrite' fn(name, plan, args, snap) -> null | { notes?: [string], refuse?: string } (may be async): asked
 //     by gateEdit before its card logic, for every write that goes through it (the built-in writing tools,
 //     replace_selection, remember and the registered writing tools); args: the call's parsed arguments ({} when
-//     unknown). A refuse makes gateEdit refuse the call ("Refused by a check: <refuse>"; the first refuse wins);
+//     unknown). A refuse makes gateEdit refuse the call ("Refused by a check: <refuse>"; every check runs, several
+//     refusals come as one "- <refuse>" line each);
 //     notes go on ui.notes, and executeTool appends them to a successful result ("Note: …"), so the model sees
-//     them in the next round.
-// Best effort: a hook's error or rejected promise is skipped (finish, panelDoc: ignored; beforeTurn, beforeWrite:
-// logged).
-const TURN_HOOKS = { finish: [], panelDoc: [], beforeTurn: [], beforeWrite: [] };
+//     them in the next round;
+//   'afterWrite' fn(name, args, result, snap, mode) -> null | { notes?: [string] } (may be async; awaited in order): asked
+//     by executeTool after a successful write of the main document (a result with _edit; not a paste without one), for
+//     notes that need the written text in place (the section line, the connectivity check of src/prose-tools.js); its
+//     notes join ui.notes and are appended like the beforeWrite notes. Writes from the /check and /polish cards
+//     (runWriteTool) do not pass here.
+// Best effort: a hook's error or rejected promise is skipped (finish, panelDoc: ignored; beforeStart, beforeTurn,
+// beforeWrite, afterWrite: logged).
+const TURN_HOOKS = { finish: [], panelDoc: [], beforeStart: [], beforeTurn: [], beforeWrite: [], afterWrite: [] };
 function registerTurnHook(event, fn) {
   if (!TURN_HOOKS[event]) throw new Error(`registerTurnHook: unknown event "${event}"`);
   TURN_HOOKS[event].push(fn);
@@ -158,6 +197,13 @@ async function askHook(event, fn, args) {
     return undefined;
   }
 }
+// The beforeStart hooks of a main turn, awaited in registration order; a hook that throws is skipped.
+async function beforeTurnStart(info) {
+  for (const fn of TURN_HOOKS.beforeStart) {
+    if (info.signal && info.signal.aborted) return;
+    await askHook('beforeStart', fn, [info]);
+  }
+}
 // The turn-context lines of the beforeTurn hooks, in registration order (one line each, empty answers dropped).
 async function beforeTurnLines(mode, snap) {
   const out = [];
@@ -167,14 +213,26 @@ async function beforeTurnLines(mode, snap) {
   }
   return out;
 }
-// The beforeWrite checks of one write: { notes: [string], refuse: string | null }. Stops at the first refuse.
+// The beforeWrite checks of one write: { notes: [string], refusals: [string], refuse: string | null }. Every check runs, so
+// one round names every reason (a check that remembers its refusal lets the identical retry pass): refuse is the one
+// refusal, or one "- …" line per refusal when there are several.
 async function beforeWriteChecks(name, plan, args, snap) {
-  const res = { notes: [], refuse: null };
+  const res = { notes: [], refusals: [], refuse: null };
   for (const fn of TURN_HOOKS.beforeWrite) {
     const r = await askHook('beforeWrite', fn, [name, plan, args || {}, snap]);
     if (!r || typeof r !== 'object') continue;
     if (Array.isArray(r.notes)) res.notes.push(...r.notes.filter((n) => typeof n === 'string' && n.trim()));
-    if (typeof r.refuse === 'string' && r.refuse.trim()) { res.refuse = r.refuse.trim(); break; }
+    if (typeof r.refuse === 'string' && r.refuse.trim()) res.refusals.push(r.refuse.trim());
   }
+  if (res.refusals.length) res.refuse = res.refusals.length === 1 ? res.refusals[0] : res.refusals.map((t) => '- ' + t).join('\n');
   return res;
+}
+// The notes of the afterWrite hooks of one successful write, in registration order.
+async function afterWriteNotes(name, args, result, snap, mode) {
+  const out = [];
+  for (const fn of TURN_HOOKS.afterWrite) {
+    const r = await askHook('afterWrite', fn, [name, args || {}, result, snap, mode]);
+    if (r && Array.isArray(r.notes)) out.push(...r.notes.filter((n) => typeof n === 'string' && n.trim()));
+  }
+  return out;
 }

@@ -88,7 +88,7 @@ test('beforeWrite: a refuse ends the call before the gate and the Docs API; note
   deq([refused.tool_use_id, refused.content, refused.is_error], ['toolu_b', 'Refused by a check: blocked by the test.', true]);
   const inserted = bodies[2].messages[4].content[0];
   assert.ok(inserted.content.startsWith('Done: inserted'), inserted.content);
-  assert.ok(inserted.content.endsWith('\nNote: first note\nNote: second note'), inserted.content);
+  assert.ok(inserted.content.includes('\nNote: first note\nNote: second note'), inserted.content); // the section note may follow (src/prose-tools.js)
   assert.strictEqual(fake.log.filter((x) => x.method === 'POST').length, 1); // only the insert was written
   assert.ok(fake.text('t.0').includes('A new line.') && fake.text('t.0').includes('beta gamma'));
   // the hook saw the tool, the plan, the parsed arguments and the snapshot
@@ -112,7 +112,7 @@ test('beforeWrite with Munin: the same refusal and notes', async () => {
   hooks.write = false;
   const tools = bodies[2].messages.filter((m) => m.role === 'tool');
   assert.strictEqual(tools[0].content, 'Refused by a check: blocked by the test.');
-  assert.ok(tools[1].content.endsWith('\nNote: first note\nNote: second note'), tools[1].content);
+  assert.ok(tools[1].content.includes('\nNote: first note\nNote: second note'), tools[1].content);
 });
 
 test('beforeWrite: remember goes through it too; a failed write gets no notes', async () => {

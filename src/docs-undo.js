@@ -3,12 +3,13 @@
 // and the kinds of registerUndoHandler; edits in headers, footers and footnotes through their segment model;
 // undoLastEditTool, the Undo and Undo all buttons on edit cards: undoFromButton, undoAllFromButton with its dry
 // run and confirmation card (previewUndoAll, undoAllCard), answerEdits, refreshEditCard).
-/* global addError, addNotice, anchorMatches, confirmOpen, changedLinesReport, commonEdges, disjointHits, docsBatchUpdate,
-   docStatusText, fetchDocModel, findFlexible, formatNote, hitLines, indexAtOffset, indexRange, lineAtIndex, lineAtOffset,
+/* global addError, anchorMatches, confirmOpen, changedLinesReport, commonEdges, disjointHits, docsBatchUpdate,
+   activityRow, syncToolGroup, docStatusText, fetchDocModel, logEntry, findFlexible, formatNote, hitLines, indexAtOffset, indexRange, lineAtIndex, lineAtOffset,
    lineList, linesReport, markedText, OBJECT_CHAR, oneLine, rangeLabel, renderHistory, reqDelete, reqInsert,
-   reqStyle, readChatForTurn, sanitizeInsertText, saveHistory, segmentModel, setSnapModel, setStatus, state, toolCard, toolCardFor,
-   tryChatLock, undoHandler, UNDO_ALL_PENDING_TEXT, UNDO_RUNNING_TEXT, useDocModel, writeError */
-/* exported latestUndoable, undoLastEditTool, editCards, undoFromButton, answerEdits, undoAllFromButton, undoingNotice, withOwnedChat */
+   reqParaStyle, restyle, restoredStyles, styleAfterDelete, readChatForTurn, sanitizeInsertText, saveHistory, segmentModel, setSnapModel, setStatus, state, toolCard, toolCardFor,
+   tryChatLock, undoHandler, UNDO_ALL_PENDING_TEXT, UNDO_RUNNING_TEXT, useDocModel, writeError, withDocWrite,
+   docsApi, registerUndoHandler, rememberUndoCheck, suggestionSpans, SUGGEST_UNDO_ADVICE */
+/* exported CTRL_Z_ADVICE, NOT_UNDONE, latestUndoable, journalEntries, turnStartIndex, undoLastEditTool, editCards, undoFromButton, answerEdits, undoAllFromButton, undoingNotice */
 
 // ---- Undo ------------------------------------------------------------------------------------------
 // The edit journal is the chat history itself: every successful write keeps its inverse in the tool
@@ -16,13 +17,48 @@
 // Undo reverts the most recent edit that is not undone yet; an undo is not journaled, so it cannot be
 // undone in turn (Ctrl+Z in Google Docs still can). Embedded objects and character formatting of
 // removed text cannot be restored.
-// An edit with undoable: false (journaled for the record, e.g. a deleted comment thread) is skipped.
-const isUndoable = (m) => m.role === 'tool' && m._ok && !!m._edit && !m._edit.undone && m._edit.undoable !== false;
+// An edit with undoable: false (journaled for the record, e.g. a deleted comment thread) is skipped by the Undo arrow;
+// undo_last_edit refuses when it is the newest change (undoLastEditTool).
+const isUndoable = (m) => !!m && m.role === 'tool' && m._ok && !!m._edit && !m._edit.undone && m._edit.undoable !== false;
+// The last sentence of every refusal to undo automatically (the Undo buttons show it to the user). undo_last_edit gives
+// the model CTRL_Z_TELL in its place: the model cannot press Ctrl+Z, it relays the advice.
+const CTRL_Z_ADVICE = 'Use Undo (Ctrl+Z) in Google Docs instead.';
+const CTRL_Z_TELL = 'Tell the user to use Undo (Ctrl+Z) in Google Docs.';
+const NOT_UNDONE = 'so it cannot be undone automatically. ' + CTRL_Z_ADVICE;
+// The journal of a history in order: its messages, and right before an agent's report message (or the delegate result
+// of an earlier build, which ran the agent inside the turn) the edits that agent made (agents.js: _agent.edits,
+// tool-message entries with _edit, oldest first), so an agent's edit is undone like the main model's.
+const agentOwner = (m) => !!m && (m.role === 'tool' || !!m._agentReport) && !!m._agent && Array.isArray(m._agent.edits);
+function journalEntries(messages) {
+  const out = [];
+  for (const m of messages) {
+    if (agentOwner(m)) out.push(...m._agent.edits);
+    out.push(m);
+  }
+  return out;
+}
+// Where a turn's messages start for the after-turn checks: its user message, or the agents' reports stored right before
+// it (they arrived during the previous turn and are delivered with this one; their edits are checked with it).
+function turnStartIndex(messages, userMsg) {
+  let i = messages.indexOf(userMsg);
+  while (i > 0 && messages[i - 1] && messages[i - 1]._agentReport) i--;
+  return i;
+}
 function latestUndoable(messages = state.messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (isUndoable(messages[i])) return messages[i];
+  const entries = journalEntries(messages);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (isUndoable(entries[i])) return entries[i];
   }
   return null;
+}
+// The history undo_last_edit looks at: the chat's, and while an agent runs also the agent's own (snap.agentMessages),
+// whose edits are newer than everything in the chat.
+const undoHistory = (snap) => (snap && Array.isArray(snap.agentMessages) ? [...state.messages, ...snap.agentMessages] : state.messages);
+// The note an undo leaves on the edit's result (and, for an agent's edit, on its delegate result, which the model reads).
+function noteUndone(m, button) {
+  m.content += `\n[Later the user undid this edit with the ${button} button.]`;
+  const owner = state.messages.find((x) => agentOwner(x) && x._agent.edits.includes(m));
+  if (owner) owner.content += `\n[Later the user undid the agent's edit "${m._edit.title}" with the ${button} button.]`;
 }
 
 // Reads the document and checks that the edit can still be undone (its context anchor is unchanged).
@@ -43,15 +79,15 @@ function undoableAt(model, edit) {
   throw notUndoableError(edit);
 }
 const notUndoableError = (edit) => new Error(edit.anchor
-  ? 'the document changed near that edit after it was made, so it cannot be undone automatically. Use Undo (Ctrl+Z) in Google Docs instead.'
-  : 'that edit could not be verified after it was made, so it cannot be undone automatically. Use Undo (Ctrl+Z) in Google Docs instead.');
+  ? `the document changed near that edit after it was made, ${NOT_UNDONE}`
+  : `that edit could not be verified after it was made, ${NOT_UNDONE}`);
 // The document read for undoing edit: the body model, or the segment model of its segmentId.
 async function editModel(edit) {
   return editSegment(await fetchDocModel(edit.docId, edit.tabId), edit);
 }
 function editSegment(full, edit) {
   const model = segmentModel(full, edit.segmentId);
-  if (!model) throw new Error('the header, footer or footnote of that edit no longer exists, so it cannot be undone automatically. Use Undo (Ctrl+Z) in Google Docs instead.');
+  if (!model) throw new Error(`the header, footer or footnote of that edit no longer exists, ${NOT_UNDONE}`);
   return model;
 }
 
@@ -102,15 +138,43 @@ async function undoEdit(edit) {
   if (restore) requests.push(reqInsert(model, edit.index, restore));
   const nlPos = [];
   for (let i = restore.indexOf('\n'); i >= 0; i = restore.indexOf('\n', i + 1)) nlPos.push(i);
+  const now = styleAfterDelete(model, edit.index, edit.index + len); // the style of every paragraph from the index after the delete and insert
   for (const p of edit.paras || []) {
-    if (!p.style || (p.nl >= 0 && p.nl >= nlPos.length)) continue;
+    if ((!p.style && !p.para) || (p.nl >= 0 && p.nl >= nlPos.length)) continue;
     const at = p.nl < 0 ? edit.index : edit.index + nlPos[p.nl] + 1;
-    requests.push(reqStyle(model, at, at + 1, p.style));
+    requests.push(...restyle(model, at, at + 1, p.style, now));
+    // The paragraph values the formatting sheet wrote on that paragraph (an insert after it; style-sheet.js).
+    if (p.para) requests.push(reqParaStyle(model, at, at + 1, p.para.style, p.para.fields));
   }
+  // The removed text's own text styles (Docs would give it its neighbour's), after the named styles that clear them.
+  if (restore.length === raw.length) requests.push(...restoredStyles(model, edit.index, restore.length, edit.restoreStyles));
   if (!requests.length) throw new Error('there is nothing to undo for that edit.');
   await docsBatchUpdate(model, requests);
   return { model: await fetchDocModel(edit.docId, edit.tabId), restored: restore, lostObjects: raw.includes(OBJECT_CHAR) };
 }
+// ---- Undo of a suggested edit (suggest mode, docs-write.js) ----------------------------------------------------------
+// The edit's suggestion ids are deleted (deleteSuggestion: the signed-in user is their author), only those still in the
+// document (a co-author may have accepted or rejected some), in one batch without a revision (the ids address them), and
+// the document is read again to check they are gone. Without ids the entry is not undoable (undoable: false).
+async function undoSuggestion(edit) {
+  if (!(edit.ids || []).length) throw new Error(`that suggestion could not be verified after it was made, so it cannot be undone from the panel: ${SUGGEST_UNDO_ADVICE}.`);
+  const now = new Set(suggestionSpans(await fetchDocModel(edit.docId, edit.tabId)).flatMap((x) => [...x.ins, ...x.del]));
+  const live = edit.ids.filter((i) => now.has(i));
+  if (!live.length) throw new Error('that suggestion is no longer in the document (a co-author accepted or rejected it), so there is nothing to undo from the panel.');
+  await docsApi(`${encodeURIComponent(edit.docId)}:batchUpdate`, { method: 'POST', body: { requests: live.map((suggestionId) => ({ deleteSuggestion: { suggestionId } })) } });
+  const model = await fetchDocModel(edit.docId, edit.tabId);
+  const left = new Set(suggestionSpans(model).flatMap((x) => [...x.ins, ...x.del]));
+  const still = live.filter((i) => left.has(i));
+  if (still.length) throw new Error(`Google Docs answered, but the suggestion ${still.join(', ')} is still in the document; ${SUGGEST_UNDO_ADVICE}.`);
+  const n = model.lines.length;
+  const r = edit.lines || [1, 1];
+  const a = Math.max(1, Math.min(r[0], n));
+  const gone = edit.ids.length - live.length;
+  return { model, restored: '', lostObjects: false, range: [a, Math.max(a, Math.min(r[1], n))], what: `withdrew the suggestion "${edit.title}"`,
+    note: gone ? `Note: ${gone} of its ${edit.ids.length} suggested changes had been accepted or rejected already and stay as they are.` : undefined };
+}
+registerUndoHandler('suggest', undoSuggestion);
+
 // The text an undo puts back: the removed text without embedded objects (they cannot be re-inserted).
 const restoredText = (edit) => sanitizeInsertText(edit.restore || '').split(OBJECT_CHAR).join('');
 
@@ -120,9 +184,8 @@ const restoredText = (edit) => sanitizeInsertText(edit.restore || '').split(OBJE
 // times, all on plain lines; otherwise the document changed since (or new_text also occurred
 // elsewhere) and which occurrences to revert is unknown. An empty new_text left nothing to find.
 // Returns { model, restored, lostObjects, lines } (lines: the reverted lines; numbering unchanged).
-const REPLACE_ALL_CTRL_Z = 'so it cannot be undone automatically. Use Undo (Ctrl+Z) in Google Docs instead.';
 async function undoReplaceAll(edit) {
-  const ctrlZ = REPLACE_ALL_CTRL_Z;
+  const ctrlZ = NOT_UNDONE;
   if (!edit.find) throw replaceAllNoFindError(edit);
   const model = await editModel(edit);
   const hits = replaceAllHits(model.text, edit);
@@ -138,26 +201,27 @@ async function undoReplaceAll(edit) {
     const E = r.end - q;
     const mid = back.slice(p, back.length - q);
     if (E > S) requests.push(reqDelete(model, S, E));
-    if (mid) requests.push(reqInsert(model, S, mid));
+    // with its own text styles (restoreStyles, per occurrence), not the neighbour's Docs would give it
+    if (mid) requests.push(reqInsert(model, S, mid), ...restoredStyles(model, S, mid.length, (edit.restoreStyles || [])[i]));
   }
   await docsBatchUpdate(model, requests);
   return { model: await fetchDocModel(edit.docId, edit.tabId), restored: edit.replace, lostObjects: false, lines };
 }
 // The checks of undoReplaceAll without a request (also the dry run of Undo all): the occurrences of new_text in
 // text when they are exactly the ones the edit inserted, and the lines they are on when those are plain.
-const replaceAllNoFindError = (edit) => new Error(`that edit deleted every occurrence of "${oneLine(edit.replace, 60)}" and where they were is not recorded, ${REPLACE_ALL_CTRL_Z}`);
+const replaceAllNoFindError = (edit) => new Error(`that edit deleted every occurrence of "${oneLine(edit.replace, 60)}" and where they were is not recorded, ${NOT_UNDONE}`);
 function replaceAllHits(text, edit) {
   if (!edit.find) throw replaceAllNoFindError(edit);
   const hits = disjointHits(findFlexible(text, edit.find, { normalize: false }));
   if (hits.length !== edit.count) {
-    throw new Error(`"${oneLine(edit.find, 60)}" now occurs ${hits.length} time${hits.length === 1 ? '' : 's'} in the document instead of the ${edit.count} inserted by that edit (the text changed since, or it also occurs elsewhere), ${REPLACE_ALL_CTRL_Z}`);
+    throw new Error(`"${oneLine(edit.find, 60)}" now occurs ${hits.length} time${hits.length === 1 ? '' : 's'} in the document instead of the ${edit.count} inserted by that edit (the text changed since, or it also occurs elsewhere), ${NOT_UNDONE}`);
   }
   return hits;
 }
 function replaceAllLines(model, hits) {
   const lines = hitLines(model, hits);
   const bad = lines.filter((n) => model.lines[n - 1].suggested || !model.lines[n - 1].exact);
-  if (bad.length) throw new Error(`${bad.length === 1 ? 'line' : 'lines'} ${lineList(bad)} with the replaced text now contain${bad.length === 1 ? 's' : ''} suggested changes or cannot be mapped exactly, ${REPLACE_ALL_CTRL_Z}`);
+  if (bad.length) throw new Error(`${bad.length === 1 ? 'line' : 'lines'} ${lineList(bad)} with the replaced text now contain${bad.length === 1 ? 's' : ''} suggested changes or cannot be mapped exactly, ${NOT_UNDONE}`);
   return lines;
 }
 
@@ -204,7 +268,7 @@ async function undoFormatGroups(edit) {
 // Group line numbers are those of the edit (formatting moves no line; text typed since may have).
 const groupsLabel = (gs) => gs.map((g) => rangeLabel(g.lines[0], g.lines[1])).join(', ');
 const groupsPartlyError = (done, missing, dry) => new Error(`only part of that edit ${dry ? 'would be' : 'was'} undone: the formatting of ${groupsLabel(done)} ${dry ? 'can be' : 'was'} restored, `
-  + `but the text of ${groupsLabel(missing)} changed after the edit, so ${missing.length === 1 ? 'that part' : 'those parts'} cannot be restored automatically. Use Undo (Ctrl+Z) in Google Docs instead.`);
+  + `but the text of ${groupsLabel(missing)} changed after the edit, so ${missing.length === 1 ? 'that part' : 'those parts'} cannot be restored automatically. ${CTRL_Z_ADVICE}`);
 
 // The lines [from, to] of API range [s, e) in model ([1, 1] when unknown).
 function indexLines(model, s, e) {
@@ -270,13 +334,34 @@ function undoAffected(model, edit, restored) {
   return a ? [a.line, Math.max(a.line, b.line)] : [1, 1];
 }
 
+// The newest journal entry that is not undone, undoable or not (a deleted comment, an accepted suggestion).
+function latestJournaled(messages) {
+  const entries = journalEntries(messages);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e && e.role === 'tool' && e._ok && e._edit && !e._edit.undone) return e;
+  }
+  return null;
+}
+
 async function undoLastEditTool(snap) {
-  const m = latestUndoable();
+  const history = undoHistory(snap);
+  // "Undo that" means the newest change: when that one cannot be undone here, an older edit is not reverted instead.
+  const newest = latestJournaled(history);
+  if (newest && newest._edit.undoable === false) {
+    return writeError(`the latest change (${newest._edit.title}) cannot be undone from the panel; nothing was undone. ${CTRL_Z_TELL}`, 'Cannot be undone from the panel');
+  }
+  const m = latestUndoable(history);
   if (!m) return writeError('there is no edit to undo in this chat (an undo itself cannot be undone).', 'Nothing to undo');
   const edit = m._edit;
   let res;
-  try { res = await undoEdit(edit); } catch (e) { return writeError(e.message, 'Undo failed: ' + e.message); }
+  // The refusal is the Undo buttons' text; the model gets the advice to relay instead of the one to follow.
+  try { res = await undoEdit(edit); } catch (e) { return writeError(String(e.message).split(CTRL_Z_ADVICE).join(CTRL_Z_TELL), 'Undo failed: ' + e.message); }
   edit.undone = true;
+  if (!res.model) { // a remember: MAIN.md or DOC.md changed back, the document is untouched
+    refreshEditCard(edit.id);
+    return { content: `Done: ${res.what}. The document is unchanged; the instructions apply from the next message.`, _ok: true, _message: 'Undid: ' + edit.title };
+  }
   if (snap.model && snap.model.docId === res.model.docId && snap.model.tabId === res.model.tabId) setSnapModel(snap, res.model);
   useDocModel(res.model);
   // The lines are reported in the edit's segment (a header, footer or footnote) when it has one.
@@ -295,35 +380,50 @@ async function undoLastEditTool(snap) {
   const report = rm !== res.model ? `In the ${rm.label}:\n${lines}` : lines;
   return {
     content: `Done: ${what}.${lost}\n${report}\nThe document now has ${res.model.lines.length} lines.`,
-    _ok: true, _message: 'Undid: ' + edit.title, _icon: '↩️', _detail: res.lostObjects ? LOST_OBJECTS_NOTE : undefined,
+    _ok: true, _message: 'Undid: ' + edit.title, _detail: res.lostObjects ? LOST_OBJECTS_NOTE : undefined,
   };
 }
 
-// Cards of journaled edits shown in the chat (edit id -> element), so an undo can update its card.
+// Rows (or cards) of journaled edits shown in the chat (edit id -> element), so an undo can update them. A row is
+// redrawn in place: its bubble keeps the element (renderActivity).
 const editCards = new Map();
 function refreshEditCard(editId) {
   const old = editCards.get(editId);
   if (!old || !old.isConnected) return;
-  let tc = { id: editId, type: 'function', function: { name: '', arguments: '' } };
+  let tc = null;
   for (const m of state.messages) for (const c of m.tool_calls || []) if (c.id === editId) tc = c;
   const r = state.messages.find((x) => x.role === 'tool' && x.tool_call_id === editId);
   if (!r) return;
-  old.replaceWith(toolCardFor(tc, r));
+  if (old.classList.contains('write-row')) {
+    // The call itself may not be in the history yet (this round's): the row's own entry, marked undone.
+    const prev = old._entry;
+    const entry = tc || !prev ? logEntry(tc || { id: editId, function: { name: '', arguments: '' } }, r)
+      : { ...prev, result: String(r.content == null ? '' : r.content), write: { ...prev.write, undone: !!(r._edit && r._edit.undone) } };
+    const row = activityRow(entry);
+    old._entry = row._entry;
+    old.className = row.className;
+    old.innerHTML = row.innerHTML;
+    editCards.set(editId, old);
+    const b = old.closest('.msg.assistant');
+    if (b && b._parts) syncToolGroup(b); // the round's action row says Undone too
+    return;
+  }
+  old.replaceWith(toolCardFor(tc || { id: editId, type: 'function', function: { name: '', arguments: '' } }, r));
 }
 
 // An Undo / Undo all click owns the chat like a turn does (tryChatLock): it is refused while another tab
 // answers in the chat (or undoes there), and runs on the stored history (readChatForTurn), so the edit it
 // undoes and the journal it marks are the current ones. Returns run()'s result, or false when refused.
 async function withOwnedChat(button, run) {
-  if (state.busy || state.undoing) { addNotice(`Wait until the current answer is finished, then click ${button} again.`); return false; }
+  if (state.busy || state.undoing) { addError(`Wait until the current answer is finished, then click ${button} again.`); return false; }
   const { docId, chatId } = state;
   state.undoing = true; // set before the first await: a second click is refused above
   let release = null;
   try {
     release = docId && chatId ? await tryChatLock(docId, chatId) : null;
-    if (!release) { addNotice(`Another tab is answering in this chat. Click ${button} again when that answer is finished.`); return false; }
+    if (!release) { addError(`Another tab is answering in this chat. Click ${button} again when that answer is finished.`); return false; }
     if (!(await readChatForTurn(docId, chatId))) return false; // deleted in another tab
-    return await run();
+    return await withDocWrite(docId, run); // an agent may be writing meanwhile (docs-write.js)
   } finally {
     if (release) release();
     state.undoing = false;
@@ -336,18 +436,20 @@ function undoFromButton(editId, btn) {
 }
 
 async function undoEditOf(editId, btn) {
-  const m = state.messages.find((x) => x.role === 'tool' && x._edit && x._edit.id === editId);
-  if (!m || m !== latestUndoable()) { addNotice('Only the most recent edit can be undone here. Use Ctrl+Z in Google Docs for older ones.'); return false; }
+  const m = journalEntries(state.messages).find((x) => x && x.role === 'tool' && x._edit && x._edit.id === editId);
+  if (!m || m !== latestUndoable()) { addError('Only the most recent edit can be undone here. Use Ctrl+Z in Google Docs for older ones.'); return false; }
   if (btn) btn.disabled = true;
   setStatus('Undoing the edit…');
   try {
     const res = await undoEdit(m._edit);
     m._edit.undone = true;
-    m.content += '\n[Later the user undid this edit with the Undo button.]';
-    useDocModel(res.model);
+    // The edit's row now reads "Undone"; what the user must know besides goes on it (writeRow: its preview and fold).
+    const note = [res.lostObjects ? LOST_OBJECTS_NOTE + LOST_OBJECTS_HINT : '', m._edit.lists ? LIST_UNDO_NOTE : '', res.note || ''].filter(Boolean).join(' ');
+    if (note) m._edit.undoNote = note;
+    noteUndone(m, 'Undo');
+    if (res.model) useDocModel(res.model); // none for a remember (the document is untouched)
     await saveHistory();
     renderHistory();
-    addNotice('↩️ Undid: ' + m._edit.title + (res.lostObjects ? ' ' + LOST_OBJECTS_NOTE + LOST_OBJECTS_HINT : '') + (m._edit.lists ? ' ' + LIST_UNDO_NOTE : '') + (res.note ? ' ' + res.note : ''), { sticky: res.lostObjects || !!res.note });
     return true;
   } catch (e) {
     if (btn) btn.disabled = false;
@@ -364,9 +466,10 @@ function answerEdits(editId, messages = state.messages) {
   const latest = latestUndoable(messages);
   if (!latest || latest._edit.id !== editId) return [];
   const out = [];
+  const entries = journalEntries(messages); // an agent's edits belong to the answer that delegated
   // An automatic continuation (_auto) belongs to the answer it continues, as in lastUserIndex.
-  for (let i = messages.indexOf(latest); i >= 0 && (messages[i].role !== 'user' || messages[i]._auto); i--) {
-    if (isUndoable(messages[i])) out.push(messages[i]);
+  for (let i = entries.indexOf(latest); i >= 0 && (entries[i].role !== 'user' || entries[i]._auto); i--) { // a report is _auto too
+    if (isUndoable(entries[i])) out.push(entries[i]);
   }
   return out;
 }
@@ -386,7 +489,7 @@ const undoingNotice = () => (undoAllWaiting ? UNDO_ALL_PENDING_TEXT : UNDO_RUNNI
 
 async function undoAnswerOf(editId, btn) {
   const list = answerEdits(editId);
-  if (list.length < 2) { addNotice('Only the edits of the answer with the most recent edit can be undone together. Use Ctrl+Z in Google Docs for older ones.'); return false; }
+  if (list.length < 2) { addError('Only the edits of the answer with the most recent edit can be undone together. Use Ctrl+Z in Google Docs for older ones.'); return false; }
   if (btn) btn.disabled = true;
   let go = false;
   try {
@@ -423,11 +526,11 @@ async function applyUndoAll(list, btn) {
       try {
         const res = await undoEdit(m._edit);
         m._edit.undone = true;
-        m.content += '\n[Later the user undid this edit with the Undo all button.]';
+        noteUndone(m, 'Undo all');
         undone.push(m._edit.title);
         lost = lost || res.lostObjects;
         for (const n of [m._edit.lists ? LIST_UNDO_NOTE : '', res.note || '']) if (n && !notes.includes(n)) notes.push(n);
-        model = res.model;
+        if (res.model) model = res.model;
       } catch (e) {
         failed = { title: m._edit.title, message: e.message };
         break;
@@ -442,7 +545,7 @@ async function applyUndoAll(list, btn) {
     if (kept.length) lines.push('Not undone (still in the document):', ...kept.map((t) => '- ' + t));
     const detail = [failed ? `Stopped at "${failed.title}": ${failed.message}` : '', lost ? LOST_OBJECTS_NOTE + LOST_OBJECTS_HINT : '', ...notes].filter(Boolean).join(' ');
     if (failed) toolCard('fail', `Undid ${undone.length} of ${list.length} edits of this answer`, lines.join('\n'), detail, { label: 'Details' });
-    else toolCard('ok', `Undid all ${list.length} edits of this answer`, lines.join('\n'), detail || undefined, { label: 'Details', icon: '↩️' });
+    else toolCard('ok', `Undid all ${list.length} edits of this answer`, lines.join('\n'), detail || undefined, { label: 'Details' });
     if (btn && !undone.length) btn.disabled = false;
     return !failed;
   } finally {
@@ -463,6 +566,7 @@ async function applyUndoAll(list, btn) {
 async function previewUndoAll(list) {
   const reads = new Map(); // docId|tabId -> body model, read once
   for (const m of list) {
+    if (m._edit.kind === 'remember') continue; // MAIN.md or DOC.md: checked below, no document read
     const key = m._edit.docId + '|' + m._edit.tabId;
     if (!reads.has(key)) reads.set(key, await fetchDocModel(m._edit.docId, m._edit.tabId));
   }
@@ -472,7 +576,9 @@ async function previewUndoAll(list) {
   for (const m of list) {
     const item = { title: m._edit.title, status: 'ok' };
     if (blocked) item.status = 'stop';
-    else if (dry.unknown) item.status = 'unchecked';
+    else if (m._edit.kind === 'remember') { // its file, not the document: checked on the file as stored now
+      try { await rememberUndoCheck(m._edit); } catch (e) { item.status = 'blocked'; item.reason = e.message; blocked = true; }
+    } else if (dry.unknown) item.status = 'unchecked';
     else {
       try { item.status = dryUndo(m._edit, dry); } catch (e) { item.status = 'blocked'; item.reason = e.message; blocked = true; }
     }
@@ -569,10 +675,12 @@ function undoAllCard(items) {
     blockedAt === 0 ? '' : 'Each edit is checked again right before it is undone.',
   ].filter(Boolean).join(' ');
   return {
-    tool: 'Undo all', kind: 'undo-all', icon: '↩️', title: `Undo all ${n} edits of this answer?`, why,
+    tool: 'Undo all', kind: 'undo-all', title: `Undo all ${n} edits of this answer?`, why,
     items: items.map((x) => ({
       title: x.title,
-      mark: { ok: '↩️', unchecked: '❔', blocked: '⛔', stop: '⏸️' }[x.status],
+      // A coloured dot per state (gate.js previewBodyHtml), named in its tooltip.
+      mark: { ok: { st: 'ok', label: 'Can be undone' }, unchecked: { st: 'note', label: 'Not checked in advance' },
+        blocked: { st: 'fail', label: 'Blocked' }, stop: { st: 'skip', label: 'Not undone' } }[x.status],
       note: x.status === 'blocked' ? `Blocked: ${x.reason}`
         : x.status === 'stop' ? 'Not undone: Undo all stops at the blocked edit above.'
           : x.status === 'unchecked' ? 'Not checked in advance; checked when it is undone.' : '',

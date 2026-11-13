@@ -6,6 +6,14 @@
 //   deleteTableRow / deleteTableColumn { tableCellLocation } (the last row / column deletes the whole table)
 //   updateTableColumnProperties { tableStartLocation, columnIndices (none: every column), tableColumnProperties
 //     { widthType, width }, fields } (a fixed width under 5 pt is a 400)
+//   pinTableHeaderRows { tableStartLocation, pinnedHeaderRowsCount } (0..rows; the pinned rows render tableHeader)
+//   updateTableCellStyle { tableCellStyle, fields, tableRange { tableCellLocation, rowSpan, columnSpan } | tableStartLocation }
+//     (exactly one of the two; backgroundColor, the four borders, paddings, contentAlignment or "*"; rowSpan and
+//     columnSpan are read-only: a 400; a border set needs color, width and dashStyle; a listed field absent from the
+//     style is reset; a border is applied right, left, bottom, top and also changes the neighbouring cell's shared one)
+//   mergeTableCells { tableRange } (a 400 when the range leaves the table, holds one cell or cuts a merged cell; the
+//     texts of the non-empty cells are joined in the head cell as its paragraphs, the other cells keep one empty one)
+//   unmergeTableCells { tableRange } (every merged cell overlapping the range; the text stays in the head cell)
 // and deleteContentRange extended to a whole table: [start, end) or [start - 1, end) (with the newline before it,
 // which joins the paragraphs around the table); a range that cuts a table otherwise is a 400. A new row or column
 // has one empty paragraph per cell (a cell takes one index, its paragraph's newline one). srv.onShift listeners
@@ -147,6 +155,90 @@ registerFakeRequest('deleteContentRange', (body, api) => {
     removeTable(api, c, hit.at, s === hit.start - 1);
   } else api.deleteRange(c, s, e);
   api.shifted(range, s, s - e);
+});
+
+// ---- Header rows, cell styles, merged cells ----
+const CELL_STYLE_FIELDS = ['backgroundColor', 'borderTop', 'borderBottom', 'borderLeft', 'borderRight', 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight', 'contentAlignment'];
+const BORDER_ORDER = ['borderRight', 'borderLeft', 'borderBottom', 'borderTop'];
+const OPPOSITE = { borderTop: ['borderBottom', -1, 0], borderBottom: ['borderTop', 1, 0], borderLeft: ['borderRight', 0, -1], borderRight: ['borderLeft', 0, 1] };
+// The 0-based range { r, c, rs, cs } of a tableRange, checked against the table's rows.
+function rangeOf(api, rows, tr) {
+  const tcl = (tr && tr.tableCellLocation) || {};
+  const [r, c] = checkCell(api, rows, tcl);
+  const rs = tr.rowSpan;
+  const cs = tr.columnSpan;
+  if (!Number.isInteger(rs) || !Number.isInteger(cs) || rs < 1 || cs < 1 || r + rs > rows.length || c + cs > colCount(rows)) api.fail('Invalid table range: it reaches outside the table.');
+  return { r, c, rs, cs };
+}
+const spanRegions = (rows) => rows.flatMap((row, r) => row.map((cell, c) => (cell.span ? { r, c, rs: cell.span[0], cs: cell.span[1] } : null))).filter(Boolean);
+const overlap = (a, b) => a.r < b.r + b.rs && b.r < a.r + a.rs && a.c < b.c + b.cs && b.c < a.c + a.cs;
+const within = (a, b) => a.r >= b.r && a.c >= b.c && a.r + a.rs <= b.r + b.rs && a.c + a.cs <= b.c + b.cs;
+const tableChars = (api, c, t) => api.layout(c).tables.find((x) => x.block === t.block);
+
+registerFakeRequest('pinTableHeaderRows', (body, api) => {
+  const { t } = tableAt(api, body.tableStartLocation);
+  const n = body.pinnedHeaderRowsCount || 0;
+  if (!Number.isInteger(n) || n < 0 || n > t.block.rows.length) api.fail(`Invalid pinnedHeaderRowsCount: ${n}`);
+  t.block.pinned = n;
+});
+
+registerFakeRequest('updateTableCellStyle', (body, api) => {
+  if (!!body.tableRange === !!body.tableStartLocation) api.fail('Exactly one of tableRange and tableStartLocation must be set.');
+  const start = body.tableRange ? (body.tableRange.tableCellLocation || {}).tableStartLocation : body.tableStartLocation;
+  const { t } = tableAt(api, start);
+  const rows = t.block.rows;
+  const g = body.tableRange ? rangeOf(api, rows, body.tableRange) : { r: 0, c: 0, rs: rows.length, cs: colCount(rows) };
+  const keys = String(body.fields || '').split(',').map((k) => k.trim()).filter(Boolean);
+  const bad = keys.filter((k) => k !== '*' && !CELL_STYLE_FIELDS.includes(k));
+  if (!keys.length || bad.length) api.fail(`Invalid field mask for updateTableCellStyle: ${bad.join(', ') || '(empty)'}`);
+  const list = keys.includes('*') ? CELL_STYLE_FIELDS : keys;
+  const st = body.tableCellStyle || {};
+  if ('rowSpan' in st || 'columnSpan' in st) api.fail('rowSpan and columnSpan are read-only.');
+  for (const k of list) {
+    const b = st[k];
+    if (k.startsWith('border') && b && !(b.color && b.color.color && b.color.color.rgbColor && b.width && b.dashStyle)) api.fail(`Invalid ${k}: a border needs color, width and dashStyle.`);
+  }
+  const cellAt = (r, c) => (rows[r] || [])[c];
+  const set = (cell, k, v) => { if (!cell) return; cell.style = cell.style || {}; if (v === undefined) delete cell.style[k]; else cell.style[k] = api.clone(v); };
+  const each = (fn) => { for (let r = g.r; r < g.r + g.rs; r++) for (let c = g.c; c < g.c + g.cs; c++) fn(cellAt(r, c), r, c); };
+  for (const k of list.filter((x) => !x.startsWith('border'))) each((cell) => set(cell, k, st[k]));
+  for (const k of BORDER_ORDER.filter((x) => list.includes(x))) {
+    const [o, dr, dc] = OPPOSITE[k];
+    each((cell, r, c) => { set(cell, k, st[k]); set(cellAt(r + dr, c + dc), o, st[k]); });
+  }
+});
+
+registerFakeRequest('mergeTableCells', (body, api) => {
+  const tr = body.tableRange || {};
+  const { c: box, t } = tableAt(api, (tr.tableCellLocation || {}).tableStartLocation);
+  const rows = t.block.rows;
+  const g = rangeOf(api, rows, tr);
+  if (g.rs * g.cs < 2) api.fail('Invalid table range: merging needs at least two cells.');
+  if (spanRegions(rows).some((m) => overlap(m, g) && !within(m, g))) api.fail('The table range is not rectangular: it cuts a merged cell.');
+  const before = tableChars(api, box, t);
+  const head = rows[g.r][g.c];
+  const isEmpty = (cell) => cell.paras.length === 1 && cell.paras[0].text === '';
+  let paras = isEmpty(head) ? [] : head.paras;
+  for (let r = g.r; r < g.r + g.rs; r++) for (let c = g.c; c < g.c + g.cs; c++) {
+    const cell = rows[r][c];
+    delete cell.span;
+    if (cell === head) continue;
+    if (!isEmpty(cell)) paras = [...paras, ...cell.paras];
+    cell.paras = [api.emptyPara()];
+  }
+  head.paras = paras.length ? paras : [api.emptyPara()];
+  head.span = [g.rs, g.cs];
+  const after = tableChars(api, box, t);
+  // The paragraphs moved inside the table: listeners hear the net change at the table's end (approximate).
+  if (after.end !== before.end) api.shifted((tr.tableCellLocation || {}).tableStartLocation, before.end, after.end - before.end);
+});
+
+registerFakeRequest('unmergeTableCells', (body, api) => {
+  const tr = body.tableRange || {};
+  const { t } = tableAt(api, (tr.tableCellLocation || {}).tableStartLocation);
+  const rows = t.block.rows;
+  const g = rangeOf(api, rows, tr);
+  for (const m of spanRegions(rows)) if (overlap(m, g)) delete rows[m.r][m.c].span;
 });
 
 module.exports = { MIN_WIDTH_PT };

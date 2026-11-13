@@ -28,7 +28,7 @@ test('trimming drops whole turns: no request starts with an assistant round or a
   state.messages = tail;
   let s = T.takeSnapshot(); T.snapshotDocument(s);
   const fit0 = T.fitMessages('edit', s);
-  const baseChars = T.estimateTokens(fit0.messages, JSON.stringify(fit0.tools).length) * 3;
+  const baseChars = T.estimateTokens(fit0.messages, JSON.stringify(T.sentTools(fit0.tools, s.prov)).length) * 3; // the tools as sent
   state.messages = [{ role: 'user', content: 'x'.repeat(8000 * 3 - baseChars + 300) }, ...tail];
   s = T.takeSnapshot(); T.snapshotDocument(s);
   const fit = T.fitMessages('edit', s);
@@ -58,7 +58,7 @@ test('trimming keeps the most turns that fit, measured on the built request (Mun
   const s = T.takeSnapshot(); T.snapshotDocument(s);
   const fit = T.fitMessages('edit', s);
   assert.ok(fit.trimmed);
-  const extra = JSON.stringify(fit.tools).length;
+  const extra = JSON.stringify(T.sentTools(fit.tools, s.prov)).length; // Munin gets the compact schemas
   const budget = T.tokenBudget('edit', s);
   assert.ok(T.estimateTokens(fit.messages, extra) <= budget);
   assert.strictEqual(fit.history[0].role, 'user');

@@ -15,6 +15,8 @@ const OWN_CHANGES_MAX_RANGES = 5;
 const OWN_CHANGES_MAX_CHARS = 1600; // about 400 tokens
 const OWN_CHANGES_SIDE_CHARS = 120; // per side of a change
 const OWN_CHANGES_CONTEXT = 30; // characters kept before and after the changed part of a long line
+// Not "you changed": in the context "you" is the model, which then took the user's work for its own mistake.
+const OWN_CHANGES_HEAD = 'Since your previous turn the document was changed outside the panel (by the user or a collaborator):';
 const ownBaselines = new Map(); // docId -> { text, format, tab, at, stale }
 
 const ownTab = (snap) => (snap.docFormat === 'docs-api' && snap.model ? String(snap.model.tabId || '') : '');
@@ -61,7 +63,7 @@ function ownChangesLine(before, after) {
   const blocks = diffBlocks(ops, oldLines, newLines);
   if (!blocks.length) return '';
   const changed = blocks.reduce((n, b) => n + Math.max(b.dels.length, b.adds.length), 0);
-  const tooMany = `You changed about ${fmtNum(changed)} line${changed === 1 ? '' : 's'} since your last message (too many to list).`;
+  const tooMany = `${OWN_CHANGES_HEAD} about ${fmtNum(changed)} line${changed === 1 ? '' : 's'} (too many to list).`;
   if (coarse || blocks.length > OWN_CHANGES_MAX_RANGES) return tooMany;
   const parts = blocks.flatMap((b) => {
     const bySentence = b.dels.length === 1 && b.adds.length === 1 ? ownSentenceParts(b) : null;
@@ -73,7 +75,7 @@ function ownChangesLine(before, after) {
     if (b.adds.length) return `added ${ownLines(b.pos, b.end)}: «${ownClip(ownFlat(b.adds))}»`;
     return `deleted at line ${b.pos}: «${ownClip(ownFlat(b.dels))}»`;
   });
-  const line = `Since your last message you ${parts.join('; ')}.`;
+  const line = `${OWN_CHANGES_HEAD} ${parts.join('; ')}.`;
   return line.length > OWN_CHANGES_MAX_CHARS ? tooMany : line;
 }
 

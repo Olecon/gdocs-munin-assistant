@@ -3,10 +3,11 @@
 // switchChat, deleteChat), kept consistent across tabs (withChatLock, mergeChatLists, onChatStorageChanged),
 // history normalization on load (normalizeHistory), the daily storage cleanup (runStorageCleanup) and the
 // chat switcher dropdown (renderChatSwitcher, bindChatMenu).
-/* global addNotice, CITATIONS_PREFIX, docStatusText, DOC_TEXT_PREFIX, DRAFT_PREFIX, draftKey, el, PAPER_CARD_PREFIX, NUM_LOCALE, parseSlashCommand, renderHistory, renderHistoryKeepingNotices,
+/* global accountById, addError, copyChatLog, saveBugBundle, ICON_COPY, AGENTS_PREFIX, renderChatModel, ATTACH_PREFIX, chatChoice, FILES_PREFIX, sweepAttachmentBytes, CITATIONS_PREFIX, JOURNAL_LIMITS_PREFIX, docStatusText, DOC_TEXT_PREFIX, DRAFT_PREFIX, draftKey, el, PAPER_CARD_PREFIX, DOC_INIT_PREFIX, NUM_LOCALE, parseSlashCommand, renderHistory, renderHistoryKeepingUnstored,
    setStatus, slimHistory, state, undoingNotice */
 /* exported RAW_REPLAY_KEYS, chatsKey, storageSet, chatDocs, loadChatStore, saveHistory, createChat, renderChatSwitcher,
-   closeChatMenu, bindChatMenu, chatLockName, holdChatLock, tryChatLock, chatLockIfFree, readChatForTurn, withLock */
+   closeChatMenu, bindChatMenu, allStorageKeys, chatLockName, holdChatLock, tryChatLock, chatLockIfFree, readChatForTurn, withLock,
+   chatLabel, chatTitleFrom, setChatTitle, setChatModelMeta, readChatMeta, needsAutoTitle, withChatLock, holdLock, appendStoredMessages */
 
 // ---------------------------------------------------------------------------
 // Chats: several chats per document, stored in chrome.storage.local (survive browser restarts).
@@ -18,9 +19,23 @@
 //   muninDocInstructions:<docId>       -> the document's standing instructions (shared by its chats)
 //   muninDocText:<docId>              -> the document's text at the end of its last turn (src/doc-history.js)
 //   muninCitations:<docId>            -> the document's cited items and citation style (src/references.js)
+//   muninDocInit:<docId>              -> set once the first-run document instructions were tried (src/doc-init.js)
+//   muninFiles:<docId>                -> the document's attached files (src/attachments.js), shared by its chats
+//   muninAttach:<docId>:<alias>       -> the extracted text of one of them (its bytes are in IndexedDB, munin-files);
+//                                         muninAttach:<docId>:<chatId>:<alias>: a chat's file of an earlier build,
+//                                         moved to the document when it opens (migrateChatFiles)
+//   muninAgents:<docId>               -> the document's agent registry (src/agents.js), shared by its chats
 //   muninStorageCleanupAt              -> time of the last storage cleanup (runStorageCleanup, at most daily)
 // A chat meta may carry docs: [{alias, id, title, lines, tab?, authuser?}], the documents opened with
-// open_document in that chat (kept across reloads; their content is re-read on first use in a turn).
+// open_document in that chat (kept across reloads; their content is re-read on first use in a turn). An earlier build
+// kept the chat's attached files there too (kind: 'file'); they are moved to the document (src/attachments.js).
+// Its title is the first user message (chatTitleFrom) until a title is given: titleBy 'model' (the automatic title
+// request or the chat_title tool, src/chat-title.js) or 'user', with titledAt (when it was given); no titleBy means
+// the first-message title. titleTried: the automatic title request failed once (it is not repeated).
+// model: { accountId, model, at } the chat runs on (settings.js chatChoice; at: when it was chosen, so the later choice
+// wins in mergeMeta). lastGood: { accountId, model, at }, the last choice a request of the chat got an answer from
+// (accounts.js noteChatAnswered; a failing first request after a change goes back to it: revertChatModel). A new chat gets the open chat's choice, a document's first chat the last choice made anywhere;
+// a chat without one runs on the last choice.
 // Several tabs (panels) may show the same document. Every read-modify-write of a document's chat list
 // runs under the Web Lock "munin:<docId>" (withChatLock) and re-reads the list inside it; lists are merged
 // by chat id (the newer meta by updatedAt wins; tombstoned chats are dropped) and a save writes only the
@@ -113,9 +128,17 @@ function chatTitleFrom(messages) {
 }
 const chatLabel = (meta) => (meta && meta.title) || 'New chat';
 
-function makeChatMeta(messages) {
+// model: the choice the chat starts with ({ accountId, model }; none: it follows the last choice).
+function makeChatMeta(messages, model = null) {
   const now = Date.now();
-  return { id: newChatId(), title: chatTitleFrom(messages), createdAt: now, updatedAt: now };
+  const meta = { id: newChatId(), title: chatTitleFrom(messages), createdAt: now, updatedAt: now };
+  if (model && model.accountId) meta.model = { accountId: model.accountId, model: model.model || '', at: now };
+  return meta;
+}
+// The choice a new chat inherits: the open chat's, while its account exists (else none: the last choice applies).
+function inheritedModel() {
+  const c = chatChoice();
+  return c && accountById(c.accountId) ? c : null;
 }
 
 // ---- Storage access ---------------------------------------------------------------------------
@@ -147,7 +170,7 @@ function isOwnWrite(key, value) {
 function warnStorage(e) {
   if (storageWarned) return;
   storageWarned = true;
-  addNotice('Could not save the chat history (' + ((e && e.message) || e) + ').', { sticky: true });
+  addError('Could not save the chat history (' + ((e && e.message) || e) + '). Free some browser storage.');
 }
 
 async function writeItems(items) {
@@ -283,11 +306,21 @@ const sortChats = (chats) => chats.sort((a, b) => b.updatedAt - a.updatedAt);
 
 // One chat's meta from two copies: the fields of the one with the later updatedAt win (on a tie the
 // panel's, whose docs may be newer: open_document does not bump updatedAt); fields only the other has
-// are kept, and so is a title (it is only ever set once).
+// are kept, and so is a title. A given title (titledAt) is not tied to updatedAt (renaming does not move the
+// chat in the list): the copy with the later titledAt brings title, titleBy and titledAt. The model choice likewise:
+// the copy chosen later (model.at) brings it.
 function mergeMeta(stored, local) {
   const [older, newer] = local.updatedAt >= stored.updatedAt ? [stored, local] : [local, stored];
   const m = { ...older, ...newer };
   if (!newer.title && older.title) m.title = older.title;
+  const named = (local.titledAt || 0) >= (stored.titledAt || 0) ? local : stored;
+  if (named.titledAt) Object.assign(m, { title: named.title, titleBy: named.titleBy, titledAt: named.titledAt });
+  const chosenAt = (c) => (c.model && c.model.at) || 0;
+  const chosen = chosenAt(local) >= chosenAt(stored) ? local : stored;
+  if (chosen.model) m.model = chosen.model;
+  const answeredAt = (c) => (c.lastGood && c.lastGood.at) || 0;
+  const good = answeredAt(local) >= answeredAt(stored) ? local : stored;
+  if (good.lastGood) m.lastGood = good.lastGood;
   return m;
 }
 
@@ -317,6 +350,7 @@ function adoptChats(docId, chats) {
   if (docId !== state.docId) return;
   state.chats = chats;
   renderChatSwitcher();
+  renderChatModel(); // another tab may have chosen another model for the open chat
   if (isChatMenuOpen()) renderChatMenu();
 }
 
@@ -353,18 +387,29 @@ async function readStoredHistory(docId, chatId) {
   return valid;
 }
 
+// Chats whose stored history could not be read ("docId:chatId"): the panel shows an empty history for them, so
+// nothing it holds may be written over the stored one until a read succeeds (readChatForTurn, saveHistory).
+const unreadChats = new Set();
+const unreadKey = (docId, chatId) => docId + ':' + chatId;
+const historyReadError = (e) => addError(`Could not read the chat history (${(e && e.message) || e}). Send your message again or reopen the chat.`);
+
 async function readChatHistory(docId, chatId) {
   try {
-    return (await readStoredHistory(docId, chatId)) || [];
+    const msgs = (await readStoredHistory(docId, chatId)) || [];
+    unreadChats.delete(unreadKey(docId, chatId));
+    return msgs;
   } catch (e) {
+    unreadChats.add(unreadKey(docId, chatId));
+    historyReadError(e);
     return [];
   }
 }
 
 // Called with the chat lock held, before a turn or an undo: makes the stored history of the open chat the
-// panel's (state.messages; re-rendered, keeping notices, when it differs from what the panel showed).
+// panel's (state.messages; re-rendered, keeping the errors and reports, when it differs from what the panel showed).
 // Returns false when the chat no longer exists (deleted in another tab: the panel switches away once it
-// is idle); when storage cannot be read, or the chat has no stored history yet, the panel keeps its own.
+// is idle) and when storage cannot be read (an error says so; the caller stops, so nothing is written over a history
+// the panel could not read); when the chat has no stored history yet, the panel keeps its own.
 async function readChatForTurn(docId, chatId) {
   let stored;
   try {
@@ -372,18 +417,47 @@ async function readChatForTurn(docId, chatId) {
     if (tombs[chatId] || (chats.length && !chats.some((c) => c.id === chatId))) { refreshChatList(docId); return false; }
     stored = await readStoredHistory(docId, chatId);
   } catch (e) {
-    return true;
+    historyReadError(e);
+    return false;
   }
+  unreadChats.delete(unreadKey(docId, chatId));
   if (stored === undefined || docId !== state.docId || chatId !== state.chatId) return true;
   if (hashValue(stored) !== hashValue(state.messages)) {
     state.messages = stored;
-    renderHistoryKeepingNotices();
+    renderHistoryKeepingUnstored();
   }
   return true;
 }
 
-// The documents opened in a chat (copies of the valid entries of its meta).
-const isValidOpenDoc = (d) => d && typeof d.alias === 'string' && /^doc\d+$/.test(d.alias) && typeof d.id === 'string' && !!d.id;
+// Appends msgs to a chat's stored history at a turn boundary, under the chat's lock (waiting while another tab answers
+// there): an agent's report for a chat the panel does not show, or one that arrived after a turn that ended without a
+// continuation (agents.js). The open chat's state.messages follow and are re-rendered. Returns false when the chat is
+// gone or storage failed.
+async function appendStoredMessages(docId, chatId, msgs) {
+  const release = await holdChatLock(docId, chatId);
+  try {
+    const { chats, tombs } = await readStore(docId);
+    if (tombs[chatId] || !chats.some((c) => c.id === chatId)) return false;
+    const open = docId === state.docId && chatId === state.chatId;
+    const stored = await readStoredHistory(docId, chatId);
+    const messages = stored || (open ? state.messages.slice() : []);
+    messages.push(...msgs);
+    await saveHistory({ docId, chatId, messages });
+    if (docId === state.docId && chatId === state.chatId && !state.busy) {
+      state.messages = messages;
+      renderHistoryKeepingUnstored();
+    }
+    return true;
+  } catch (e) {
+    warnStorage(e);
+    return false;
+  } finally {
+    release();
+  }
+}
+
+// The documents opened in a chat (copies of the valid entries of its meta; the document's files are not among them).
+const isValidOpenDoc = (d) => d && typeof d.alias === 'string' && /^doc\d+$/.test(d.alias) && typeof d.id === 'string' && !!d.id && d.kind !== 'file';
 function chatDocs(chatId) {
   const meta = state.chats.find((c) => c.id === chatId);
   return meta && Array.isArray(meta.docs) ? meta.docs.filter(isValidOpenDoc).map((d) => ({ ...d })) : [];
@@ -395,7 +469,7 @@ function ensureChats(docId) {
   return updateStore(docId, async ({ chats, tombs }) => {
     const list = mergeChatLists(chats, [], tombs);
     if (list.length) return { chats: list, fresh: null };
-    const meta = makeChatMeta([]);
+    const meta = makeChatMeta([], state.settings.lastModel); // a document's first chat: the last choice made anywhere
     const ok = await writeItems({ [chatsKey(docId)]: [meta], [chatHistoryKey(docId, meta.id)]: [], [currentChatKey(docId)]: meta.id });
     return ok ? { chats: [meta], fresh: meta.id } : null;
   });
@@ -421,6 +495,7 @@ async function loadChatStore(docId) {
 async function saveHistory(ctx) {
   const c = ctx || { docId: state.docId, chatId: state.chatId, messages: state.messages };
   if (!c.docId || !c.chatId) return;
+  if (unreadChats.has(unreadKey(c.docId, c.chatId)) && !(await rereadBeforeSave(c))) return;
   const local = c.docId === state.docId ? copyChats(state.chats) : [];
   const merged = await updateStore(c.docId, async ({ chats, tombs }) => {
     const list = mergeChatLists(chats, local, tombs);
@@ -432,6 +507,77 @@ async function saveHistory(ctx) {
     return (await writeItems({ [chatHistoryKey(c.docId, c.chatId)]: c.messages, [chatsKey(c.docId)]: list })) ? list : null;
   });
   if (merged) adoptChats(c.docId, merged);
+}
+
+// A save to a chat whose history could not be read: read it now. Refused (false, with the error) while it still
+// cannot be read; otherwise everything the panel holds came after the failed read (it started from an empty
+// history), so it goes after the stored messages.
+async function rereadBeforeSave(c) {
+  let stored;
+  try { stored = await readStoredHistory(c.docId, c.chatId); } catch (e) { historyReadError(e); return false; }
+  unreadChats.delete(unreadKey(c.docId, c.chatId));
+  if (stored && stored.length) {
+    c.messages.unshift(...stored); // in place: the turn's context and state.messages may be this array
+    if (c.docId === state.docId && c.chatId === state.chatId) renderHistoryKeepingUnstored();
+  }
+  return true;
+}
+
+// The automatic title request (src/chat-title.js) is still due for this chat: no title was given and no request failed.
+const needsAutoTitle = (meta) => !!meta && !meta.titleBy && !meta.titleTried;
+
+// A chat's meta as stored (a copy; the panel's own copy when storage cannot be read), or null when it is gone.
+async function readChatMeta(docId, chatId) {
+  let chats;
+  try {
+    const store = await readStore(docId);
+    if (store.tombs[chatId]) return null;
+    chats = store.chats;
+  } catch (e) {
+    chats = docId === state.docId ? state.chats : [];
+  }
+  const m = chats.find((c) => c.id === chatId);
+  return m ? { ...m } : null;
+}
+
+// Gives a chat a title (by: 'model' | 'user'; stamped titledAt, so it wins in mergeMeta) or, with tried, notes that the
+// automatic title request failed (the first-message title stays). onlyAuto: only while the chat has no given title (the
+// automatic title does not replace one the model or another tab gave meanwhile). updatedAt and the list's order are left
+// alone. The switcher follows at once (other tabs through onChatStorageChanged). Returns the stored meta (a copy), or
+// null when the chat is gone or storage failed.
+async function setChatTitle(docId, chatId, { title = '', by = 'model', tried = false, onlyAuto = false } = {}) {
+  const local = docId === state.docId ? copyChats(state.chats) : [];
+  let meta = null;
+  const merged = await updateStore(docId, async ({ chats, tombs }) => {
+    const list = mergeChatLists(chats, local, tombs);
+    const m = list.find((x) => x.id === chatId);
+    if (!m) return null;
+    if (onlyAuto && m.titleBy) { meta = { ...m }; return list; }
+    if (title) Object.assign(m, { title, titleBy: by, titledAt: Date.now() });
+    if (tried) m.titleTried = true;
+    meta = { ...m };
+    return (await writeItems({ [chatsKey(docId)]: list })) ? list : null;
+  });
+  if (!merged) return null;
+  adoptChats(docId, merged);
+  return meta;
+}
+
+// The chat's model choice (model: { accountId, model, at }; settings.js setChatModel), stored under the document's lock
+// like a title: updatedAt and the order are left alone. field 'lastGood': the last choice that answered (accounts.js
+// noteChatAnswered). Returns false when the chat is gone or storage failed.
+async function setChatModelMeta(docId, chatId, model, field = 'model') {
+  const local = docId === state.docId ? copyChats(state.chats) : [];
+  const merged = await updateStore(docId, async ({ chats, tombs }) => {
+    const list = mergeChatLists(chats, local, tombs);
+    const m = list.find((x) => x.id === chatId);
+    if (!m) return null;
+    m[field] = { ...model };
+    return (await writeItems({ [chatsKey(docId)]: list })) ? list : null;
+  });
+  if (!merged) return false;
+  adoptChats(docId, merged);
+  return true;
 }
 
 // Before the panel leaves the open chat (+, switching): its history is saved as before (which also bumps
@@ -467,7 +613,7 @@ async function setCurrentChat(chatId, messages) {
 function refusedWhileUndoing() {
   if (!state.undoing) return false;
   closeChatMenu();
-  addNotice(undoingNotice());
+  addError(undoingNotice());
   return true;
 }
 
@@ -481,7 +627,7 @@ async function createChat() {
   if (current && !state.messages.length) return;
   await saveBeforeLeaving();
   const docId = state.docId;
-  const meta = makeChatMeta([]);
+  const meta = makeChatMeta([], inheritedModel());
   const local = copyChats(state.chats);
   const merged = await updateStore(docId, async ({ chats, tombs }) => {
     const list = mergeChatLists(chats, local, tombs);
@@ -530,7 +676,8 @@ function deleteFromStore(docId, chatId, local) {
       items[chatHistoryKey(docId, meta.id)] = [];
     }
     if (!(await writeItems(items))) return null;
-    await removeKeys([chatHistoryKey(docId, chatId), draftKey(docId, chatId)]); // the chat's draft plan goes with it
+    // The chat's draft plan goes with it (the attached files belong to the document).
+    await removeKeys([chatHistoryKey(docId, chatId), draftKey(docId, chatId)]);
     return list;
   });
 }
@@ -544,7 +691,7 @@ async function deleteChat(chatId) {
   if (!state.chats.some((c) => c.id === chatId)) return;
   // Not while another tab answers in (or undoes an edit of) that chat: its saves would be refused.
   const release = await tryChatLock(docId, chatId);
-  if (!release) { addNotice('Another tab is answering in this chat. Delete it when that answer is finished.'); return; }
+  if (!release) { addError('Another tab is answering in this chat. Delete it when that answer is finished.'); return; }
   let merged;
   const local = copyChats(state.chats.filter((c) => c.id !== chatId));
   try {
@@ -639,29 +786,31 @@ async function runChatSync() {
       adoptChats(docId, r ? r.chats : [makeChatMeta([])]);
       next = state.chats[0];
     }
-    await setCurrentChat(next.id, await readChatHistory(docId, next.id));
-    addNotice('This chat was deleted in another tab.');
+    await setCurrentChat(next.id, await readChatHistory(docId, next.id)); // silently: the chat switcher shows the change
     return;
   }
   if (!changed) return;
-  const msgs = await readChatHistory(docId, chatId);
+  let msgs;
+  try { msgs = (await readStoredHistory(docId, chatId)) || []; } catch (e) { return; } // the panel keeps its copy
+  unreadChats.delete(unreadKey(docId, chatId));
   if (docId !== state.docId || chatId !== state.chatId) return;
   if (!canFollow()) { scheduleChatSync('changed'); return; } // a turn or an undo took the chat while reading
   if (hashValue(msgs) === hashValue(state.messages)) return; // nothing new (e.g. this panel's own save won)
   state.messages = msgs;
-  renderHistoryKeepingNotices();
+  renderHistoryKeepingUnstored();
   if (state.busy) return; // waiting for the chat lock: the status line says so
   setStatus(FOLLOW_STATUS);
   setTimeout(() => {
-    if (!state.busy && !state.undoing && el.docStatus.textContent === FOLLOW_STATUS) setStatus(docStatusText(), state.docText == null);
+    if (!state.busy && !state.undoing && state.statusText.text === FOLLOW_STATUS) setStatus(docStatusText(), state.docText == null);
   }, FOLLOW_STATUS_MS);
 }
 
 // ---- Storage cleanup ------------------------------------------------------------------------------
 // At most once per day (STORAGE_CLEANUP_KEY, started by the first loadChatStore of a panel): removes the
 // chat keys of documents whose chats were all unused for more than CHAT_RETENTION_DAYS (except the
-// document this panel shows; the document instructions are kept) and orphans: histories without a chat
-// entry, draft plans without a chat, and the current-chat, tombstone, text-baseline and citation keys of documents without a chat list. Each document is
+// document this panel shows; the document instructions are kept; the attached files go with them) and orphans:
+// histories and draft plans without a chat entry, a file's text without its entry in the document's list (IndexedDB
+// bytes too), and the current-chat, tombstone, text-baseline, citation, journal-limits and file keys of documents without a chat list. Each document is
 // re-checked under its lock before anything is removed. Returns { removed: [keys] }, or null when skipped.
 let cleanupScheduled = false;
 function scheduleStorageCleanup() {
@@ -670,11 +819,17 @@ function scheduleStorageCleanup() {
   runStorageCleanup().catch(() => {});
 }
 
-// "<prefix><docId>[:<chatId>]" -> { docId, chatId } (doc and chat ids contain no ":").
+// "<prefix><docId>[:<chatId>][:<alias>]" -> { docId, chatId, alias? } (doc and chat ids contain no ":"); chatId null for a
+// per-document key.
 function parseChatKey(key) {
-  for (const prefix of [HISTORY_PREFIX, DRAFT_PREFIX, CURRENT_PREFIX, TOMBSTONES_PREFIX, CHATS_PREFIX, DOC_TEXT_PREFIX, CITATIONS_PREFIX, PAPER_CARD_PREFIX]) {
+  for (const prefix of [HISTORY_PREFIX, DRAFT_PREFIX, ATTACH_PREFIX, FILES_PREFIX, CURRENT_PREFIX, TOMBSTONES_PREFIX, CHATS_PREFIX, DOC_TEXT_PREFIX, CITATIONS_PREFIX, PAPER_CARD_PREFIX, DOC_INIT_PREFIX, AGENTS_PREFIX, JOURNAL_LIMITS_PREFIX]) {
     if (!key.startsWith(prefix)) continue;
     const rest = key.slice(prefix.length);
+    if (prefix === ATTACH_PREFIX) { // <docId>:<alias> (a document's file) or <docId>:<chatId>:<alias> (an earlier build's)
+      const parts = rest.split(':');
+      if (parts.length === 2 && parts[0] && parts[1]) return { prefix, docId: parts[0], chatId: null, alias: parts[1] };
+      return parts.length === 3 && parts[0] && parts[1] ? { prefix, docId: parts[0], chatId: parts[1] } : null;
+    }
     if (prefix !== HISTORY_PREFIX && prefix !== DRAFT_PREFIX) return { prefix, docId: rest, chatId: null }; // per-document keys
     const i = rest.lastIndexOf(':');
     return i > 0 ? { prefix, docId: rest.slice(0, i), chatId: rest.slice(i + 1) } : null;
@@ -703,15 +858,19 @@ function runStorageCleanup(now = Date.now()) {
     const removed = [];
     for (const [docId, keys] of byDoc) {
       const gone = await withChatLock(docId, async () => {
-        const list = (await chrome.storage.local.get(chatsKey(docId)))[chatsKey(docId)];
+        const got = await chrome.storage.local.get([chatsKey(docId), FILES_PREFIX + docId]);
+        const list = got[chatsKey(docId)];
         const chats = Array.isArray(list) ? list.filter(isValidMeta) : [];
+        const files = Array.isArray(got[FILES_PREFIX + docId]) ? got[FILES_PREFIX + docId] : [];
+        const fileAliases = new Set(files.map((f) => f && f.alias));
         const newest = chats.reduce((t, c) => Math.max(t, c.updatedAt), 0);
         const expired = Array.isArray(list) && docId !== state.docId && now - newest > CHAT_RETENTION_DAYS * DAY_MS;
         const ids = new Set(chats.map((c) => c.id));
         const drop = keys.filter((key) => {
           if (expired) return true;
           const p = parseChatKey(key);
-          if (p.prefix === HISTORY_PREFIX || p.prefix === DRAFT_PREFIX) return !ids.has(p.chatId); // per-chat keys: orphans go
+          if (p.chatId) return !ids.has(p.chatId); // per-chat keys: orphans go
+          if (p.alias && !fileAliases.has(p.alias)) return true; // a file's text without its entry
           return p.prefix !== CHATS_PREFIX && !Array.isArray(list);
         });
         if (expired) drop.push(...chats.map((c) => chatHistoryKey(docId, c.id)).filter((k) => !drop.includes(k)));
@@ -720,6 +879,7 @@ function runStorageCleanup(now = Date.now()) {
       });
       removed.push(...gone);
     }
+    await sweepAttachmentBytes(); // attached files' bytes (IndexedDB) whose file is gone
     return { removed };
   });
 }
@@ -743,7 +903,7 @@ function renderChatSwitcher() {
   const meta = state.chats.find((c) => c.id === state.chatId);
   const label = chatLabel(meta);
   el.chatSwitchTitle.textContent = label;
-  el.chatSwitchBtn.title = 'Switch chat: ' + label;
+  el.chatSwitchBtn.setAttribute('aria-label', 'Switch chat: ' + label);
 }
 
 function renderChatMenu() {
@@ -758,6 +918,7 @@ function renderChatMenu() {
     const title = document.createElement('span');
     title.className = 'chat-row-title';
     title.textContent = chatLabel(c);
+    title.dataset.tip = chatLabel(c); // a long title is cut by the row's width
     const time = document.createElement('span');
     time.className = 'chat-row-time';
     time.textContent = fmtAgo(c.updatedAt);
@@ -765,10 +926,18 @@ function renderChatMenu() {
     del.className = 'chat-row-del';
     del.type = 'button';
     del.dataset.del = c.id;
-    del.title = 'Delete chat';
+    del.dataset.tip = 'Delete chat';
     del.setAttribute('aria-label', 'Delete chat');
     del.textContent = '✕';
-    row.append(title, time, del);
+    // Copies the chat's log without opening it (src/chat-log.js); the check mark shows for a moment.
+    const copy = document.createElement('button');
+    copy.className = 'btn icon chat-row-copy';
+    copy.type = 'button';
+    copy.dataset.copy = c.id;
+    copy.dataset.tip = 'Copy the chat log';
+    copy.setAttribute('aria-label', 'Copy the chat log');
+    copy.innerHTML = ICON_COPY;
+    row.append(title, time, copy, del);
     box.appendChild(row);
   });
   positionChatMenu();
@@ -805,6 +974,9 @@ function bindChatMenu() {
   el.chatMenu.addEventListener('click', (e) => {
     const del = e.target.closest('button[data-del]');
     if (del) { e.stopPropagation(); deleteChat(del.dataset.del); return; }
+    const copy = e.target.closest('button[data-copy]');
+    // Shift: the log with the requests; Alt (with Shift too): the bug bundle file (chat-log.js saveBugBundle).
+    if (copy) { e.stopPropagation(); if (e.altKey) saveBugBundle(copy.dataset.copy, copy); else copyChatLog(copy.dataset.copy, copy, { full: !!e.shiftKey }); return; }
     const row = e.target.closest('.chat-row');
     if (row) switchChat(row.dataset.id);
   });

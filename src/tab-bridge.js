@@ -1,8 +1,9 @@
 'use strict';
 // Module tab-bridge.js: communication with the Docs tab (getDocTab, sendToTab), the document export
-// (fetchDocText, readExport: the panel's fetchDocTextFromPanel, then the content script's fetchDocTextFromTab), the selection (refreshSelection, onRuntimeMessage) and pasting into the
+// (fetchDocText, readExport: the panel's fetchDocTextFromPanel, then the content script's fetchDocTextFromTab), the selection (refreshSelection, onRuntimeMessage;
+// its surroundings in the editor's text from Docs' page, readSelectionContext) and pasting into the
 // document (applyToDocument, applyToDocumentNow), and scrolling the editor to a line (scrollToLine).
-/* global addError, addNotice, DOC_URL_RE, docsTabFromUrl, docStatusText, el, EXPORT_RATE_LIMITED, EXPORT_RETRY_AFTER_MAX_MS,
+/* global addError, addTurnRow, DOC_URL_RE, docsTabFromUrl, docStatusText, el, EXPORT_RATE_LIMITED, EXPORT_RETRY_AFTER_MAX_MS,
    EXPORT_RETRY_DELAYS_MS, fetchDocModel, fmtNum, HOST_TAB_ID, markDocRead, onDocChanged, onDocTyped, PASTE_UNCONFIRMED, SELECTION_CHANGED_NOTICE, setStatus, showYourTurnSelection, state, useDocModel */
 /* exported getDocTab, docIdFromUrl, sendToTab, cleanDocText, fetchDocTextFromPanel, fetchDocText, readExport, setDocTitle,
    exportAbortError, exportSleep, useExportRead,
@@ -203,7 +204,7 @@ function useExportRead(r) {
 }
 
 // Reads the document: through the Docs API when a Google account is connected (line model with API
-// indices, see buildLineModel), otherwise, or when the API fails (one notice), via the export. A Stop of the
+// indices, see buildLineModel), otherwise, or when the API fails (one row of the turn), via the export. A Stop of the
 // running request (state.abort) ends an export wait.
 async function fetchDocText() {
   let tab;
@@ -223,11 +224,9 @@ async function fetchDocText() {
       return;
     } catch (e) {
       state.docsApiFailed = true; // not called again in this turn (see resetDocsApiTurn)
-      if (!state.apiWarned) {
-        state.apiWarned = true;
-        addNotice(`Could not read the document through the Google Docs API: ${e.message} Using the export instead; ` +
-          'the precise editing tools are unavailable until the API works again.', { sticky: true });
-      }
+      // A row of the turn, once until the API works again; outside a turn (a tab switch) the next turn's read says it.
+      if (!state.apiWarned && addTurnRow(`Could not read the document through the Google Docs API: ${e.message} Using the export instead; ` +
+          'the precise editing tools are unavailable until the API works again.')) state.apiWarned = true;
     }
   }
   state.docModel = null;
@@ -296,11 +295,15 @@ async function readExport(tab, onTitle = () => {}, { signal = null } = {}) {
 function setDocTitle(t) {
   state.docTitle = t || 'Document';
   el.docTitle.textContent = state.docTitle;
-  el.docTitle.title = state.docTitle;
+  el.docTitle.dataset.tip = state.docTitle;
 }
 
 function renderSelection() {
   const s = state.selection;
+  if (el.selBox) { // empty: nothing to open (the summary's click is ignored in main.js), and an open box closes
+    el.selBox.classList.toggle('empty', !s);
+    if (!s) el.selBox.open = false;
+  }
   if (!s) {
     el.selPreview.textContent = '(nothing selected)';
     el.selFull.textContent = '';
@@ -314,15 +317,21 @@ function renderSelection() {
 // Reads the selection from the document. If it cannot be read, the chat simply works
 // without a selection. Returns what was read: { text, cached (the content script answered from its cache),
 // error? (the tab could not be asked) }; the self-test's "Your turn: select text" reports it.
+// A non-empty selection also gets its surroundings from Google Docs (readSelectionContext: state.selectionCtx).
 async function refreshSelection({ quiet = true } = {}) {
   const out = { text: '', cached: false };
+  state.selectionCtx = null;
   try {
     const r = await sendToTab({ type: 'GET_SELECTION' });
     const text = (r && r.ok && r.text) || '';
     state.selection = text;
     out.text = text;
     out.cached = !!(r && r.cached);
-    if (!text && !quiet) addNotice('No selection found in the document. Select text in the document and send the message again.');
+    if (!text && !quiet) addError('No selection found in the document. Select text in the document and send the message again.');
+    if (text) {
+      const ctx = await readSelectionContext(text);
+      if (ctx && state.selection === text) state.selectionCtx = ctx; // a SELECTION_UPDATE meanwhile: not this selection's
+    }
   } catch (e) {
     out.error = e.message;
     if (!quiet) addError(e.message);
@@ -331,13 +340,85 @@ async function refreshSelection({ quiet = true } = {}) {
   return out;
 }
 
+// ---- The selection's surroundings, from Google Docs itself ----------------------------------------------------------
+// The selection arrives as text, and the panel finds it by searching the document (request.js selectionSpan); a text
+// that occurs several times leaves its place unknown. Docs' page has an undocumented function,
+// window._docs_annotate_getAnnotatedText() (no flag is needed for it; none is ever set), whose getText() is the editor's
+// whole text (position 0 is U+0003; control characters stand for structure) and getSelection() offsets into it. The
+// offsets are not trusted as Docs API indices: only the text on either side of the selection is used, to choose among
+// the places the text search found (request.js pickByContext). Run with chrome.scripting.executeScript in the page's
+// main world (the scripting permission and the docs.google.com host are there already): no content script in the
+// manifest, no channel between the page and the extension that page scripts could listen to or answer, nothing left in
+// the page, and it works in tabs opened before the extension was installed or updated.
+const SELECTION_CONTEXT_CHARS = 80; // of the editor's text on each side of the selection
+const SELECTION_CONTEXT_MAX = 20000; // a longer selection gets no surroundings (hardly ever ambiguous)
+const SELECTION_CONTEXT_TIMEOUT_MS = 1000;
+
+// The page side (main world). Self-contained: executeScript sends its source, so it uses nothing of the panel; it
+// defines nothing global and keeps nothing. Returns { ok: true, start, end, sel, before, after } or { ok: false, reason }.
+async function docsSelectionProbe(ctxChars, maxChars) {
+  try {
+    const f = window._docs_annotate_getAnnotatedText;
+    if (typeof f !== 'function') return { ok: false, reason: 'unavailable' };
+    const a = await f();
+    const text = a && typeof a.getText === 'function' ? a.getText() : null;
+    const ranges = a && typeof a.getSelection === 'function' ? a.getSelection() : null;
+    if (typeof text !== 'string' || !Array.isArray(ranges)) return { ok: false, reason: 'shape' };
+    if (ranges.length !== 1) return { ok: false, reason: 'ranges' };
+    const r = ranges[0] || {};
+    const pair = [['start', 'end'], ['anchor', 'focus'], ['base', 'extent']].find(([x, y]) => Number.isInteger(r[x]) && Number.isInteger(r[y]));
+    if (!pair) return { ok: false, reason: 'shape' };
+    const lo = Math.max(0, Math.min(r[pair[0]], r[pair[1]]));
+    const hi = Math.min(text.length, Math.max(r[pair[0]], r[pair[1]]));
+    if (hi - lo > maxChars) return { ok: false, reason: 'long' };
+    return { ok: true, start: lo, end: hi, sel: text.slice(lo, hi), before: text.slice(Math.max(0, lo - ctxChars), lo), after: text.slice(hi, hi + ctxChars) };
+  } catch (e) {
+    return { ok: false, reason: 'error' };
+  }
+}
+
+// The probe's answer for the document tab, or { ok: false, reason } (no answer within SELECTION_CONTEXT_TIMEOUT_MS,
+// executeScript refused, a malformed answer). Strings are clipped: the page's answer is untrusted data.
+async function probeSelectionContext() {
+  let timer = 0;
+  try {
+    const tab = await getTargetTab();
+    const run = chrome.scripting.executeScript({ target: { tabId: tab.id, frameIds: [0] }, world: 'MAIN', func: docsSelectionProbe, args: [SELECTION_CONTEXT_CHARS, SELECTION_CONTEXT_MAX] });
+    const late = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), SELECTION_CONTEXT_TIMEOUT_MS); });
+    const res = await Promise.race([run, late]);
+    if (res === 'timeout') return { ok: false, reason: 'timeout' };
+    const r = Array.isArray(res) && res[0] ? res[0].result : null;
+    if (!r || typeof r !== 'object') return { ok: false, reason: 'no answer' };
+    if (r.ok !== true) return { ok: false, reason: String(r.reason || 'refused').slice(0, 40) };
+    if (![r.sel, r.before, r.after].every((s) => typeof s === 'string')) return { ok: false, reason: 'shape' };
+    return { ok: true, start: r.start, end: r.end, sel: r.sel.slice(0, SELECTION_CONTEXT_MAX), before: r.before.slice(-SELECTION_CONTEXT_CHARS), after: r.after.slice(0, SELECTION_CONTEXT_CHARS) };
+  } catch (e) {
+    return { ok: false, reason: 'error' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Selection texts compared as content.js cleans the copied one (zero-width characters out, NBSP a space), with every run
+// of whitespace and control characters (Docs' structure marks) one space and U+FFFC (an object) dropped.
+const selectionCompareText = (s) => String(s || '').replace(/[\u200b-\u200d\ufeff\ufffc]/g, '')
+  .replace(/[\s\u0000-\u001F\u007F\u00a0]+/g, ' ').trim(); // eslint-disable-line no-control-regex -- Docs' structure marks are C0 controls
+
+// The surroundings of the selection whose copied text is `text`: { text, before, after }, or null when the page has
+// no answer or its selection is another one (a different text, a caret).
+async function readSelectionContext(text) {
+  const r = await probeSelectionContext();
+  if (!r.ok || !r.sel || selectionCompareText(r.sel) !== selectionCompareText(text)) return null;
+  return { text, before: r.before, after: r.after };
+}
+
 // SELECTION_UPDATE from the host tab's content script (sent when the user finishes selecting in
 // the document). Only used when embedded (the tab ID comes from the hash). While a request is
 // running, the latest update is kept and applied when it finishes (a turn works on its snapshot).
 // While the self-test's Your-turn card waits (the panel is busy, but the user is the one acting), the update
 // is shown at once: the Selected line and the card's "The panel sees" line (showYourTurnSelection). Setting
 // state.selection then is safe: no turn is running to read it, the self-test's scenarios set their own
-// selection (stScenario) and the select step reads the selection afresh after Continue (refreshSelection).
+// selection (stScenario) and the select step reads the selection afresh every second (refreshSelection).
 // pendingSelection is still kept, so the end of the run (applyPendingSelection) leaves the latest selection
 // as before, whatever the self-test restored.
 // DOC_CHANGED (a change in the document: the content script's page observer or its key and input events, at most one
@@ -357,16 +438,23 @@ function onRuntimeMessage(msg) {
     state.pendingSelection = text;
     if (!showYourTurnSelection(text)) return false;
   }
-  state.selection = text;
+  setSelectionText(text);
   renderSelection();
   return false;
+}
+
+// A new selection text: the surroundings read for the old one (state.selectionCtx) go with it. The same text again (the
+// content script echoes what GET_SELECTION read) keeps them; the next refreshSelection reads them afresh anyway.
+function setSelectionText(text) {
+  if (text !== state.selection) state.selectionCtx = null;
+  state.selection = text;
 }
 
 // Applies the latest selection pushed by the document while a request was running. Called on
 // every exit of sendMessage (normal finish and the early bail() paths).
 function applyPendingSelection() {
   if (state.pendingSelection === null) return;
-  state.selection = state.pendingSelection;
+  setSelectionText(state.pendingSelection);
   state.pendingSelection = null;
   renderSelection();
 }
@@ -432,8 +520,7 @@ async function applyToDocumentNow(text, expected) {
   if (selectionChanged) {
     const message = copied ? SELECTION_CHANGED_NOTICE
       : 'The selection changed while the answer was being generated, so the text was not pasted; copying it to the clipboard also failed.';
-    addNotice(message, { sticky: true });
-    return { ok: false, message, detail: errText, copied, selectionChanged: true };
+    return { ok: false, message, detail: errText, copied, selectionChanged: true }; // its failed card says it
   }
   // The technical detail (which insertion methods were tried) is appended for debugging.
   const message = (copied
@@ -449,12 +536,12 @@ async function applyToDocumentNow(text, expected) {
 // Line links (the /check report, the location line) call this on click only. The content script finds the line in the
 // editor by its text (SCROLL_TO_LINE; see content.js) and scrolls it into view; of: the document's line count, for a
 // first jump to about the right place when the editor has not drawn that page yet. Resolves with the content script's
-// reply ({ ok, how } or { ok: false, reason }); a failure shows a notice.
-const SCROLL_NOT_FOUND = 'Could not find the line in the editor view.';
+// reply ({ ok, how } or { ok: false, reason }); a failure is an error in the chat.
+const SCROLL_NOT_FOUND = 'Could not find the line in the editor view. Scroll to it in the document.';
 async function scrollToLine(line, text) {
   const of = state.docModel ? state.docModel.lines.length : state.docText ? state.docText.split('\n').length : 0;
   let r;
   try { r = await sendToTab({ type: 'SCROLL_TO_LINE', line: Number(line) || 0, text: String(text || ''), of }); } catch (e) { r = { ok: false, reason: 'error', error: e.message }; }
-  if (!r || !r.ok) addNotice(SCROLL_NOT_FOUND);
+  if (!r || !r.ok) addError(SCROLL_NOT_FOUND);
   return r || { ok: false, reason: 'no-answer' };
 }

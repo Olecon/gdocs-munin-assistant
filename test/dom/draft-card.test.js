@@ -30,7 +30,7 @@ test('re-render and chat switch bring the card back; only the chat with the plan
   await T.refreshDraftCard();
   assert.strictEqual(cards().length, 1);
   assert.match(cards()[0].textContent, /Draft plan: 1 of 2 sections written/);
-  assert.deepStrictEqual([...cards()[0].querySelectorAll('li')].map((li) => [li.textContent, li.className]), [['☑ Introduction', 'done'], ['☐ Methods', '']]);
+  assert.deepStrictEqual([...cards()[0].querySelectorAll('li')].map((li) => [li.textContent, li.className]), [['Introduction', 'done'], ['Methods', '']]);
   // a re-render of the idle chat drops it; the observer draws it again
   T.renderHistory();
   await until(() => cards().length === 1, 'the card after a re-render');
@@ -43,5 +43,5 @@ test('re-render and chat switch bring the card back; only the chat with the plan
   click(cards()[0].querySelector('button[data-draft="end"]'));
   await until(() => cards().length === 0, 'the card gone');
   assert.strictEqual(storage[`muninDraft:DOC123:${chatA}`], undefined);
-  assert.ok([...el.chat.querySelectorAll('.msg.notice')].some((n) => n.textContent === 'Draft ended: the plan of this chat is cleared.'));
+  assert.ok([...el.chat.querySelectorAll('.msg.chat-row')].some((n) => n.textContent === 'Draft ended: the plan of this chat is cleared.')); // a row, not a bubble
 });

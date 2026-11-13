@@ -118,6 +118,7 @@ test('10 sections scored and sorted; requests without tools, clipped to the read
     assert.strictEqual(b.tools, undefined);
     assert.strictEqual(b.persona, 'raw');
     deq(b.chat_template_kwargs, { reasoning_effort: 'low' });
+    deq([b.temperature, b.presence_penalty], [0.3, 0]); // the summary profile: a steady score
     assert.ok(b.messages[1].content.startsWith('Question: Where is the dose?\n\n<section title="Section '));
     assert.ok(b.messages[1].content.length < 8000 + 200, 'Munin: clipped to readMaxChars');
   }
@@ -134,7 +135,7 @@ test('10 sections scored and sorted; requests without tools, clipped to the read
     const k = 5 - i;
     assert.match(lines[7 + i], new RegExp(`^- Lines \\d+–\\d+, «Section ${k}»: score ${k}/10\\. Section ${k} discusses the topic\\.$`));
   }
-  assert.match(lines[12], /read the best sections with read_lines/);
+  assert.match(lines[12], /read the best sections with read_document/);
 });
 
 test('Stop after 3 sections: no more requests, the result says so', async () => {
@@ -195,7 +196,7 @@ test('a whole Munin turn: the call, ten section requests, the ranked result goes
   await send(env, 'Where is the dose?');
   assert.strictEqual(bodies.length, 12);
   assert.strictEqual(rows.length, 10);
-  rows.forEach((r, i) => assert.ok(r.includes(`find_relevant_sections</span>: Reading section ${i + 1} of 10 ⏳`), r));
+  rows.forEach((r, i) => assert.ok(r.includes(`find_relevant_sections</span>: Reading section ${i + 1} of 10 …`), r));
   assert.strictEqual(T.toolOrbMode('find_relevant_sections'), 'globe');
   assert.ok(names(bodies[0].tools).includes('find_relevant_sections'));
   const result = state.messages.find((m) => m.role === 'tool');

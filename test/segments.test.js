@@ -40,7 +40,7 @@ const spec = ({ header = true, footer = true, headers = null, documentStyle = nu
   ...(documentStyle ? { documentStyle } : {}),
   footnotes: { 'fn.a': [{ p: ' Survey of 2024.' }], 'fn.b': [{ p: ' Archive' }] },
 }] });
-const A = (over) => ({ action: 'read', part: null, number: null, text: null, after_text: null, ...over });
+const A = (over) => ({ action: 'read', part: null, number: null, text: null, after_text: null, line: null, type: null, ...over });
 const posts = () => fake.log.filter((x) => x.method === 'POST').map((x) => x.body);
 const loc = (index, extra = {}) => ({ index, tabId: 't.0', ...extra });
 const range = (s, e, extra = {}) => ({ startIndex: s, endIndex: e, tabId: 't.0', ...extra });
@@ -68,22 +68,21 @@ async function decided(promise, decision) {
 test('schema, where it is offered, prompt lines, the turn-context note, icon, summary, pending card', async () => {
   await fresh(spec());
   const def = T.PAGE_PARTS_DEF.function;
-  deq(def.parameters.required, ['action', 'part', 'number', 'text', 'after_text']);
+  deq(def.parameters.required, ['action', 'part', 'number', 'text', 'after_text', 'line', 'type']);
   assert.strictEqual(def.parameters.additionalProperties, false);
-  deq(def.parameters.properties.action.enum, ['read', 'set_text', 'add_footnote', 'delete_footnote']);
-  deq(def.parameters.properties.part.anyOf, [{ type: 'string', enum: ['header', 'footer', 'footnote', 'toc'] }, { type: 'null' }]);
+  deq(def.parameters.properties.action.enum, ['read', 'set_text', 'add_footnote', 'delete_footnote', 'section_break', 'section_style']);
+  deq(def.parameters.properties.part.anyOf, [{ type: 'string', enum: ['header', 'footer', 'footnote', 'toc', 'sections'] }, { type: 'null' }]);
   deq(def.parameters.properties.number.anyOf, [{ type: 'integer' }, { type: 'null' }]);
   const names = (mode, s) => T.toolsFor(mode, s).map((t) => t.function.name);
   assert.ok(names('edit', as).includes('page_parts') && names('manual', as).includes('page_parts'));
   assert.ok(!names('edit', { ...as, docFormat: 'markdown', model: null }).includes('page_parts'));
-  // the reading line in every such turn, the edit line only in Auto with the Docs API
+  // no prompt line: the tool's description says what it reads and writes
   const edit = T.buildSystemParts('edit', 1e5, as).head;
   const manual = T.buildSystemParts('manual', 1e5, as).head;
-  assert.ok(edit.includes('\n- page_parts(action "read", part, number): the header, footer, footnotes (with the line of each mark) and the table of contents; they are not in the numbered lines.\n'));
-  assert.ok(manual.includes('- page_parts(action "read", part, number)'));
-  assert.ok(edit.includes('\n- page_parts(action, part, number, text, after_text): set_text replaces the whole text of the header, the footer or footnote N (a missing header or footer is created); add_footnote adds a footnote with text right after after_text (exact body text); delete_footnote removes footnote N. The table of contents is read-only.\n'));
-  assert.ok(!manual.includes('- page_parts(action, part'));
-  assert.ok(T.buildTurnContext('edit', as).includes('</document>\nPage parts: header, footer, 2 footnotes, a table of contents before line 2; read them with page_parts.\n'));
+  assert.ok(!edit.includes('- page_parts') && !manual.includes('- page_parts'));
+  assert.ok(T.toolsFor('manual', as).find((t) => t.function.name === 'page_parts').function.description.includes('(not in the numbered lines)'));
+  // what exists, with no instruction to read it (a greeting once read an empty header)
+  assert.ok(T.buildTurnContext('edit', as).includes('</document>\nPage parts: header, footer, 2 footnotes, a table of contents before line 2.\n'));
   deq(T.pagePartsNote({ model: { segments: [], toc: null } }), '');
   // reading vs writing calls; log summaries; icon; pending text
   const call = (args) => ({ id: 'x', type: 'function', function: { name: 'page_parts', arguments: JSON.stringify(args) } });
@@ -93,7 +92,7 @@ test('schema, where it is offered, prompt lines, the turn-context note, icon, su
     T.logEntry(call(A({ action: 'add_footnote', after_text: 'the lazy dog', text: 'x' })), null).summary,
     T.logEntry(call(A({ action: 'delete_footnote', part: 'footnote', number: 1 })), null).summary],
   ['read', 'read footnote 2', 'set_text footer', 'add_footnote after «the lazy dog»', 'delete_footnote footnote 1']);
-  deq([T.activityIcon('page_parts'), T.pendingCardText('page_parts'), T.isEditTool('page_parts')], ['📎', 'Changing a page part…', true]);
+  deq([T.pendingCardText('page_parts'), T.isEditTool('page_parts')], ['Changing a page part…', true]);
 });
 
 test('read: header, footer, footnotes with the line and text before each mark, the TOC; one part; one footnote', async () => {
@@ -115,18 +114,24 @@ test('read: header, footer, footnotes with the line and text before each mark, t
   assert.strictEqual(T.buildTurnContext('edit', as).includes('Page parts'), false);
   await fresh(spec({ headers: { 'kix.h1': [{ p: 'Main head' }], 'kix.h2': [{ p: '' }] }, documentStyle: { defaultHeaderId: 'kix.h1', firstPageHeaderId: 'kix.h2' } }));
   assert.strictEqual((await exec('page_parts', A({ part: 'header' }))).content, 'Header: «Main head»\nFirst-page header: (empty)');
-  assert.ok(T.buildTurnContext('edit', as).includes('Page parts: header, first-page header, footer, 2 footnotes'));
+  // the turn context leaves the empty one out; page_parts still reads it
+  assert.ok(T.buildTurnContext('edit', as).includes('Page parts: header, footer, 2 footnotes'));
+  assert.ok(!T.buildTurnContext('edit', as).includes('first-page header'));
+  await fresh({ documentId: 'DOC123', title: 'Empty header', tabs: [{ id: 't.0', title: 'Main', items: [{ p: 'Body' }],
+    headers: { 'kix.h1': [{ p: '' }] }, documentStyle: { defaultHeaderId: 'kix.h1' } }] });
+  assert.strictEqual((await exec('page_parts', A({ part: 'header' }))).content, 'Header: (empty)');
+  assert.strictEqual(T.buildTurnContext('edit', as).includes('Page parts'), false);
 });
 
 test('set_text: the header (only the differing middle), footnote 2 (its leading space kept); exact undo of each', async () => {
   await fresh(spec());
   let r = pushTool(await exec('page_parts', A({ action: 'set_text', part: 'header', text: 'Final header' }), 's1'));
-  assert.strictEqual(r.content, 'Done: set the text of the header.\nIn the header:\nLines 1-1 now:\n1: Final header\nThe document now has 4 lines.');
+  assert.strictEqual(r.content, 'Done: set the text of the header; the document has 4 lines.'); // it reads as sent: no text
   deq(lastPost().requests, [{ deleteContentRange: { range: range(0, 5, { segmentId: 'kix.h1' }) } }, { insertText: { location: loc(0, { segmentId: 'kix.h1' }), text: 'Final' } }]);
   deq([r._message, r._cardText, r._cardLabel, r._edit.kind, r._edit.segmentId], ['Header text set', 'Final header', 'Header text', 'replace', 'kix.h1']);
   assert.strictEqual(as.responseWrite, null); // no body line moved
   r = pushTool(await exec('page_parts', A({ action: 'set_text', part: 'footnote', number: 2, text: 'Archive of 1990\n' }), 's2'));
-  assert.strictEqual(r.content, 'Done: set the text of footnote 2.\nIn the footnote 2:\nLines 1-1 now:\n1:  Archive of 1990\nThe document now has 4 lines.');
+  assert.strictEqual(r.content, 'Done: set the text of footnote 2; the document has 4 lines.');
   deq(lastPost().requests, [{ insertText: { location: loc(8, { segmentId: 'fn.b' }), text: ' of 1990' } }]);
   assert.strictEqual(fake.segText('fn.b'), ' Archive of 1990');
   // an empty text empties the part (the paragraph stays)
@@ -145,7 +150,7 @@ test('set_text: the header (only the differing middle), footnote 2 (its leading 
 test('set_text on a missing footer: createFooter, then its text (two batches); undo deletes the footer; a failed text batch deletes it again', async () => {
   await fresh(spec({ footer: false }));
   const r = pushTool(await exec('page_parts', A({ action: 'set_text', part: 'footer', text: 'New foot' }), 'c1'));
-  assert.strictEqual(r.content, 'Done: created the footer with the text.\nIn the footer:\nLines 1-1 now:\n1: New foot\nThe document now has 4 lines.');
+  assert.strictEqual(r.content, 'Done: created the footer with the text; the document has 4 lines.');
   const [b1, b2] = posts();
   deq(b1.requests, [{ createFooter: { type: 'DEFAULT', sectionBreakLocation: loc(0) } }]);
   const id = fake.segments('t.0').footers[0];
@@ -169,7 +174,7 @@ test('set_text on a missing footer: createFooter, then its text (two batches); u
   await fresh(spec({ footer: false }));
   failPost(2);
   const f = await exec('page_parts', A({ action: 'set_text', part: 'footer', text: 'New foot' }), 'c3');
-  assert.ok(!f._ok && /failed halfway \(Google Docs API error 400: Invalid requests\[0\]\.insertText: boom\) and its first part was rolled back/.test(f.content), f.content);
+  assert.ok(!f._ok && /failed halfway \(the request was malformed: Invalid requests\[0\]\.insertText: boom\) and its first part was rolled back/.test(f.content), f.content);
   deq(fake.segments('t.0').footers, []);
   deq(Object.keys(posts().pop().requests[0]), ['deleteFooter']);
 });
@@ -177,7 +182,7 @@ test('set_text on a missing footer: createFooter, then its text (two batches); u
 test('add_footnote: createFootnote right after the passage, then its text in the new footnote; undo removes both; rollback', async () => {
   await fresh(spec());
   const r = pushTool(await exec('page_parts', A({ action: 'add_footnote', after_text: 'lazy dog', text: '  A dog. ' }), 'f1'));
-  assert.strictEqual(r.content, 'Done: added footnote 1 after «lazy dog» on line 2.\nLines 2-2 now:\n2: The quick brown fox jumps over the lazy dog￼.\nIn the footnote 1:\nLines 1-1 now:\n1:  A dog.\nThe document now has 4 lines.');
+  assert.strictEqual(r.content, 'Done: added footnote 1 after «lazy dog» on line 2; the document has 4 lines.');
   const [b1, b2] = posts();
   deq(b1.requests, [{ createFootnote: { location: loc(67) } }]);
   const fid = b2.requests[0].insertText.location.segmentId;
@@ -201,16 +206,17 @@ test('add_footnote: createFootnote right after the passage, then its text in the
   await fresh(spec());
   failPost(1, 'Invalid location');
   const g = await exec('page_parts', A({ action: 'add_footnote', after_text: 'lazy dog', text: 'A dog.' }), 'f3');
-  assert.ok(!g._ok && /rejected the edit: Google Docs API error 400: Invalid location/.test(g.content), g.content);
+  assert.ok(!g._ok && /rejected the edit: The request was malformed: Invalid location\./.test(g.content), g.content);
 });
 
-test('delete_footnote: a large edit (card), the mark deleted; undo re-creates the footnote with its plain text', async () => {
+test('delete_footnote: the mark deleted (Manual: a card with the footnote\'s text; Auto: none); undo re-creates the footnote with its plain text', async () => {
   await fresh(spec());
+  as.askEdits = true;
   const p = exec('page_parts', A({ action: 'delete_footnote', part: 'footnote', number: 1 }), 'd1');
   const { r, html } = await decided(p, 'accept');
-  assert.ok(html.includes('Large edit: it deletes footnote 1.') && html.includes('Survey of 2024.'), html);
+  assert.ok(html.includes('<div class="pv-note">Deletes footnote 1.</div>') && html.includes('<span class="code-lang">Footnote text</span></div><pre>Survey of 2024.</pre>'), html);
   pushTool(r);
-  assert.strictEqual(r.content, 'Done: deleted footnote 1 (its text was «Survey of 2024.»).\nLines 4-4 now:\n4: Data come from the survey and the archive￼.\nThe document now has 4 lines.');
+  assert.strictEqual(r.content, 'Done: deleted footnote 1; the document has 4 lines.');
   deq(lastPost().requests, [{ deleteContentRange: { range: range(102, 103) } }]);
   deq([r._message, r._decision, r._edit.kind, r._edit.index, r._edit.restore], ['Footnote 1 deleted', 'accepted', 'footnote-restore', 102, 'Survey of 2024.']);
   // someone typed above it: the undo finds the place by its context
@@ -221,71 +227,77 @@ test('delete_footnote: a large edit (card), the mark deleted; undo re-creates th
   deq(c1.requests, [{ createFootnote: { location: loc(117) } }]);
   deq(c2.requests[0].insertText.text, 'Survey of 2024.');
   deq(as.model.segments.filter((s) => s.type === 'footnote').map((s) => [s.n, s.text]), [[1, ' Survey of 2024.'], [2, ' Archive']]);
-  // the context changed: refused
+  // the context changed: refused (Auto: the delete asks nothing)
   await fresh(spec());
-  as.editAll = true;
-  pushTool(await exec('page_parts', A({ action: 'delete_footnote', part: 'footnote', number: 2 }), 'd2'));
+  const auto = pushTool(await exec('page_parts', A({ action: 'delete_footnote', part: 'footnote', number: 2 }), 'd2'));
+  assert.ok(auto._ok && auto._decision === undefined && T.pendingPreviews.size === 0, auto.content);
   await fake.fetch('https://docs.googleapis.com/v1/documents/DOC123:batchUpdate', { method: 'POST', headers: { Authorization: 'Bearer tok-1' },
     body: JSON.stringify({ requests: [{ insertText: { location: loc(117), text: 's' } }] }) });
   const u2 = await exec('undo_last_edit', {}, 'd2u');
   assert.ok(!u2._ok && /text around the deleted footnote's mark changed/.test(u2.content), u2.content);
   // Deny: nothing sent
   await fresh(spec());
+  as.askEdits = true;
   const n = posts().length;
   const d = await decided(exec('page_parts', A({ action: 'delete_footnote', part: 'footnote', number: 2 }), 'd3'), 'reject');
   deq([d.r._ok, d.r._decision, posts().length], [false, 'rejected', n]);
 });
 
-test('gate: set_text that removes 300+ characters asks; small edits pass without a card unless the turn is tainted', async () => {
+test('gate: Auto asks for no part write (a large one, in a tainted turn too); Manual shows a header\'s new text whole with the diff, a footnote\'s text', async () => {
   const long = 'x'.repeat(320);
   await fresh({ ...spec(), tabs: [{ ...spec().tabs[0], headers: { 'kix.h1': [{ p: long }] } }] });
-  const { r, html } = await decided(exec('page_parts', A({ action: 'set_text', part: 'header', text: 'Short' }), 'g1'), 'accept');
-  assert.ok(r._ok && html.includes('Large edit: it replaces the text of the header (320 characters removed).'), html);
+  as.tainted = true;
+  const big = await exec('page_parts', A({ action: 'set_text', part: 'header', text: 'Short' }), 'g1');
+  assert.ok(big._ok && big._decision === undefined && T.pendingPreviews.size === 0, big.content);
   assert.strictEqual(fake.segText('kix.h1'), 'Short');
-  // small: no card
-  const s = await exec('page_parts', A({ action: 'set_text', part: 'header', text: 'Shorter' }), 'g2');
-  assert.ok(s._ok && s._decision === undefined && T.pendingPreviews.size === 0);
   const f = await exec('page_parts', A({ action: 'add_footnote', after_text: 'lazy dog', text: 'x' }), 'g3');
   assert.ok(f._ok && f._decision === undefined);
-  // a tainted turn asks for any write
-  as.tainted = true;
-  const t = await decided(exec('page_parts', A({ action: 'add_footnote', after_text: 'brown fox', text: 'y' }), 'g4'), 'reject');
-  assert.ok(t.html.includes('This edit adds a footnote.') && t.r.content === T.EDIT_DENIED_TEXT, t.html);
   as.tainted = false;
+  // Manual: every write asks
+  as.askEdits = true;
+  const { r, html } = await decided(exec('page_parts', A({ action: 'set_text', part: 'header', text: 'Shorter header text' }), 'g2'), 'accept');
+  assert.ok(r._ok && html.includes('<div class="pv-note">Replaces the text of the header (5 characters removed).</div><div class="pv-anchor">Header</div>') &&
+    html.includes('<span class="code-lang">Header after the edit</span></div><pre>Shorter header text</pre>') && html.includes('<summary>What changed</summary>'), html);
+  const t = await decided(exec('page_parts', A({ action: 'add_footnote', after_text: 'brown fox', text: 'A long footnote. '.repeat(30).trim() }), 'g4'), 'reject');
+  assert.ok(t.html.includes('<div class="pv-note">Adds a footnote.</div>') && t.html.includes(`<pre>${'A long footnote. '.repeat(30).trim()}</pre>`) && t.r.content === T.EDIT_DENIED_TEXT, t.html);
+  as.askEdits = false;
   deq(T.editGateInfo('page_parts', {}), null); // no plan: no gate info
 });
 
 test('errors: unknown part, missing footnote, first-page header, the TOC, after_text not in the body, ambiguous, missing arguments', async () => {
   await fresh(spec());
   const err = async (args) => { const r = await exec('page_parts', A(args)); assert.ok(!r._ok, r.content); return r.content; };
-  assert.strictEqual(await err({ part: 'sidebar' }), 'Error: part must be "header", "footer", "footnote" (with number) or "toc".');
-  assert.strictEqual(await err({ action: 'rename' }), 'Error: action must be "read", "set_text", "add_footnote" or "delete_footnote".');
+  assert.strictEqual(await err({ part: 'sidebar' }), 'Error: part must be "header", "footer", "footnote" (with number), "toc" or "sections".');
+  assert.strictEqual(await err({ action: 'rename' }), 'Error: action must be "read", "set_text", "add_footnote", "delete_footnote", "section_break" or "section_style".');
   assert.strictEqual(await err({ part: 'footnote', number: 5 }), 'Error: the document has 2 footnotes; number must be 1-2.');
   assert.strictEqual(await err({ action: 'set_text', part: 'footnote', number: null, text: 'x' }), 'Error: number is required with part "footnote" (1-2).');
-  const kind = 'Error: page_parts changes only the default header and footer (part "header" or "footer"); a first-page or even-page header or footer cannot be created or changed here. Change it in Google Docs.';
+  const kind = 'Error: page_parts changes only the default header and footer (part "header" or "footer"); a first-page or even-page header or footer cannot be created or changed here. Tell the user to change it in Google Docs.';
   assert.strictEqual(await err({ action: 'set_text', part: 'first-page header', text: 'x' }), kind);
   assert.strictEqual(await err({ action: 'set_text', part: 'even-page footer', text: 'x' }), kind);
   const toc = 'Error: the table of contents cannot be changed through the Google Docs API; it is updated in Google Docs (click the table of contents → Update).';
   assert.strictEqual(await err({ action: 'set_text', part: 'toc', text: 'x' }), toc);
   assert.strictEqual(await err({ action: 'delete_footnote', part: 'toc' }), toc);
   assert.strictEqual(await err({ action: 'set_text', part: 'header', text: null }), 'Error: text is required for set_text: the new plain text of the part ("" empties it).');
-  assert.strictEqual(await err({ action: 'set_text', part: 'header', text: 'Draft header' }), 'Error: the header already reads that; nothing to change.');
+  // the same text: an ok "No change" (not an error for the repeat guard)
+  const same = await exec('page_parts', A({ action: 'set_text', part: 'header', text: 'Draft header' }));
+  deq([same._ok, same.content], [true, 'No change: the header already reads that.']);
   assert.strictEqual(await err({ action: 'set_text', part: null, text: 'x' }), 'Error: set_text needs part "header", "footer" or "footnote" (with number).');
   assert.strictEqual(await err({ action: 'set_text', part: 'header', text: 'Page ￼' }), 'Error: the header contains an embedded element (shown as "￼": a page number, image or chip) that set_text cannot re-create. Keep "￼" in text where it is and change only the text around it.');
   assert.strictEqual(await err({ action: 'add_footnote', after_text: 'Draft header', text: 'x' }), 'Error: after_text must be body text (footnotes cannot go into a header, footer or footnote).');
   assert.match(await err({ action: 'add_footnote', after_text: 'the', text: 'x' }), /^Error: after_text occurs 3 times \(lines 2, 4\)\. Include more of the surrounding text so that it occurs exactly once\.$/);
-  assert.match(await err({ action: 'add_footnote', after_text: 'lazy cat', text: 'x' }), /^Error: after_text not found\. Closest match at line 2: .*after_text must match the body text exactly/s);
+  assert.match(await err({ action: 'add_footnote', after_text: 'lazy cat', text: 'x' }), /^Error: after_text not found\. Closest match at line 2: .*\(after_text\) vs .*\nCopy after_text exactly from the current text above, without the "N: " prefixes\.$/s);
   assert.strictEqual(await err({ action: 'add_footnote', after_text: null, text: 'x' }), 'Error: after_text is required for add_footnote: the exact body text (occurring once) that the footnote mark follows.');
   assert.strictEqual(await err({ action: 'add_footnote', after_text: 'lazy dog', text: ' ' }), 'Error: text is required for add_footnote: the footnote text.');
   assert.strictEqual(await err({ action: 'add_footnote', part: 'header', after_text: 'lazy dog', text: 'x' }), 'Error: add_footnote adds a footnote to the body; pass part null (a header cannot get one).');
   assert.strictEqual(await err({ action: 'delete_footnote', part: 'footer' }), 'Error: delete_footnote deletes footnotes only; to empty the footer use set_text with text "".');
   await fresh({ documentId: 'DOC123', title: 'Bare', tabs: [{ id: 't.0', title: 'Main', items: [{ p: 'Body' }] }] });
   assert.strictEqual(await err({ action: 'delete_footnote', part: 'footnote', number: 1 }), 'Error: the document has no footnotes; add one with add_footnote.');
-  assert.strictEqual(await err({ action: 'set_text', part: 'header', text: '' }), 'Error: the document has no header; nothing to empty.');
+  const none = await exec('page_parts', A({ action: 'set_text', part: 'header', text: '' }));
+  deq([none._ok, none.content], [true, 'No change: the document has no header.']);
   assert.strictEqual(posts().length, 0);
   // writing calls: Auto only; read stays available in Manual
   const m = await T.executeTool({ id: 'w', type: 'function', function: { name: 'page_parts', arguments: JSON.stringify(A({ action: 'set_text', part: 'header', text: 'x' })) } }, 'manual', as);
-  assert.ok(!m._ok && /cannot be modified in this mode/.test(m.content));
+  assert.ok(!m._ok && /cannot be modified here/.test(m.content));
 });
 
 test('a turn: page_parts read is a reading call (quiet row, no card, stubbed after the turn); the answer follows', async () => {

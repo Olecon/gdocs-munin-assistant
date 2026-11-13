@@ -45,7 +45,7 @@ test('/side parses as a built-in command and is listed in the popup', () => {
   assert.strictEqual(T.popupEntry('side').desc, 'Side question: not saved, not sent with later messages');
 });
 
-test('/side with no text: a notice, nothing is sent, the input keeps the command', async () => {
+test('/side with no text: an error, nothing is sent, the input keeps the command', async () => {
   await chatWithOneTurn();
   const bodies = recordFetch(env, [textRound('never')]);
   const before = T.el.chat.children.length;
@@ -54,8 +54,8 @@ test('/side with no text: a notice, nothing is sent, the input keeps the command
   assert.strictEqual(bodies.length, 0);
   assert.strictEqual(state.busy, false);
   assert.strictEqual(T.el.input.value, '/side   ');
-  const notice = T.el.chat.children[before];
-  assert.ok(notice.classList.contains('notice') && notice.innerHTML.includes('Write your question after /side'));
+  const error = T.el.chat.children[before];
+  assert.ok(error.classList.contains('error') && error.innerHTML.includes('Write your question after /side'));
   deq(state.sideMessages, []);
 });
 
@@ -97,7 +97,7 @@ for (const prov of ['anthropic', 'openai', 'munin']) {
     await send(env, '/side is this phrasing correct?');
     assert.strictEqual(bodies.length, 1);
     const names = toolNames(bodies[0]);
-    assert.ok(names.includes('read_lines') && names.includes('get_selection'), names.join(','));
+    assert.ok(names.includes('read_document') && names.includes('get_selection'), names.join(','));
     assert.ok(!names.includes('replace_selection'));
     assert.ok(!names.includes('remember')); // a side question leaves nothing behind: not offered at all
     for (const w of T.WRITE_TOOLS) assert.ok(!names.includes(w), w);
@@ -109,6 +109,33 @@ for (const prov of ['anthropic', 'openai', 'munin']) {
     assert.strictEqual(state.sideMessages.at(-1).content, 'Side answer.');
   });
 }
+
+// Manual edits now: the side question's head must not say "this is Manual mode". It names itself and the three modes a
+// normal message runs in, the same whatever the mode button shows; the main turns sent next keep their lines.
+test('a side question is told it is a read-only side question with the three modes, in Manual and in Auto; main turns keep their lines', async () => {
+  const sys = (body) => body.system.map((b) => b.text).join('\n');
+  const panel = (body) => sys(body).split('\n').find((l) => l.startsWith('The panel (mention it'));
+  const commands = '; commands: /check, /review, /research, /side.';
+  const was = state.applyMode;
+  const heads = [];
+  for (const mode of ['manual', 'auto']) {
+    await chatWithOneTurn();
+    state.applyMode = mode;
+    let bodies = recordFetch(env, [textRound('Side answer.')]);
+    await send(env, '/side is this phrasing correct?');
+    assert.ok(panel(bodies[0]).endsWith(`: this is a read-only side question; modes for normal messages: Manual, Auto, Plan${commands}`), panel(bodies[0]));
+    assert.ok(!sys(bodies[0]).includes('this is Manual mode') && sys(bodies[0]).includes(T.TOOLS_MANUAL_RULES), mode);
+    heads.push(sys(bodies[0]));
+    bodies = recordFetch(env, [textRound('Main answer.')]);
+    await send(env, 'a normal question');
+    const main = mode === 'manual'
+      ? ': this is Manual mode; the user allows each edit on a card, so group related changes into one call; other modes: Auto, Plan'
+      : ': this is Auto mode; other modes: Manual, Plan';
+    assert.ok(panel(bodies[0]).endsWith(main + commands), panel(bodies[0]));
+  }
+  assert.strictEqual(heads[0], heads[1]);
+  state.applyMode = was;
+});
 
 test('remember is refused in a side turn: the document instructions stay as they were', async () => {
   await chatWithOneTurn();
@@ -195,16 +222,18 @@ test('Stop during a side turn: the turn ends, the panel is idle, the main chat u
   assert.strictEqual(state.busy, false);
   assert.strictEqual(state.abort, null);
   assert.strictEqual(JSON.stringify(state.messages), mem);
-  assert.ok(T.el.chat.children.some((c) => c.classList && c.classList.contains('notice') && c.innerHTML.includes('Stopped.')));
+  // the side bubble's label says it (no row besides)
+  assert.ok(T.el.chat.children.some((c) => c._parts && c.classList.contains('side') && /^Stopped after /.test(c._parts.label.textContent)));
+  assert.ok(!T.el.chat.children.some((c) => c._text === 'Stopped.'));
   assert.strictEqual(state.sideMessages.at(-1).content, 'slow question');
 });
 
 test('Anthropic tool round in a side turn: the reading call runs, results are slimmed after the turn', async () => {
   await chatWithOneTurn();
   doc.text = ['# Big', '', ...Array.from({ length: 40 }, (_, i) => `Line ${i + 3} with some words in it.`)].join('\n');
-  const bodies = recordFetch(env, [msgStart + tu(0, 'toolu_side', 'read_lines', { start: 1, end: 42, doc: null }) + stopTool, textRound('Read.')]);
+  const bodies = recordFetch(env, [msgStart + tu(0, 'toolu_side', 'read_document', { scope: { start: 1, end: 42 }, include: ['text'], doc: null }) + stopTool, textRound('Read.')]);
   await send(env, '/side summarize the document');
   assert.strictEqual(bodies.length, 2);
   deq(state.sideMessages.map((m) => m.role), ['user', 'assistant', 'tool', 'assistant']);
-  assert.ok(state.sideMessages[2].content.startsWith('[read_lines 1–42: content omitted after the turn'));
+  assert.ok(state.sideMessages[2].content.startsWith('[read_document lines 1–42: content omitted after the turn'));
 });

@@ -1,8 +1,8 @@
 'use strict';
 // Module providers/openai.js: OpenAI Responses API: request builder (buildOpenAiRequest,
 // toResponsesInput, openaiCacheKey) and stream parser (streamResponses).
-/* global addNotice, apiUrl, bearerHeaders, fitMessages, joinSystem, lastUserIndex,
-   offersWriteTools, openaiSearchRow, openaiSources, postJson, readStream, streamError, state, toOpenAiTool, userContent,
+/* global addTurnRow, apiUrl, bearerHeaders, fitMessages, joinSystem, lastUserIndex,
+   offersWriteTools, openaiSearchRow, openaiSources, postJson, readStream, samplingFields, streamError, state, stripCitationMarkers, toOpenAiTool, userContent,
    webSearchTurn */
 /* exported openaiReasoningModel, buildOpenAiRequest, streamResponses */
 
@@ -44,12 +44,14 @@ function toResponsesInput(hasTools, history) {
   return items;
 }
 
-// prompt_cache_key: routes the requests of one chat to the same prompt cache (document ID + chat ID;
-// kept within 64 characters, its end, with the chat ID, is kept). null without a document or chat.
+// prompt_cache_key: routes the requests of one chat to the same prompt cache (account ID + document ID + chat ID: two
+// accounts never share a key; kept within 64 characters, its end, with the chat ID, is kept). null without a document
+// or chat. An agent (agents.js) has its own prefix (its preface and history), so its requests get their own key (":agent").
 function openaiCacheKey(snap) {
   const chatId = snap.chatCtx ? snap.chatCtx.chatId : state.chatId;
   if (!snap.docId || !chatId) return null;
-  const key = `${snap.docId}:${chatId}`;
+  const account = snap.cfg && snap.cfg.accountId ? `${snap.cfg.accountId}:` : '';
+  const key = `${account}${snap.docId}:${chatId}${snap.agent ? ':agent' : ''}`;
   return key.length > 64 ? key.slice(key.length - 64) : key;
 }
 
@@ -67,13 +69,18 @@ function buildOpenAiRequest(mode, snap, opts = {}) {
     store: false, // stateless: the panel replays the history itself; reasoning items then carry encrypted_content
     include: ['reasoning.encrypted_content'],
   };
+  // A temperature only when the user set one for the model (settings.js providerFor leaves it out for reasoning models,
+  // which refuse it): the provider has no sampling of its own.
+  const { temperature } = samplingFields(snap.prov);
+  if (temperature !== undefined) body.temperature = temperature;
   const cacheKey = openaiCacheKey(snap);
   if (cacheKey) body.prompt_cache_key = cacheKey;
   if (fit.tools.length) body.tools = fit.tools.map(toOpenAiTool);
   if (offersWriteTools(fit.tools)) body.parallel_tool_calls = false; // edits one at a time (line numbers shift)
-  if (webSearchTurn(mode, snap)) body.tools = [...(body.tools || []), { type: 'web_search' }]; // server-side search (/research)
-  // The model's default reasoning effort is used (no reasoning.effort).
-  if (openaiReasoningModel(cfg.model) && !state.openaiNoSummary) body.reasoning = { summary: 'auto' }; // feeds the Thinking section
+  // Server-side search (webSearchTurn), only next to the client tools (not in the probe or the wrap-up round).
+  if (fit.tools.length && webSearchTurn(mode, snap)) body.tools = [...body.tools, { type: 'web_search' }];
+  // reasoning.effort medium asked for explicitly (a model's default may be lower); the summary feeds the Thinking section
+  if (openaiReasoningModel(cfg.model)) body.reasoning = state.openaiNoSummary ? { effort: 'medium' } : { effort: 'medium', summary: 'auto' };
   return { ...fit, kind: 'responses', url: apiUrl(snap, '/responses'), headers: bearerHeaders(cfg), body };
 }
 
@@ -83,12 +90,22 @@ function buildOpenAiRequest(mode, snap, opts = {}) {
 // function_call), the *.delta events carry text; response.completed / .incomplete / .failed end
 // the stream with the final response object (canonical output items and usage).
 // ---------------------------------------------------------------------------
+// The request without reasoning.summary once the session knows it is refused (state.openaiNoSummary), else req.
+function withoutSummary(req) {
+  const r = req.body && req.body.reasoning;
+  if (!state.openaiNoSummary || !r || !r.summary) return req;
+  const body = { ...req.body, reasoning: { ...r } };
+  delete body.reasoning.summary;
+  if (!Object.keys(body.reasoning).length) delete body.reasoning;
+  return { ...req, body };
+}
+
 async function streamResponses(req, signal, snap, hooks) {
   let content = '';
   let reasoning = '';
   const calls = []; // in order of the function_call items
   const callIndexByItem = new Map(); // output_index -> index in calls
-  const searchRows = new Map(); // output_index -> activity row of a web_search_call (/research)
+  const searchRows = new Map(); // output_index -> activity row of a web_search_call
   let items = null; // final output items
   let status = null;
   let incomplete = null;
@@ -98,23 +115,23 @@ async function streamResponses(req, signal, snap, hooks) {
     if (status === 'incomplete') return incomplete && incomplete.reason === 'max_output_tokens' ? 'length' : `incomplete: ${(incomplete && incomplete.reason) || 'unknown reason'}`;
     return calls.length ? 'tool_calls' : 'stop';
   };
-  const partial = () => ({ content, reasoning, toolCalls: calls.filter(Boolean), finishReason: finishReason(), usage });
+  // The text without the inline citation markers (stripCitationMarkers): what the panel shows, stores, copies and applies.
+  const partial = () => ({ content: stripCitationMarkers(content), reasoning, toolCalls: calls.filter(Boolean), finishReason: finishReason(), usage });
   const fail = (msg) => streamError(msg, partial);
 
   // Reasoning summaries need an organization that may use them; when the API refuses the request
-  // because of the summary, it is retried without it (and no longer asked for in this session).
+  // because of the summary, it is retried without it (and no longer asked for in this session). The body is rebuilt
+  // from state.openaiNoSummary on every attempt, so runStream's retry of a failed retry does not ask for it again.
   let resp;
   try {
-    resp = await postJson(req, signal, snap);
+    resp = await postJson(withoutSummary(req), signal, snap);
   } catch (e) {
     const r = req.body.reasoning;
-    if (e.status === 400 && r && r.summary && /summar|verif/i.test(e.serverMessage || e.message)) {
+    if (e.status === 400 && r && r.summary && !state.openaiNoSummary && /summar|verif/i.test(e.serverMessage || e.message)) {
       state.openaiNoSummary = true;
-      const body = { ...req.body, reasoning: { ...r } };
-      delete body.reasoning.summary;
-      if (!Object.keys(body.reasoning).length) delete body.reasoning;
-      resp = await postJson({ ...req, body }, signal, snap);
-      addNotice('Reasoning summaries are not available for this OpenAI account or model; the Thinking section stays empty.', { sticky: true });
+      resp = await postJson(withoutSummary(req), signal, snap);
+      // A row of the turn (none outside a turn; not for an agent's or the self-test's request, which run beside it).
+      if (!(snap && (snap.agent || snap.quiet))) addTurnRow('Reasoning summaries are not available for this OpenAI account or model; the Thinking section stays empty.');
     } else {
       throw e;
     }
@@ -151,7 +168,7 @@ async function streamResponses(req, signal, snap, hooks) {
     switch (ev.type) {
       case 'response.output_text.delta':
       case 'response.refusal.delta':
-        if (typeof ev.delta === 'string' && ev.delta) { content += ev.delta; hooks.onContent && hooks.onContent(content); }
+        if (typeof ev.delta === 'string' && ev.delta) { content += ev.delta; hooks.onContent && hooks.onContent(stripCitationMarkers(content)); }
         break;
       case 'response.reasoning_summary_part.added':
         if (reasoning && !reasoning.endsWith('\n\n')) reasoning += '\n\n'; // paragraph per summary part

@@ -46,14 +46,15 @@ test('one anchor per group; text typed above both groups: undo relocates and res
   assert.ok(w._ok, w.content);
   deq(aligns(), [null, 'END', 'END', 'END', null]);
   const g = w._edit.groups;
-  deq(g.map((x) => [x.index, x.end, x.text, x.lines]), [[36, 43, 'Cell A', [2, 2]], [43, 89, 'After the table comes a long line\nSecond line', [3, 4]]]);
+  // (the table ends one index after its last cell, as in Docs: the second group starts at 44)
+  deq(g.map((x) => [x.index, x.end, x.text, x.lines]), [[36, 43, 'Cell A', [2, 2]], [44, 90, 'After the table comes a long line\nSecond line', [3, 4]]]);
   deq(g.map((x) => x.anchor.before), [' enough for context\n', ' for context\nCell A\n']);
-  deq(g.map((x) => x.requests), [[pstyle(36, 43)], [pstyle(43, 89)]]);
+  deq(g.map((x) => x.requests), [[pstyle(36, 43)], [pstyle(44, 90)]]);
   fake.typeParagraph(0, 'Typed by the user'); // 18 units above both groups
   const u = pushTool(await exec('undo_last_edit', {}));
   assert.ok(u._ok, u.content);
   assert.ok(u.content.startsWith('Done: undid formatting of lines 3–5.'), u.content);
-  deq(lastPost().requests, [pstyle(61, 107), pstyle(54, 61)]);
+  deq(lastPost().requests, [pstyle(62, 108), pstyle(54, 61)]);
   deq(aligns(), [null, null, null, null, null, null]);
 });
 
@@ -65,9 +66,12 @@ test('a group whose text changed is not restored; the others are, and the error 
   const preview = await T.previewUndoAll([w]);
   deq(preview.map((x) => x.status), ['blocked']);
   assert.ok(preview[0].reason.startsWith('only part of that edit would be undone: the formatting of line 2 can be restored, but'), preview[0].reason);
+  assert.ok(preview[0].reason.endsWith('. Use Undo (Ctrl+Z) in Google Docs instead.'), preview[0].reason); // the user's wording
+  // the model gets the advice to relay (it cannot press Ctrl+Z)
   const u = pushTool(await exec('undo_last_edit', {}));
   assert.strictEqual(u.content, 'Error: only part of that edit was undone: the formatting of line 2 was restored, but the text of lines 3–4 changed after the edit, '
-    + 'so that part cannot be restored automatically. Use Undo (Ctrl+Z) in Google Docs instead.');
+    + 'so that part cannot be restored automatically. Tell the user to use Undo (Ctrl+Z) in Google Docs.');
+  assert.ok(u._message.endsWith('Use Undo (Ctrl+Z) in Google Docs instead.'), u._message); // the row keeps the user's wording
   deq(lastPost().requests, [pstyle(36, 43)]); // the second group's stale range is not sent
   deq(aligns(), [null, null, 'END', null, 'END', null]);
   assert.strictEqual(w._edit.undone, false); // still undoable: the next undo tries the group that is left

@@ -48,7 +48,7 @@ test('toAnthropicMessages', async () => {
   deq(am[5].content, rawBlocks);
   deq(am[6].content, [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'Error: automatic paste failed', is_error: true }]);
   assert.strictEqual(am.length, 7);
-  // Manual mode: no tool blocks at all, roles alternate.
+  // A request without tools (the wrap-up, a document pass): no tool blocks at all, roles alternate.
   const amManual = T.toAnthropicMessages(false, state.messages);
   assert.ok(amManual.every((m) => m.content.every((b) => b.type === 'text' || b.type === 'thinking')));
   deq(amManual.map((m) => m.role), ['user', 'assistant', 'user', 'assistant']);
@@ -89,8 +89,8 @@ test('buildRequest anthropic', async () => {
   assert.ok(!req.body.system[0].text.includes('<document title=') && !req.body.system[0].text.includes('Selection: line'));
   const ctxA = T.buildTurnContext('edit', aSnap);
   assert.ok(ctxA.includes('<document title="Doc &lt;1&gt;" format="text" lines="1" characters="'));
-  assert.ok(ctxA.endsWith('\nSelection: line 1 (5 characters)'));
-  deq(req.body.tools.map((t) => t.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user']);
+  assert.ok(ctxA.endsWith(`\nSelection: line 1 (5 characters)\nIts text (no need for get_selection):\n<selection>\n${aSnap.selection}\n</selection>`), ctxA);
+  deq(req.body.tools.map((t) => t.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user', 'phrase_usage', 'delegate', 'web_search']);
   assert.strictEqual(req.body.tools[0].strict, true);
   assert.strictEqual(req.body.temperature, undefined);
   assert.strictEqual(req.body.max_tokens, 32000);
@@ -102,9 +102,9 @@ test('buildRequest anthropic', async () => {
   // Fixed endpoint: a stored base URL is ignored (so fallbacks stay on for eligible models).
   req = T.buildRequest('edit', snapFor('anthropic', { model: 'claude-opus-5-5', baseUrl: 'https://proxy.example.com/v1/' }));
   assert.strictEqual(req.url, 'https://api.anthropic.com/v1/messages'); assert.strictEqual(req.body.fallbacks, 'default');
-  // Manual: reading tools only; persona on Anthropic: chat-only with persona instructions.
+  // The read-only chat turn: reading tools only; persona on Anthropic: chat-only with persona instructions.
   req = T.buildRequest('manual', snapFor('anthropic', { baseUrl: '' }));
-  deq(req.body.tools.map((t) => t.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user']);
+  deq(req.body.tools.map((t) => t.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user', 'phrase_usage', 'delegate', 'web_search']);
   assert.ok(req.body.system[0].text.startsWith('You are an editing assistant') && req.body.system[0].text.includes('You CANNOT modify the document'));
   req = T.buildRequest('research', snapFor('anthropic'));
   // Phase C2: /research on Anthropic adds the server-side web search tool after the reading tools.
@@ -119,13 +119,13 @@ test('buildRequest openai', async () => {
   assert.strictEqual(req.kind, 'responses');
   assert.strictEqual(req.url, 'https://api.openai.com/v1/responses');
   assert.strictEqual(req.headers.Authorization, 'Bearer k-openai');
-  deq(req.body.reasoning, { summary: 'auto' }); // the model's default reasoning effort
+  deq(req.body.reasoning, { effort: 'medium', summary: 'auto' }); // medium asked for explicitly
   // A config of an earlier version that still carries effort: the effort is not sent.
-  deq(T.buildRequest('edit', snapFor('openai', { model: 'gpt-6.1-sol', effort: 'medium' })).body.reasoning, { summary: 'auto' });
+  deq(T.buildRequest('edit', snapFor('openai', { model: 'gpt-6.1-sol', effort: 'medium' })).body.reasoning, { effort: 'medium', summary: 'auto' });
   assert.strictEqual(req.body.store, false); assert.strictEqual(req.body.stream, true);
   assert.strictEqual(req.body.max_output_tokens, 32000);
   assert.strictEqual(typeof req.body.instructions, 'string');
-  deq(req.body.tools[6], { type: 'function', name: 'replace_selection', description: req.body.tools[6].description, parameters: req.body.tools[6].parameters, strict: true });
+  deq(req.body.tools[5], { type: 'function', name: 'replace_selection', description: req.body.tools[5].description, parameters: req.body.tools[5].parameters, strict: true });
   assert.strictEqual(req.body.input.length, 8);
   assert.strictEqual(req.body.temperature, undefined);
   req = T.buildRequest('edit', snapFor('openai', { model: 'gpt-4.1', baseUrl: 'https://evil.example.com' })); // ignored: fixed endpoint
@@ -134,7 +134,7 @@ test('buildRequest openai', async () => {
   state.settings.providers.openai.baseUrl = 'https://api.openai.com/v1';
   state.openaiNoSummary = true;
   req = T.buildRequest('edit', snapFor('openai', { model: 'gpt-6-astra' }));
-  assert.strictEqual(req.body.reasoning, undefined);
+  deq(req.body.reasoning, { effort: 'medium' }); // no summary for this account, the effort still asked for
   state.openaiNoSummary = false;
 });
 
@@ -142,7 +142,7 @@ test('buildRequest munin', async () => {
   req = T.buildRequest('edit', snapFor('munin', { baseUrl: 'https://evil.example.com' })); // ignored: Munin's endpoint is fixed
   assert.strictEqual(req.kind, 'chat');
   assert.strictEqual(req.url, 'https://api.muninai.org/v1/chat/completions');
-  assert.strictEqual(req.body.persona, 'raw'); assert.strictEqual(req.body.max_tokens, 8192); assert.strictEqual(req.body.temperature, 0.7); // PROVIDERS.munin.sampling
+  assert.strictEqual(req.body.persona, 'raw'); assert.strictEqual(req.body.max_tokens, 8192); assert.strictEqual(req.body.temperature, 0.6); // PROVIDERS.munin.toolSampling (Auto offers the writing tools)
   deq(req.body.stream_options, { include_usage: true });
   assert.strictEqual(req.body.messages[0].role, 'system');
   assert.strictEqual(req.body.messages.length, 8);
@@ -187,7 +187,7 @@ test('in-turn overflow: older reading results of the turn become stubs (all but 
   const keep = state.messages;
   const read = (id, start) => ({ id, type: 'function', function: { name: 'read_lines', arguments: JSON.stringify({ start, end: start + 99, doc: null }) } });
   const blocks = [{ type: 'thinking', thinking: 'plan', signature: 'SIG' }, { type: 'tool_use', id: 'r1', name: 'read_lines', input: { start: 1, end: 100, doc: null } }];
-  const big = (n) => `Lines ${n}:\n` + 'z'.repeat(4500); // 4,500: the static head (with the writing rules) is about 4,400 tokens
+  const big = (n) => `Lines ${n}:\n` + 'z'.repeat(3400); // 3,400: small enough for the older turn to fit next to the static head (about 4,000 tokens), large enough to stub
   state.messages = [
     { role: 'user', content: 'earlier' }, { role: 'assistant', content: 'earlier answer' },
     { role: 'user', content: 'read a lot' },
@@ -253,4 +253,63 @@ test('buildRequest with a probe history: no tools, only the given messages, the 
   assert.ok(JSON.stringify(full.body).includes('must not be sent'));
   assert.strictEqual(full.body.max_tokens, PROVIDERS.munin.maxTokens);
   state.messages = [];
+});
+
+test('apiMessage: tool-call arguments that are not valid JSON are sent as {} (vLLM parses the history)', () => {
+  const m = { role: 'assistant', content: null, tool_calls: [
+    { id: 'c1', type: 'function', function: { name: 'replace_text', arguments: '{"old_text": "a", "new_text": "b"' } },
+    { id: 'c2', type: 'function', function: { name: 'read_document', arguments: '{"scope":null}' } },
+    { id: 'c3', type: 'function', function: { name: 'get_selection', arguments: '' } },
+  ] };
+  deq(T.apiMessage(m, false, false).tool_calls.map((tc) => tc.function.arguments), ['{}', '{"scope":null}', '']);
+  assert.strictEqual(m.tool_calls[0].function.arguments, '{"old_text": "a", "new_text": "b"', 'the stored call is kept');
+});
+
+test('Munin streamChat: parallel calls streamed under one index (or none) with their own ids get a slot each', async () => {
+  const cc = (o) => `data: ${JSON.stringify(o)}\n\n`;
+  const part = (tc) => cc({ choices: [{ index: 0, delta: { tool_calls: [tc] } }] });
+  const body = part({ index: 0, id: 'call_a', type: 'function', function: { name: 'read_document', arguments: '{"scope":' } }) +
+    part({ index: 0, function: { arguments: '{"start":1,"end":3}}' } }) +
+    part({ index: 0, id: 'call_b', type: 'function', function: { name: 'find_in_document', arguments: '{"query":' } }) +
+    part({ index: 0, function: { arguments: '"x"}' } }) +
+    part({ id: 'call_c', type: 'function', function: { name: 'get_selection', arguments: '{}' } }) + // no index
+    part({ index: 1, id: 'call_d', type: 'function', function: { name: 'get_selection', arguments: '{}' } }) +
+    cc({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+  const snap = snapFor('munin');
+  env.ctx.fetch = async () => ({ ok: true, status: 200, body: { getReader: () => { let done = false; return { read: async () => {
+    if (done) return { done: true }; done = true; return { done: false, value: new TextEncoder().encode(body) };
+  } }; } } });
+  const res = await T.streamChat(T.buildRequest('edit', snap), new AbortController().signal, snap, {});
+  deq(res.toolCalls.map((c) => [c.id, c.function.name, c.function.arguments]), [
+    ['call_a', 'read_document', '{"scope":{"start":1,"end":3}}'],
+    ['call_b', 'find_in_document', '{"query":"x"}'],
+    ['call_c', 'get_selection', '{}'],
+    ['call_d', 'get_selection', '{}'],
+  ]);
+});
+
+test('OpenAI: the retry without the reasoning summary that gets a 5xx is retried by runStream without the summary again', async () => {
+  const { sseResponse, ev } = require('./lib/streams');
+  const delays = T.STREAM_RETRY_DELAYS_MS;
+  const saved = delays.slice();
+  delays.splice(0, delays.length, 1, 1);
+  const snap = snapFor('openai', { model: 'gpt-6.1-sol', baseUrl: '' });
+  const req = T.buildRequest('edit', snap);
+  deq(req.body.reasoning, { effort: 'medium', summary: 'auto' });
+  const sent = [];
+  env.ctx.fetch = async (url, init) => {
+    const b = JSON.parse(init.body);
+    sent.push(b.reasoning);
+    if (b.reasoning && b.reasoning.summary) return sseResponse(JSON.stringify({ error: { message: 'Your organization must be verified to generate reasoning summaries.' } }), 400);
+    if (sent.length === 2) return sseResponse(JSON.stringify({ error: { message: 'overloaded' } }), 503);
+    return sseResponse(ev('response.completed', { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', id: 'm', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] }], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }));
+  };
+  try {
+    const res = await T.runStream(req, new AbortController().signal, snap, {});
+    assert.strictEqual(res.content, 'ok');
+    deq(sent, [{ effort: 'medium', summary: 'auto' }, { effort: 'medium' }, { effort: 'medium' }]);
+  } finally {
+    delays.splice(0, delays.length, ...saved);
+    state.openaiNoSummary = false;
+  }
 });

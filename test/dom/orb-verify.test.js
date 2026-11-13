@@ -1,7 +1,7 @@
 'use strict';
-// The verifying phase of a write on the live bubble (render.js orbModeFor, placeText; jsdom): a pending write shows the
-// rubik before and while its batch is sent and the ring while the re-read verifies it; the location line reads
-// "Verifying the edit in <heading>" then, and the finished row shows neither.
+// The verifying phase of a write on the live bubble (render.js bubbleStatus, placeText; jsdom): a pending write shows the
+// rubik before and while its batch is sent and the ring while the re-read verifies it; the status line reads
+// "Verifying the edit in <heading>" then, and once the call has finished the line reads "Working…" again.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { load } = require('../lib/dom-sandbox');
@@ -17,12 +17,14 @@ const pending = (name, args = {}, phase) => ({ log: true, name, summary: '', arg
 const done = (name, args = {}) => ({ log: true, name, summary: '', args, result: 'ok', status: 'ok' });
 function bubble() {
   el.chat.textContent = '';
-  return T.addAssistantBubble();
+  const b = T.addAssistantBubble();
+  b._live = true; // liveAnswer's ensureBubble
+  return b;
 }
 const orbOf = (b) => b.querySelector('canvas.orb');
 const MD = '# Title\n\nIntro line.\n\n## Methods\n\nWe measured the spectra.\n\nMore text.\n\n## Results\n\nThe peak is at 3.5 mT.';
 
-test('the orb per phase: rubik for the plan and the batch, ring for the verifying re-read, hidden when done', () => {
+test('the orb per phase: rubik for the plan and the batch, ring for the verifying re-read, the ring of "Working…" when done', () => {
   const b = bubble();
   const args = { line: 7, text: 'x' };
   T.updateAssistantBubble(b, { activity: [pending('insert_after_line', args)] });
@@ -35,7 +37,7 @@ test('the orb per phase: rubik for the plan and the batch, ring for the verifyin
   T.updateAssistantBubble(b, { activity: [pending('insert_after_line', args, 'writing')] });
   assert.strictEqual(orbOf(b).dataset.orb, 'rubik');
   T.updateAssistantBubble(b, { activity: [done('insert_after_line', args)] });
-  assert.ok(orbOf(b).classList.contains('hidden'));
+  assert.strictEqual(orbOf(b).dataset.orb, 'ring');
   // a registered writing tool and replace_selection follow the phase too
   for (const name of ['page_parts', 'replace_selection']) {
     T.updateAssistantBubble(b, { activity: [pending(name, { text: 'x' }, 'verifying')] });
@@ -43,7 +45,7 @@ test('the orb per phase: rubik for the plan and the batch, ring for the verifyin
   }
 });
 
-test('the location line while the re-read verifies: "Verifying the edit" with the heading of the write', () => {
+test('the location while the re-read verifies: "Verifying the edit" with the heading of the write', () => {
   Object.assign(state, { docText: MD, docFormat: 'markdown', docModel: null });
   const v = (name, args) => pending(name, args, 'verifying');
   const cases = [
@@ -63,17 +65,16 @@ test('the location line while the re-read verifies: "Verifying the edit" with th
   for (const [a, want] of cases) assert.strictEqual(T.placeText(a), want, a.name + ' ' + JSON.stringify(a.args));
 });
 
-test('under the live bubble: the line follows the phase and goes when the call ends', () => {
+test('the live bubble\'s status line follows the phase and reads "Working…" when the call ends', () => {
   Object.assign(state, { docText: MD, docFormat: 'markdown', docModel: null });
   const b = bubble();
-  const place = b.querySelector('.agent-place');
+  const place = b.querySelector('.thinking-label');
   const args = { start: 7, end: 9, bold: true };
   T.updateAssistantBubble(b, { activity: [pending('format_lines', args, 'writing')] });
   assert.strictEqual(place.textContent, 'Formatting in Methods, lines 7–9');
   T.updateAssistantBubble(b, { activity: [pending('format_lines', args, 'verifying')] });
   assert.strictEqual(place.textContent, 'Verifying the edit in Methods');
-  assert.ok(!place.classList.contains('hidden'));
+  assert.ok(!b.querySelector('.thinking').classList.contains('hidden'));
   T.updateAssistantBubble(b, { activity: [done('format_lines', args)] });
-  assert.strictEqual(place.textContent, '');
-  assert.ok(place.classList.contains('hidden'));
+  assert.strictEqual(place.textContent, 'Working…');
 });

@@ -7,12 +7,13 @@
 // autocomplete (slash.js) picks Zotero items through zoteroPickItems / zoteroToken; zoteroMentionsLine turns the picks
 // in a sent message into a turn-context line (the beforeTurn hook below), so cite needs no search round.
 /* exported citationsInRanges, referencesOn, requestReferencesAccess, referencesAllowed, referencesRecheck, refsOffered, refsMentioned,
-   grantReferences, withReferences, zoteroAtReady, REFS_DENIED_TEXT, zoteroPickItems, zoteroToken, zoteroMentionsLine, ZOTERO_PICK_MAX, ZOTERO_TOKEN_RE */
-/* global addNotice, anchorMatches, confirmOpen, REFERENCES_KEY, REFERENCES_ORIGINS, lastSentText, apiEditing, changedLinesReport, citationsKey, cslSummary, commitSequence, commonEdges,
-   crossrefBib, crossrefMeta, docsBatchUpdate, fetchDocModel, finishEdit, findFlexible, GATE_REPLACE_CHARS, gateEdit, hitLines,
-   indexAtOffset, indexRange, isClosing, itemSummary, lineAtIndex, lineAtOffset, makeAnchor, notFoundError, oneLine,
-   parseDoi, rangeLabel, registerTools, registerTurnHook, registerUndoHandler, reqDelete, reqInsert, reqStyle,
-   reqBulletsOff, showText, state, writeError, ZOTERO_SETUP, zoteroFormat, zoteroSearch, zoteroStatus */
+   grantReferences, withReferences, zoteroAtReady, REFS_DENIED_TEXT, zoteroPickItems, zoteroToken, zoteroMentionsLine, ZOTERO_PICK_MAX, ZOTERO_TOKEN_RE,
+   lookupCached, findReferenceDigest */
+/* global addLateTurnRow, anchorMatches, NOT_UNDONE, confirmOpen, journalEntries, turnStartIndex, REFERENCES_KEY, REFERENCES_ORIGINS, lastSentText, apiEditing, chatAsked, citationsKey, cslSummary, commitSequence, commonEdges,
+   crossrefBib, crossrefMeta, docsBatchUpdate, fetchDocModel, finishEdit, findFlexible, gateEdit, hitLines,
+   indexAtOffset, indexRange, inexactLine, isClosing, itemSummary, lineAtIndex, lineAtOffset, makeAnchor, notFoundError, oneLine,
+   parseDoi, rangeLabel, rangeStyles, registerTools, registerTurnHook, registerUndoHandler, reqDelete, reqInsert, reqStyle, restoredStyles, restyle, styleAfterDelete,
+   reqBulletsOff, showText, state, turnUserText, writeError, ZOTERO_SETUP, zoteroFormat, zoteroSearch, zoteroStatus */
 
 const CITE_DEFAULT_STYLE = 'apa';
 const CITE_LOCALE = 'en-US';
@@ -33,9 +34,15 @@ const referencesOn = () => !!(state.settings && state.settings.references);
 // up front: a reference tool, /check's Allow lookups or the "@" picker asks on a card in the chat, whose Allow calls
 // chrome.permissions.request from the click (the user gesture it needs). The grant is stored (REFERENCES_KEY) and
 // counts while Chrome still grants every origin (loadSettings; referencesRecheck after a failed lookup), so revoking the
-// access in chrome://extensions brings the card back.
-const REFS_ACCESS_TEXT = 'The assistant wants to look up references through Zotero (on this computer), Crossref and OpenAlex.';
-const REFS_DENIED_TEXT = 'The user did not allow reference lookups in this message.';
+// access in chrome://extensions brings the card back. The card names the sources the call asks (Zotero only when it is
+// queried: a DOI goes to Crossref); Allow still asks Chrome for all of REFERENCES_ORIGINS (one grant).
+const REFS_SOURCES = ['Zotero', 'Crossref', 'OpenAlex'];
+function refsAccessText(sources) {
+  const names = sources.map((s) => (s === 'Zotero' ? 'Zotero (on this computer)' : s));
+  const list = names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `The assistant wants to look up references through ${list}.`;
+}
+const REFS_DENIED_TEXT = 'Reference lookups were not allowed. Call find_reference or cite again only if the user asks for a lookup; a citation the user gives or wants as plain text needs none: type it.';
 async function setReferencesGranted(on) {
   state.settings.references = !!on;
   try { await chrome.storage.local.set({ [REFERENCES_KEY]: !!on }); } catch (e) { /* the cache still holds it */ }
@@ -57,41 +64,85 @@ async function referencesRecheck() {
   return ok && referencesOn();
 }
 // The access card: resolves true once granted (at once when it already is), false for Not now, a refusal by Chrome or
-// Stop (signal). reason: a short sentence after the card's text. ui: the tool call's card holder (confirmOpen).
-async function requestReferencesAccess(reason, { signal = null, ui = {} } = {}) {
+// Stop (signal). reason: a short sentence after the card's text; sources: what the call asks (the card's text and
+// title); onLater: called on Not now. ui: the tool call's card holder (confirmOpen).
+async function requestReferencesAccess(reason, { signal = null, ui = {}, sources = REFS_SOURCES, onLater = null } = {}) {
   if (referencesOn()) return true;
-  const text = reason ? `${REFS_ACCESS_TEXT} ${reason}` : REFS_ACCESS_TEXT;
-  const d = await confirmOpen({ tool: 'References', title: 'Zotero, Crossref, OpenAlex', kind: 'access', icon: '📚', text, onAllow: grantReferences }, signal, ui);
+  const base = refsAccessText(sources);
+  const text = reason ? `${base} ${reason}` : base;
+  const d = await confirmOpen({ tool: 'References', title: sources.join(', '), kind: 'access', text, onAllow: grantReferences }, signal, ui);
+  if (d === 'reject' && onLater) onLater();
   return d === 'accept' && referencesOn();
 }
+// A Not now holds for the chat (in memory, docId \0 chatId): later calls of the chat are refused without a card until
+// the user's newest message asks for a lookup itself: a lookup verb before a references word or a source name ("find
+// it in Zotero", "проверь по Crossref"). A source named alone is no request ("Почему ты вызываешь Zotero?!").
+const refsDeclined = new Set();
+const refsChatKey = (snap) => { const c = snap.chatCtx || {}; return `${c.docId || snap.docId || state.docId || ''}\u0000${c.chatId || state.chatId || ''}`; };
+const REFS_LOOKUP_RE = /(?<![\p{L}])(?:look(?:ing)?\s*up|lookup|find|search|check|verify)(?![\p{L}])[^.?!\n]{0,40}?(?:references?|citations?|dois?|sources?|papers?|literature|bibliograph|zotero|crossref|openalex)|(?<![\p{L}])(?:найд|найт|поищ|ищи|искать|поиск|провер|сверь|сверить|подбер|подобр)\p{L}*[^.?!\n]{0,40}?(?:ссылк|литератур|источник|цитат|doi|стат[ьеяи]|работ|zotero|crossref|openalex|зотеро)/iu;
+const asksLookup = (text) => REFS_LOOKUP_RE.test(String(text || ''));
 // Once per turn (snap.refsAccess): a second need in the same turn gets the first answer without a card. A quiet turn
 // (the self-test) has nobody to ask.
-function referencesAllowed(snap, ui, reason) {
+function referencesAllowed(snap, ui, reason, sources) {
   if (referencesOn()) return Promise.resolve(true);
   if (!snap || snap.quiet) return Promise.resolve(false);
-  if (!snap.refsAccess) snap.refsAccess = requestReferencesAccess(reason, { signal: snap.signal || null, ui });
+  if (!snap.refsAccess) {
+    const chat = refsChatKey(snap);
+    if (refsDeclined.has(chat) && !asksLookup(turnUserText(snap) || lastSentText())) snap.refsAccess = Promise.resolve(false);
+    else {
+      snap.refsAccess = requestReferencesAccess(reason, { signal: snap.signal || null, ui, sources, onLater: () => refsDeclined.add(chat) })
+        .then((ok) => { if (ok) refsDeclined.delete(chat); return ok; });
+    }
+  }
   return snap.refsAccess;
 }
 // A reference tool's run behind the grant: the denial is the model-facing text (no retry: the turn's answer stands);
-// a failed lookup checks whether the permissions are still there.
-async function withReferences(snap, ui, reason, run) {
-  if (!(await referencesAllowed(snap, ui, reason))) return { content: REFS_DENIED_TEXT, _ok: false, _message: 'Reference lookups not allowed' };
+// a failed lookup checks whether the permissions are still there. sources: what the call asks (the card names them).
+async function withReferences(snap, ui, reason, run, sources = REFS_SOURCES) {
+  if (!(await referencesAllowed(snap, ui, reason, sources))) return { content: REFS_DENIED_TEXT, _ok: false, _message: 'Reference lookups not allowed' };
   const r = await run();
   const failed = typeof r === 'string' ? r.startsWith('Error') : !!r && r._ok === false;
   if (failed) await referencesRecheck();
   return r;
 }
 
+// ---- The lookup cache -----------------------------------------------------------------------------------------------
+// External lookups (search, find_reference's Crossref record, check_references) per document: the same call again gives
+// the same result without a request, in the same turn or a later one (after the turn only a digest of a result is left,
+// so the model may call again for the details). In memory only: gone when the panel reloads. Only what succeeded is kept (no error, refusal or
+// stopped run); a call after Stop is not served (it runs and stops as before); the reference tools look here only once
+// the grant let them run (inside withReferences).
+const LOOKUP_TTL_MS = 30 * 60 * 1000;
+const LOOKUP_MAX = 60; // entries in all, the oldest dropped first
+const lookupCache = new Map(); // docId \0 tool \0 key -> { at, value }
+const lookupCopy = (v) => (v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v);
+// run() -> the value (a result, a record; it may throw: nothing kept); keep(value): whether it is worth keeping.
+async function lookupCached(snap, tool, key, run, keep) {
+  const stopped = () => !!(snap && snap.signal && snap.signal.aborted);
+  if (stopped()) return run();
+  const k = `${(snap && snap.docId) || ''}\u0000${tool}\u0000${key}`;
+  const hit = lookupCache.get(k);
+  if (hit && Date.now() - hit.at <= LOOKUP_TTL_MS) return lookupCopy(hit.value);
+  lookupCache.delete(k);
+  const value = await run();
+  if (!stopped() && keep(value)) {
+    lookupCache.set(k, { at: Date.now(), value: lookupCopy(value) });
+    while (lookupCache.size > LOOKUP_MAX) lookupCache.delete(lookupCache.keys().next().value);
+  }
+  return value;
+}
+
 // ---- Offering the tools ---------------------------------------------------------------------------------------------
 // With the grant the reference tools are always offered; without it only when the user's message or the document
-// instructions mention references, so an unrelated turn's prompt does not grow (stems in English and Russian).
+// instructions mention references, so an unrelated turn's prompt does not grow (stems in English and Russian). On a
+// provider with a prompt cache a mention keeps them offered for the rest of the chat (request.js chatAsked).
 const REFS_WORDS_RE = /\b(?:references?|citations?|cit(?:e|es|ed|ing)|bibliograph\w*|doi|zotero|crossref)\b|литератур|ссылк|цитир|библиограф|источник/i;
 const refsMentioned = (text) => REFS_WORDS_RE.test(String(text || ''));
 // Fixed once per turn by the beforeTurn hook (snap.refsOffer), so every round offers the same tools; without it
 // (a snapshot no turn prepared) asked now.
 function refsOffered(snap) {
   if (snap && typeof snap.refsOffer === 'boolean') return snap.refsOffer;
-  return referencesOn() || refsMentioned(lastSentText()) || refsMentioned(snap && snap.docInstructions);
+  return referencesOn() || refsMentioned(snap && snap.docInstructions) || chatAsked(snap, refsMentioned, lastSentText());
 }
 
 // ---- The store of cited items (one key per document) ------------------------------------------------------
@@ -284,7 +335,8 @@ function locateMarks(model, store, sec) {
 // ---- Guards for the other write tools ----------------------------------------------------------------------------
 // The labels of the stored in-text citations that an edit of model removes text from: ranges are [start, end) text
 // offsets (plan.removed, docs-write.js); a citation counts when a range overlaps its label. In document order; []
-// when nothing is cited or no citation is found (no network, so no grant needed). Read by runWriteTool, so the gate asks.
+// when nothing is cited or no citation is found (no network, so no grant needed). Read by runWriteTool and
+// replaceSelectionCall: the edit card names them (gate.js editGateInfo), and in Manual they ask even after Allow all.
 async function citationsInRanges(model, ranges) {
   if (!model || !model.docId || !ranges || !ranges.length) return [];
   const store = await loadCiteStore(model.docId);
@@ -314,13 +366,13 @@ function citationProblems(model, store) {
 const REFRESH_HINT = 'cite with action "refresh" rebuilds the References list.';
 // docId -> the problems found after the last editing turn, for the next turn's note (cleared after that turn).
 const citeProblems = new Map();
-// The 'finish' turn hook: a turn with a successful edit is checked; a sticky notice tells the user, the next turn's
-// context note tells the model. The notice waits until the turn's final re-render (which clears the chat) is done.
+// The 'finish' turn hook: a turn with a successful edit is checked; a row of the turn tells the user (stored on its last
+// message once the turn has ended: the check reads the store), the next turn's context note tells the model.
 async function checkCitationsAfterTurn(userMsg, snap, chatCtx) {
   const model = snap && snap.model;
   if (!model || !model.docId || snap.side) return;
   const msgs = (chatCtx && chatCtx.messages) || [];
-  const edited = msgs.slice(msgs.indexOf(userMsg) + 1).some((m) => m.role === 'tool' && m._ok && m._edit);
+  const edited = journalEntries(msgs.slice(Math.max(0, turnStartIndex(msgs, userMsg)))).some((m) => m && m.role === 'tool' && m._ok && m._edit && m._edit.kind !== 'remember'); // an agent's edits too; not a remember
   if (!edited) { citeProblems.delete(model.docId); return; }
   const store = await loadCiteStore(model.docId);
   if (!store.order.length && !store.marks.length) { citeProblems.delete(model.docId); return; }
@@ -328,12 +380,7 @@ async function checkCitationsAfterTurn(userMsg, snap, chatCtx) {
   if (!problems.length) { citeProblems.delete(model.docId); return; }
   const text = `${problems.join(' ')} ${REFRESH_HINT}`;
   citeProblems.set(model.docId, text);
-  whenIdle(() => { if (state.docId === model.docId) addNotice(text, { sticky: true }); });
-}
-// Runs fn once the panel is no longer busy with a turn (polls; gives up after about a minute).
-function whenIdle(fn, tries = 1200) {
-  if (!state.busy) { fn(); return; }
-  if (tries > 0) setTimeout(() => whenIdle(fn, tries - 1), 50);
+  addLateTurnRow(text, msgs[msgs.length - 1]);
 }
 
 // ---- Applying the parts in one batch ---------------------------------------------------------------------------
@@ -347,10 +394,12 @@ function partsRequests(model, parts) {
       const r = indexRange(model, p.s, p.s + p.oldText.length);
       if (r.error) return { error: r.error, part: p };
       p.I = r.start;
+      p.styles = rangeStyles(model, r.start, r.end); // the removed text's own styles, for the undo
       requests.push(reqDelete(model, r.start, r.end));
     } else {
       const l = lineAtOffset(model, p.s);
-      if (!l.exact || l.suggested) return { error: `line ${l.line} contains suggested changes or cannot be mapped exactly; accept or reject the suggestions in Google Docs first`, part: p };
+      if (!l.exact) return { error: inexactLine(l.line, 'cite after other text, or tell the user to add the citation in Google Docs'), part: p };
+      if (l.suggested) return { error: `line ${l.line} contains suggested changes (suggesting mode); accept or reject them first (the comment tool, or in Google Docs)`, part: p };
       p.I = indexAtOffset(model, p.s);
     }
     if (p.newText) requests.push(reqInsert(model, p.I, p.newText));
@@ -361,11 +410,13 @@ function partsRequests(model, parts) {
 const delta = (p) => p.newText.length - p.oldText.length;
 // Text offset after the edit of offset off before it (parts starting before off shift it).
 const shifted = (parts, off) => off + parts.filter((p) => p.s < off).reduce((n, p) => n + delta(p), 0);
-// The journal parts in the document after the edit, front to back: { index, text, restore, style? }.
+// The journal parts in the document after the edit, front to back: { index, text, restore, style?, restoreStyles? (the
+// restore's text styles, rangeStyles) }.
 function journalParts(parts) {
   return parts.slice().sort((a, b) => a.s - b.s).map((p) => ({
     index: p.I + parts.filter((x) => x.s < p.s).reduce((n, x) => n + delta(x), 0),
     text: p.newText, restore: p.oldText, ...(p.restoreStyle ? { style: p.restoreStyle } : {}),
+    ...(p.styles && p.styles.length ? { restoreStyles: p.styles } : {}),
   }));
 }
 // The lines a journal part covers in model.
@@ -392,7 +443,8 @@ async function commitCite(snap, call, ui, what) {
   const last = lineAtOffset(model, Math.max(...what.parts.map((p) => p.s + p.oldText.length))).line;
   const jparts = journalParts(what.parts);
   const plan = {
-    requests: built.requests, region: [first, last], removedChars: removed.length, removedText: removed, gateWhat: what.gateWhat,
+    requests: built.requests, region: [first, last], removedText: removed, gateWhat: what.gateWhat,
+    addedText: what.parts.map((p) => p.newText).filter(Boolean).join('\n'), // the permission card's (gate below)
     journal: { kind: 'cite', parts: jparts, anchor: false, prevStore: what.prev, afterRev: what.store.rev },
     title: what.title, cardText: what.cardText, cardLabel: what.cardText ? 'Citation' : '', notes: what.notes || [],
     affected: () => [first, last],
@@ -415,7 +467,6 @@ async function commitCite(snap, call, ui, what) {
   for (const jp of jparts) partLines(now, jp, lines);
   lines.sort((a, b) => a - b);
   plan.affected = () => [lines[0] || 1, lines[lines.length - 1] || 1];
-  plan.report = (m) => changedLinesReport(m, lines);
   plan.done = what.done(now, findBibSection(now));
   return finishEdit(snap, plan, call.id, now);
 }
@@ -457,7 +508,7 @@ async function citeInsert(args, snap, ui, call) {
   const after = typeof args.after_text === 'string' ? args.after_text.replace(/\r\n?/g, '\n') : '';
   if (!after.trim()) return writeError('insert needs after_text: the exact text the citation follows, occurring once in the document.', 'cite: no after_text');
   const hits = findFlexible(model.text, after);
-  if (!hits.length) return writeError(notFoundError(model, after, 'after_text must be exact document text; read it with read_lines or find_in_document and try again').replace(/old_text/g, 'after_text'), 'cite: after_text not found');
+  if (!hits.length) return writeError(notFoundError(model, after, 'after_text must be exact document text; read it with read_document or find_in_document and try again').replace(/old_text/g, 'after_text'), 'cite: after_text not found');
   if (hits.length > 1) {
     const where = hitLines(model, hits).slice(0, 10).join(', ');
     return writeError(`after_text occurs ${hits.length} times (lines ${where}); give more of the text so that it occurs once.`, `cite: after_text occurs ${hits.length} times`);
@@ -566,7 +617,8 @@ async function runCite(name, args, snap, ui, call) {
 }
 
 // ---- find_reference -----------------------------------------------------------------------------------------------
-async function runFindReference(name, args) {
+// Zotero is asked every time (a local library the user changes); a DOI's Crossref record comes from the lookup cache.
+async function runFindReference(name, args, snap) {
   const q = typeof args.query === 'string' ? args.query.trim() : '';
   if (!q) return 'Error: query is empty. Give an author, title words, a year or a DOI.';
   const doi = parseDoi(q);
@@ -587,8 +639,31 @@ async function runFindReference(name, args) {
     note = st.reason === 'absent' ? 'Zotero is not running; ' : '';
   }
   let meta;
-  try { meta = await crossrefMeta(doi); } catch (e) { return `Error: ${e.message}.`; }
+  try { meta = await lookupCached(snap, 'find_reference', doi, () => crossrefMeta(doi), (m) => !!m && typeof m === 'object'); } catch (e) { return `Error: ${e.message}.`; }
   return `${note}DOI ${doi} (Crossref):\ndoi:${doi}: ${cslSummary(meta)}`;
+}
+
+// The digest that replaces a find_reference result after the turn (registry.js digest): the query and the first
+// FIND_DIGEST_ITEMS items as their id for cite, clipped title, year and DOI, read back from the text runFindReference
+// wrote; '' (the plain stub) for any other text.
+const FIND_DIGEST_ITEMS = 5;
+const FIND_DIGEST_TITLE = 60;
+function findReferenceDigest(args, content, why) {
+  const lines = String(content).split('\n');
+  const zot = /^(\d+) Zotero items? for /.exec(lines[0] || '');
+  if (!zot && !/^(?:[^\n]*; )?DOI \S+ \(Crossref\):$/.test(lines[0] || '')) return '';
+  const items = lines.slice(1).map((l) => /^(zotero:[A-Z0-9]{8}|doi:\S+): (.*)$/.exec(l)).filter(Boolean).map(([, id, rest]) => {
+    // rest: "Smith, J. & Lee, K. (2020). Title. Journal. doi:10.…" (zotero.js itemSummary, cslSummary)
+    const y = /\((\d{4}|n\.d\.)\)\. /.exec(rest);
+    const title = y ? rest.slice(y.index + y[0].length).split(/\. /)[0] : '';
+    const doi = id.startsWith('zotero:') ? (/ doi:(\S+)$/.exec(rest) || [])[1] || '' : '';
+    return `${id} ${oneLine(title.replace(/\.$/, ''), FIND_DIGEST_TITLE - 1) || '(no title)'}${y ? ` (${y[1]})` : ''}${doi ? ` doi:${doi}` : ''}`;
+  });
+  if (!items.length) return '';
+  const total = zot ? Number(zot[1]) : items.length;
+  const more = Math.max(0, total - Math.min(items.length, FIND_DIGEST_ITEMS));
+  return [`[find_reference «${oneLine(String((args && args.query) || ''), 80)}»: ${zot ? `${total} Zotero item${total === 1 ? '' : 's'}` : 'Crossref'}`,
+    ...items.slice(0, FIND_DIGEST_ITEMS), `${more ? `${more} more items, and the ` : 'the '}authors and journals omitted ${why}]`].join('\n');
 }
 
 // ---- Picks in the composer ("@smi") ----------------------------------------------------------------------------------
@@ -616,7 +691,7 @@ function zoteroAtReady(again) {
   const abort = new AbortController();
   zoteroAtAsk.abort = abort;
   const ui = {};
-  requestReferencesAccess('To list works from your Zotero library as you type @.', { signal: abort.signal, ui }).then((ok) => {
+  requestReferencesAccess('To list works from your Zotero library as you type @.', { signal: abort.signal, ui, sources: ['Zotero'] }).then((ok) => {
     if (zoteroAtAsk.abort === abort) zoteroAtAsk.abort = null;
     if (ui.card) ui.card.remove();
     if (ok && typeof again === 'function') again();
@@ -653,7 +728,7 @@ function zoteroMentionsLine(text) {
 // once elsewhere when text moved), then all are reverted in one batch, back to front. The store goes back to the one
 // before the edit unless another cite wrote since.
 async function undoCite(edit) {
-  const ctrlZ = 'so it cannot be undone automatically. Use Undo (Ctrl+Z) in Google Docs instead.';
+  const ctrlZ = NOT_UNDONE;
   const model = await fetchDocModel(edit.docId, edit.tabId);
   const parts = (edit.parts || []).map((p) => {
     if (anchorMatches(model, p)) return { ...p };
@@ -670,7 +745,9 @@ async function undoCite(edit) {
   for (const p of parts.slice().sort((x, y) => y.index - x.index)) {
     if (p.text) requests.push(reqDelete(model, p.index, p.index + p.text.length));
     if (p.restore) requests.push(reqInsert(model, p.index, p.restore));
-    if (p.style) requests.push(reqStyle(model, p.index, p.index + 1, p.style));
+    requests.push(...restyle(model, p.index, p.index + 1, p.style, styleAfterDelete(model, p.index, p.index + p.text.length)));
+    // the removed text's own text styles (Docs would give it its neighbour's), after the named style that clears them
+    if (p.restore) requests.push(...restoredStyles(model, p.index, p.restore.length, p.restoreStyles));
   }
   await docsBatchUpdate(model, requests);
   const now = await fetchDocModel(edit.docId, edit.tabId);
@@ -688,6 +765,14 @@ async function undoCite(edit) {
   return { model: now, restored: '', lostObjects: false, lines: lines.sort((a, b) => a - b), what: `undid "${edit.title}"`, note };
 }
 registerUndoHandler('cite', undoCite);
+
+// The sources a cite call asks, for the access card: an insert by its ids (zotero: Zotero, doi: Crossref); a refresh or
+// a style change formats every stored item, so all of them.
+function citeSources(args) {
+  const ids = args && String(args.action || '').trim().toLowerCase() === 'insert' ? [].concat(args.ids || []).map(parseCiteId).filter(Boolean) : [];
+  if (!ids.length) return REFS_SOURCES;
+  return REFS_SOURCES.filter((s) => (s === 'Zotero' ? ids.some((p) => p.src === 'zotero') : s === 'Crossref' ? ids.some((p) => p.src === 'doi') : false));
+}
 
 // ---- Registration ---------------------------------------------------------------------------------------------------
 const FIND_REFERENCE_DEF = {
@@ -722,10 +807,12 @@ const CITE_DEF = {
 
 registerTools([FIND_REFERENCE_DEF], {
   offer: (mode, snap) => refsOffered(snap),
-  reading: true, icon: '📚',
+  reading: true,
+  digest: (name, args, content, why) => findReferenceDigest(args, content, why),
   summary: (name, args) => `"${oneLine(String(args.query || ''), 60)}"`,
-  run: (name, args, snap, ui) => withReferences(snap, ui, 'To find works to cite.', () => runFindReference(name, args)),
-  prompt: [{ section: 'reading', line: "- find_reference(query): look up works to cite in the user's Zotero library or by DOI; returns ids for cite." }],
+  // A DOI goes to Crossref (Zotero, when it runs, is asked on this computer first); other words to the Zotero library.
+  run: (name, args, snap, ui) => withReferences(snap, ui, 'To find works to cite.', () => runFindReference(name, args, snap),
+    parseDoi(String(args.query || '').trim()) ? ['Crossref'] : ['Zotero']),
   docNote: (snap) => {
     const s = snap.docId ? citeCache.get(snap.docId) : null;
     const problem = snap.docId ? citeProblems.get(snap.docId) : '';
@@ -734,20 +821,23 @@ registerTools([FIND_REFERENCE_DEF], {
 });
 registerTools([CITE_DEF], {
   offer: (mode, snap) => refsOffered(snap) && apiEditing(mode, snap),
-  reading: false, icon: '📚', pending: 'Citing…',
+  reading: false, pending: 'Citing…',
   summary: (name, args) => (args.action === 'insert' ? `insert ${(Array.isArray(args.ids) ? args.ids : []).join(', ')}${typeof args.after_text === 'string' ? ` after "${oneLine(args.after_text, 40)}"` : ''}`
     : args.action === 'style' ? `style ${args.style}` : String(args.action || '')),
-  gate: (name, plan) => ({ large: (plan.removedChars || 0) >= GATE_REPLACE_CHARS, what: plan.gateWhat || 'changes citations', range: '',
-    excerptLabel: plan.removedText ? 'Removed text' : '', excerpt: oneLine(plan.removedText || '', 300) }),
-  run: (name, args, snap, ui, call) => withReferences(snap, ui, 'To write the citation and the References list.', () => runCite(name, args, snap, ui, call)),
-  prompt: [{ section: 'edit', line: '- cite(action, ids, after_text, style): "insert" puts an in-text citation of find_reference ids after after_text and keeps the References section in sync; "refresh" rebuilds it and the numbering; "style" changes the citation style. Never type citations or reference lists by hand.' }],
+  // The card (Manual): the text the edit writes (citation labels, the References list) whole, with what it replaces.
+  gate: (name, plan) => ({ what: plan.gateWhat || 'changes citations',
+    blocks: plan.addedText
+      ? [{ label: 'New text', text: plan.addedText, ...(plan.removedText ? { diff: { oldText: plan.removedText, newText: plan.addedText } } : {}) }]
+      : plan.removedText ? [{ label: 'Removed text', text: plan.removedText }] : [] }),
+  run: (name, args, snap, ui, call) => withReferences(snap, ui, 'To write the citation and the References list.', () => runCite(name, args, snap, ui, call), citeSources(args)),
+  prompt: [{ section: 'edit', line: '- Citations and reference lists go in through cite; a plain form the user asks for (e.g. [doi]) is typed as text.' }],
 });
 // The turn context's note needs the store of the document the panel shows.
 registerTurnHook('panelDoc', (docId) => { closeZoteroAtCard(); return docId ? loadCiteStore(docId) : null; });
 // The offer of the reference tools, fixed for the turn (refsOffered); a waiting "@" card is closed.
 registerTurnHook('beforeTurn', (mode, snap) => {
   closeZoteroAtCard();
-  if (snap) snap.refsOffer = referencesOn() || refsMentioned(lastSentText()) || refsMentioned(snap.docInstructions);
+  if (snap) snap.refsOffer = referencesOn() || refsMentioned(snap.docInstructions) || chatAsked(snap, refsMentioned, lastSentText());
   return '';
 });
 registerTurnHook('finish', checkCitationsAfterTurn);

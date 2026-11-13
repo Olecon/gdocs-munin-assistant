@@ -1,27 +1,29 @@
 'use strict';
 // Module doc-live.js: the live document line ("1,234 characters · 210 words"). While the panel is visible and idle
 // (no turn, undo or self-test), the document is re-read when it changes, so the line and the idle state the next
-// turn's snapshot is taken from stay current. The content script signals changes (DOC_CHANGED from its page observer,
-// which sees a collaborator's edits too, and from the key and input events; DOC_TYPED): with the Docs API a
-// documents.get with fields=revisionId follows DOC_LIVE_SIGNAL_MS after the last signal (at the latest
-// DOC_LIVE_SIGNAL_GAP_MS after the first), a new revision is read at once, full reads DOC_LIVE_SIGNAL_GAP_MS apart;
-// without it (export + paste) the export is read DOC_LIVE_EXPORT_SIGNAL_MS after the last signal, reads
-// DOC_LIVE_EXPORT_GAP_MS apart. With the Docs API a revision check every DOC_LIVE_POLL_MS is the fallback (a new
-// revision is read once it has been quiet for DOC_LIVE_QUIET_MS, reads DOC_LIVE_MIN_GAP_MS apart). On the export path
-// the line says "as of HH:MM" (docAsOfSuffix) once the read is old. Between reads the content script's typing deltas (DOC_TYPED,
-// onDocTyped) move the numbers at once (docLineCounts); the next exact read replaces them. Loaded after main.js
-// (started by init).
-/* global addNotice, docIdFromUrl, docsTabFromUrl, docStatusText, el, fetchDocModel, fetchDocRevision,
-   getDocTab, readExport, setDocTitle, setStatus, state, textWords, useDocModel, useExportRead */
+// turn's snapshot is taken from stay current. With the Docs API a documents.get with fields=revisionId runs every
+// DOC_LIVE_POLL_MS (a collaborator's edits are seen this way only: Docs draws the text on a canvas, so the content
+// script's page observer does not see text edits); a new revision is read at once, full reads DOC_LIVE_MIN_GAP_MS
+// apart. Without it (export + paste) the export is read every DOC_LIVE_EXPORT_POLL_MS. The content script's change
+// signals (DOC_CHANGED from its key events and, best effort, its page observer; DOC_TYPED) make it sooner: with the
+// Docs API a revision check DOC_LIVE_SIGNAL_MS after the last signal (at the latest DOC_LIVE_SIGNAL_GAP_MS after the
+// first), full reads DOC_LIVE_SIGNAL_GAP_MS apart; on the export path a read DOC_LIVE_EXPORT_SIGNAL_MS after the
+// last signal, reads DOC_LIVE_EXPORT_GAP_MS apart. On the export path the line says "as of HH:MM" (docAsOfSuffix)
+// once the read is old. Between reads the content script's typing deltas (DOC_TYPED, onDocTyped) move the numbers
+// at once (docLineCounts); the next exact read replaces them. Loaded after main.js (started by init).
+/* global docIdFromUrl, docsTabFromUrl, docStatusText, fetchDocModel, fetchDocRevision,
+   getDocTab, readExport, renderDocLine, setDocTitle, setStatus, state, textWords, useDocModel, useExportRead */
 /* exported docLiveClock, docLive, markDocRead, docAsOfSuffix, docLineReady, docLineCounts, onDocChanged, onDocTyped,
-   startDocLive, docLiveTick, DOC_LIVE_POLL_MS, DOC_LIVE_QUIET_MS, DOC_LIVE_MIN_GAP_MS, DOC_LIVE_BACKOFF_MS,
-   DOC_LIVE_STALE_MS, DOC_LIVE_SIGNAL_MS, DOC_LIVE_SIGNAL_GAP_MS, DOC_LIVE_RECHECK_MS, DOC_LIVE_EXPORT_SIGNAL_MS,
-   DOC_LIVE_EXPORT_GAP_MS, DOC_LIVE_ESTIMATE_MS */
+   startDocLive, docLiveTick, DOC_LIVE_POLL_MS, DOC_LIVE_MIN_GAP_MS, DOC_LIVE_BACKOFF_MS, DOC_LIVE_STALE_MS,
+   DOC_LIVE_SIGNAL_MS, DOC_LIVE_SIGNAL_GAP_MS, DOC_LIVE_RECHECK_MS, DOC_LIVE_EXPORT_SIGNAL_MS, DOC_LIVE_EXPORT_GAP_MS,
+   DOC_LIVE_EXPORT_POLL_MS, DOC_LIVE_EXPORT_BACKOFF_MS, DOC_LIVE_ESTIMATE_MS */
 
-const DOC_LIVE_POLL_MS = 15000; // revision check (Docs API), and the idle re-check of the other conditions
-const DOC_LIVE_QUIET_MS = 5000; // a new revision must stay unchanged this long before the full read
-const DOC_LIVE_MIN_GAP_MS = 30000; // between two full reads the poll found (any read counts, a turn's too)
-const DOC_LIVE_BACKOFF_MS = 60000; // after a network error, an HTTP 429 or a server error
+// Docs API quota while idle and visible: 720 revision checks per hour, plus a full read per change seen.
+const DOC_LIVE_POLL_MS = 5000; // revision check (Docs API), and the idle re-check of the other conditions
+const DOC_LIVE_MIN_GAP_MS = 5000; // between two full reads the poll found (any read counts, a turn's too)
+const DOC_LIVE_BACKOFF_MS = 30000; // Docs API: after a network error, an HTTP 429 or a server error
+const DOC_LIVE_EXPORT_POLL_MS = 60000; // export: a read this long after the last one, without a signal (remote edits)
+const DOC_LIVE_EXPORT_BACKOFF_MS = 120000; // export: after HTTP 429 without a Retry-After
 const DOC_LIVE_STALE_MS = 120000; // export path: "as of" appears once the last read is this old
 const DOC_LIVE_SIGNAL_MS = 1000; // Docs API: a revision check this long after the content script's last signal
 const DOC_LIVE_SIGNAL_GAP_MS = 5000; // Docs API: between two full reads while signals come (and the longest wait for a check)
@@ -45,7 +47,6 @@ const docLive = {
   freshAt: 0, // the document was read, or its revision confirmed unchanged, at this time ("as of")
   readAt: -Infinity, // the last full read (or attempt): the DOC_LIVE_MIN_GAP_MS floor
   readDocId: null, // the document of the last read
-  seenRev: null, // a revision that differs from the panel's model: waiting for DOC_LIVE_QUIET_MS of quiet
   stopped: null, // { model } after HTTP 401 / 403 / 404 of the poll: no requests until another read succeeds
   notBefore: 0, // back-off: no request before this time
   pending: false, // export path: local typing reported, not read yet
@@ -65,7 +66,6 @@ function markDocRead() {
   docLive.freshAt = now;
   docLive.readAt = now;
   docLive.readDocId = state.docId;
-  docLive.seenRev = null;
   docLive.pending = false;
   clearSignal();
   dropEstimate(false);
@@ -129,10 +129,9 @@ function docLiveSchedule(ms, sooner = false) {
   docLive.timer = docLiveClock.setTimeout(() => { docLive.timer = null; docLiveTick(); }, Math.max(0, ms));
 }
 
-// The document line again, when it is what the status shows (the "as of" part may have changed).
-const DOC_LINE_RE = /^\S+ characters? · \S+ words?(?: · as of .+)?$/;
+// The document line again (the "as of" part or the typing estimate may have changed).
 function refreshDocLine() {
-  if (docLiveIdle() && docLineReady() && DOC_LINE_RE.test(el.docStatus.textContent)) setStatus(docStatusText());
+  if (docLiveIdle() && docLineReady()) renderDocLine();
 }
 const repaintDocLine = refreshDocLine;
 
@@ -154,7 +153,7 @@ async function docLiveTick() {
   }
 }
 
-// Docs API: compare the revision with the panel's model; read after DOC_LIVE_QUIET_MS without another change.
+// Docs API: compare the revision with the panel's model; a new one is read at once (DOC_LIVE_MIN_GAP_MS apart).
 async function docLiveApiStep(now) {
   const m = state.docFormat === 'docs-api' && state.docModel && state.docModel.docId === state.docId ? state.docModel : null;
   if (docLive.stopped) {
@@ -169,14 +168,11 @@ async function docLiveApiStep(now) {
   if (!docLiveIdle() || state.docId !== docId) return DOC_LIVE_POLL_MS; // a turn started meanwhile: its own read
   const cur = state.docModel && state.docModel.revisionId;
   if (rev === cur) {
-    docLive.seenRev = null;
     docLive.freshAt = docLiveClock.now();
     refreshDocLine();
     return DOC_LIVE_POLL_MS;
   }
-  // Still changing? (A signal that came meanwhile reads at its own time.)
-  if (docLive.sigFirst) return DOC_LIVE_SIGNAL_MS;
-  if (rev !== docLive.seenRev) { docLive.seenRev = rev; return DOC_LIVE_QUIET_MS; }
+  if (docLive.sigFirst) return DOC_LIVE_SIGNAL_MS; // a signal that came meanwhile reads at its own time
   return docLiveRead(docLiveClock.now());
 }
 
@@ -192,7 +188,6 @@ async function docLiveSignalStep(now) {
   try { rev = await fetchDocRevision(docId); } catch (e) { return docLiveApiFailed(e); }
   if (!docLiveIdle() || state.docId !== docId) return DOC_LIVE_SIGNAL_MS; // a turn started meanwhile: after it
   if (rev !== (state.docModel && state.docModel.revisionId)) return docLiveRead(docLiveClock.now(), DOC_LIVE_SIGNAL_GAP_MS);
-  docLive.seenRev = null;
   docLive.freshAt = docLiveClock.now();
   refreshDocLine();
   if (docLive.sigLast !== seen) { docLive.sigFirst = docLive.sigLast; docLive.sigRetry = false; return DOC_LIVE_SIGNAL_MS; } // more came
@@ -201,16 +196,13 @@ async function docLiveSignalStep(now) {
   return DOC_LIVE_POLL_MS;
 }
 
-// HTTP 401 / 403 / 404 or no Google sign-in: stop and say so once. A Docs API failure of the last turn
+// HTTP 401 / 403 / 404 or no Google sign-in: stop. A Docs API failure of the last turn
 // (docsApi refuses until the next turn): skip. Anything else (network, 429, 5xx): back off.
 function docLiveApiFailed(e) {
   if (e && e.preSend && state.docsApiFailed) return DOC_LIVE_POLL_MS;
   if (e && (e.status === 401 || e.status === 403 || e.status === 404 || e.preSend)) {
+    // Nothing in the chat: the next turn reads the document again and its row says why the API failed (fetchDocText).
     docLive.stopped = { model: state.docModel };
-    if (!state.apiWarned) {
-      state.apiWarned = true; // the same once-only flag as fetchDocText's notice
-      addNotice(`Could not check the document for changes: ${e.message}`);
-    }
     return DOC_LIVE_POLL_MS;
   }
   docLive.notBefore = docLiveClock.now() + DOC_LIVE_BACKOFF_MS;
@@ -218,10 +210,15 @@ function docLiveApiFailed(e) {
 }
 
 // Export path: read when a change was signalled (DOC_LIVE_EXPORT_SIGNAL_MS after the last signal, reads
-// DOC_LIVE_EXPORT_GAP_MS apart), or this document was never read.
+// DOC_LIVE_EXPORT_GAP_MS apart), when this document was never read, or DOC_LIVE_EXPORT_POLL_MS after the last read
+// (a collaborator's edits send no signal). The ticks in between stay DOC_LIVE_POLL_MS apart ("as of" repaints).
 async function docLiveExportStep(now) {
   if (docLive.readDocId !== state.docId) docLive.pending = true;
-  if (!docLive.pending) return DOC_LIVE_POLL_MS;
+  if (!docLive.pending) {
+    const due = docLive.readAt + DOC_LIVE_EXPORT_POLL_MS;
+    if (now < due) return Math.min(due - now, DOC_LIVE_POLL_MS);
+    return docLiveRead(now, DOC_LIVE_EXPORT_GAP_MS);
+  }
   if (docLive.sigFirst) {
     const due = docLiveSignalDue(DOC_LIVE_EXPORT_SIGNAL_MS, DOC_LIVE_EXPORT_GAP_MS);
     if (now < due) return due - now;
@@ -255,9 +252,12 @@ async function docLiveRead(now, gap = DOC_LIVE_MIN_GAP_MS) {
       watchIdle();
       let r;
       try { r = await readExport(tab, setDocTitle, { signal: ac.signal }); } catch (e) {
-        // Rate-limited: the change stays pending, the next read after Retry-After (when Google sent one), else 60 s.
-        if (!ac.signal.aborted && e.rateLimited) docLive.notBefore = docLiveClock.now() + (e.retryAfterMs > 0 ? e.retryAfterMs : DOC_LIVE_BACKOFF_MS);
-        else if (!ac.signal.aborted) { docLive.pending = false; clearSignal(); } // no access or no network: wait for the next signal
+        // Rate-limited: the read stays pending, the next one after Retry-After (when Google sent one), else 120 s.
+        if (!ac.signal.aborted && e.rateLimited) {
+          docLive.pending = true; // a poll's read too: it follows when the back-off ends
+          docLive.notBefore = docLiveClock.now() + (e.retryAfterMs > 0 ? e.retryAfterMs : DOC_LIVE_EXPORT_BACKOFF_MS);
+        }
+        else if (!ac.signal.aborted) { docLive.pending = false; clearSignal(); } // no access or no network: the next signal or poll
         if (docLiveIdle()) setStatus(docStatusText(), state.docText == null); // the retry countdown goes
         return docLive.notBefore > docLiveClock.now() ? docLive.notBefore - docLiveClock.now() : DOC_LIVE_POLL_MS;
       }
@@ -274,10 +274,11 @@ async function docLiveRead(now, gap = DOC_LIVE_MIN_GAP_MS) {
   }
 }
 
-// A change signal from the content script. Both DOC_CHANGED sources (the page observer, the key and input events)
-// and DOC_TYPED end up here, so a burst that sends all of them costs one check (or read): the signals only move the
-// due time (docLiveSignalDue), and the tick decides. During a turn, an undo or the self-test they wait for its end;
-// hidden, for the panel to be shown.
+// A change signal from the content script. Both DOC_CHANGED sources (the page observer, best effort: it does not
+// see text edits in current Docs, which draws on a canvas; the key and input events) and DOC_TYPED end up here, so
+// a burst that sends all of them costs one check (or read): the signals only move the due time (docLiveSignalDue),
+// and the tick decides. During a turn, an undo or the self-test they wait for its end; hidden, for the panel to be
+// shown.
 function docLiveSignal() {
   const now = docLiveClock.now();
   if (!docLive.sigFirst) docLive.sigFirst = now;

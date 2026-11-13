@@ -2,7 +2,7 @@
 // Hosts the in-page Munin panel (TOGGLE_PANEL / COLLAPSE_PANEL, the raven button, the resize grip), answers panel messages
 // (GET_DOC_TEXT, GET_SELECTION, REPLACE_SELECTION, ATTENTION, PING, GET_SIGNAL_STATE, SCROLL_TO_LINE), keeps a cache of the document
 // selection and pushes changes to the panel (SELECTION_UPDATE), and reports changes of the document (DOC_TYPED typing estimates; DOC_CHANGED from the
-// key and input events and from an observer of the drawn page, which also sees collaborators' edits).
+// key and input events and, best effort, from an observer of the drawn page; it does not see text edits in current Docs).
 // Wrapped in an IIFE so that re-injection (chrome.scripting.executeScript) does not fail
 // on redeclared constants.
 (() => {
@@ -331,7 +331,7 @@
 
   // Local typing: key and input events of the document. After CHANGE_QUIET of quiet, one DOC_CHANGED { source:
   // 'input' } tells the panel to re-read the document (its live document line; src/doc-live.js). The page observer
-  // below is the other source (it also sees a collaborator's edits).
+  // below is the other source (best effort: see there).
   const CHANGE_QUIET = 2000;
   let changeTimer = 0;
   function noteLocalChange() {
@@ -561,7 +561,9 @@
   // -------------------------------------------------------------------------
   // The page observer: Docs draws the document in the editor container (.kix-appview-editor: the HTML rendering's
   // line views, the canvas rendering's tiles with their aria-label layer). A MutationObserver on it sees every change
-  // that is drawn, the user's typing and a collaborator's alike: at most one DOC_CHANGED { source: 'page' } per
+  // that is drawn, the user's typing and a collaborator's alike, where the text is in the DOM. Current Docs draws the
+  // text on a canvas, and a real-Chrome /test saw no mutations while the user typed ("page changes 0"): a best-effort
+  // signal only; the panel's revision poll (or export poll) is what shows a collaborator's edits. At most one DOC_CHANGED { source: 'page' } per
   // PAGE_CHANGE_GAP ms while the mutations go on, the last one at most PAGE_CHANGE_GAP ms after they stop.
   // Mutations of cursors and selection overlays, of the editor iframe node, within RENDER_QUIET ms after a scroll or
   // a resize (tiles being drawn) and during the panel's own paste (and PASTE_TAIL ms after it) are not counted; what
@@ -973,14 +975,14 @@
       width: currentWidth() + 'px', zIndex: '2147483000', display: 'none',
       background: '#0e1116', borderLeft: '1px solid #2d333d', borderTop: '1px solid #2d333d',
       borderTopLeftRadius: '10px', boxShadow: '-8px 0 24px rgba(0, 0, 0, 0.35)',
-      overflow: 'hidden', boxSizing: 'border-box',
+      overflow: 'visible', boxSizing: 'border-box', // visible: the grip straddles the left edge
     });
     const iframe = document.createElement('iframe');
     iframe.src = chrome.runtime.getURL('sidepanel.html') + (tabId != null ? '#tabId=' + tabId : '');
     iframe.title = 'Munin Assistant';
     iframe.allow = 'clipboard-write';
     Object.assign(iframe.style, {
-      width: '100%', height: '100%', border: '0', display: 'block', background: '#0e1116',
+      width: '100%', height: '100%', border: '0', display: 'block', background: '#0e1116', borderTopLeftRadius: '9px',
     });
     host.appendChild(iframe);
     host.appendChild(createGrip(iframe));
@@ -994,15 +996,16 @@
   function createGrip(iframe) {
     const grip = document.createElement('div');
     grip.className = 'munin-panel-grip';
-    grip.title = 'Drag to resize; double-click to reset';
-    const idle = 'rgba(128, 128, 128, 0.55)';
+    const idle = 'rgb(128, 128, 128)'; // opaque
     Object.assign(grip.style, {
-      position: 'absolute', left: '0', top: '50%', transform: 'translateY(-50%)', width: '6px', height: '48px',
+      // 4.5 px bar + 4 px transparent borders = 12.5 px wide: left -6.25 px puts its centre on the panel's left edge.
+      position: 'absolute', left: '-6.25px', top: '50%', transform: 'translateY(-50%)', width: '4.5px', height: '48px',
       border: '4px solid transparent', borderRadius: '7px', backgroundColor: idle, backgroundClip: 'padding-box',
       cursor: 'ew-resize', touchAction: 'none', zIndex: '1',
     });
     let drag = null; // { id, x, w, moved } while dragging
-    const hover = (on) => { grip.style.backgroundColor = on || drag ? 'rgba(128, 128, 128, 0.85)' : idle; };
+    const active = 'rgb(139, 127, 245)'; // the panel's accent, opaque (both themes read it as the same purple)
+    const hover = (on) => { grip.style.backgroundColor = on || drag ? active : idle; };
     grip.addEventListener('pointerenter', () => hover(true));
     grip.addEventListener('pointerleave', () => hover(false));
     // Docs' document-level handlers must not see the drag, and no text gets selected.
@@ -1044,6 +1047,27 @@
     return grip;
   }
 
+  // The button follows the panel's theme (the stored muninTheme, else the system scheme): the light theme gets the
+  // light icon on a white disc, the dark theme the dark icon on the dark disc. Re-applied when either source changes.
+  let fabTheme = null; // 'light' | 'dark' | null (not read yet)
+  const systemLight = () => typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches;
+  function paintFab(img, theme) {
+    const light = theme === 'light';
+    img.src = chrome.runtime.getURL(light ? 'icons/icon48-light.png' : 'icons/icon48-dark.png');
+    Object.assign(fab.style, { background: light ? '#ffffff' : '#0e1116', border: `1px solid ${light ? '#d0d4dc' : '#2d333d'}` });
+    if (fabDot) fabDot.style.border = `2px solid ${light ? '#ffffff' : '#0e1116'}`;
+  }
+  function applyFabTheme(img) {
+    const paint = () => paintFab(img, fabTheme || (systemLight() ? 'light' : 'dark'));
+    paint();
+    const take = (t) => { fabTheme = t === 'light' || t === 'dark' ? t : null; paint(); };
+    (async () => { try { take((await chrome.storage.local.get('muninTheme')).muninTheme); } catch (e) { /* the system scheme decides */ } })();
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.muninTheme) take(changes.muninTheme.newValue); });
+    } catch (e) { /* no change events: the theme is read once */ }
+    if (typeof matchMedia === 'function') matchMedia('(prefers-color-scheme: light)').addEventListener('change', paint);
+  }
+
   function ensureFab() {
     if (fab && fab.isConnected) return fab;
     fab = document.createElement('button');
@@ -1056,7 +1080,6 @@
       display: 'none', alignItems: 'center', justifyContent: 'center', zIndex: '2147483001',
     });
     const img = document.createElement('img');
-    img.src = chrome.runtime.getURL('icons/icon48-dark.png');
     img.alt = '';
     img.width = 22;
     img.height = 22;
@@ -1068,6 +1091,7 @@
       background: '#f5a623', border: '2px solid #0e1116', boxSizing: 'border-box', display: 'none', pointerEvents: 'none',
     });
     fab.appendChild(fabDot);
+    applyFabTheme(img);
     renderAttention();
     // Keep Docs' document-level mouse handlers from reacting to clicks on the button, and keep the
     // focus in the editor (preventDefault) so the selection can still be read. The selection is

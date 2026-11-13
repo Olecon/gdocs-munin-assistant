@@ -1,5 +1,5 @@
 'use strict';
-// The Anthropic model list (GET /v1/models, "Check models"): headers, the first page, and pagination
+// The Anthropic model list (GET /v1/models, "Check provider"): headers, the first page, and pagination
 // with has_more / last_id (?after_id=...).
 const { test, before } = require('node:test');
 const assert = require('node:assert');
@@ -19,17 +19,16 @@ function twoPages(log) {
   };
 }
 
-// Opens the settings on the Anthropic provider with a key typed in, then runs "Check models".
+// An Anthropic account with the test key: the settings open, its "Check provider" asks for the list.
 async function checkAnthropicModels() {
+  if (!state.settings.accounts.some((a) => a.id === 'an1')) state.settings.accounts.push({ id: 'an1', type: 'anthropic', name: 'Anthropic', apiKey: 'sk-ant-test' });
   T.openSettings();
-  T.switchSettingsProvider('anthropic');
-  T.el.apiKey.value = 'sk-ant-test';
-  await T.checkModels();
-  return state.modelLists.anthropic;
+  await T.checkModels('an1');
+  return state.modelLists.an1;
 }
 
 before(async () => {
-  env = await load();
+  env = await load({ legacySettings: false });
   T = env.T;
   state = env.state;
 });
@@ -42,7 +41,7 @@ test('GET /v1/models: Anthropic headers, the listed IDs are offered', async () =
   assert.ok(log[0].url.startsWith('https://api.anthropic.com/v1/models'));
   deq(log[0].headers, { 'x-api-key': 'sk-ant-test', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' });
   assert.ok(ids.includes('claude-a') && ids.includes('claude-b'));
-  assert.ok(T.el.modelStatus.textContent.endsWith('is selected.'), T.el.modelStatus.textContent);
+  assert.strictEqual(T.formRow('an1').modelStatus.textContent, ''); // no count: the dropdown shows the models
 });
 
 test('GET /v1/models follows has_more / last_id to the next page', async () => {

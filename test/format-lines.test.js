@@ -21,7 +21,8 @@ before(async () => {
   installDocTab(env);
   await T.refreshContext({ force: true });
   state.settings.provider = 'anthropic'; state.googleConnected = true;
-  FNOTE = T.FORMAT_NOTE;
+  // The formatting view's header: the named styles a format_lines call reads give it "Unmarked text".
+  FNOTE = `${T.FORMAT_NOTE} Unmarked text: Arial 11.`;
 });
 
 // Lines: 1 Title, 2 Alpha, 3 Beta, 4 Gamma, 5 Cell A, 6 Cell B (a table), 7 After, 8 "\tTabbed",
@@ -38,32 +39,43 @@ const spec = () => docSpec({ items: [
 ] });
 const NULLS = { style: null, align: null, list: null, indent_start: null, indent_first_line: null, space_above: null, space_below: null, line_spacing: null };
 const fl = (start, end, over) => ({ start, end, ...NULLS, ...over });
+// The lines as read_formatting shows them now (a write's result names the lines only; the text stays on the card).
+const RF = (start, end) => T.runReadingTool('read_formatting', { start, end }, as);
 const range = (s, e) => ({ startIndex: s, endIndex: e, tabId: 't.0' });
 const pstyle = (s, e, paragraphStyle, fields) => ({ updateParagraphStyle: { range: range(s, e), paragraphStyle, fields } });
 const posts = () => fake.log.filter((x) => x.method === 'POST').length;
 const pt = (n) => ({ magnitude: n, unit: 'PT' });
 const INDENTS = 'indentStart,indentFirstLine';
+// The explicit 0/0 before every createParagraphBullets (Docs counts an indent as nesting: real-docs.js facts num1–num4).
+const zero = (s, e) => pstyle(s, e, { indentStart: pt(0), indentFirstLine: pt(0) }, INDENTS);
+// The requests without the formatting sheet's values (a style change adds them after the call's own requests: text
+// values, and the sheet's paragraph values the call did not set; test/style-sheet.test.js checks them).
+const SHEET_PARA = ['alignment', 'spaceAbove', 'spaceBelow', 'lineSpacing', 'indentFirstLine'];
+const noSheet = (rqs) => rqs.filter((r, i) => !r.updateTextStyle && !(i && r.updateParagraphStyle && r.updateParagraphStyle.fields.split(',').every((f) => SHEET_PARA.includes(f))));
 // A new turn on the current document (the repeat guard is per turn).
 const newTurn = () => { as = T.takeSnapshot(); T.snapshotDocument(as); };
 
-test('schema: ten required properties, strict, nullable enums; a write tool that keeps line numbers', async () => {
+test('schema: sixteen required properties, strict, nullable enums; a write tool that keeps line numbers', async () => {
   const p = T.TOOL_DEFS.format_lines.function.parameters;
-  deq(p.required, ['start', 'end', 'style', 'align', 'list', 'indent_start', 'indent_first_line', 'space_above', 'space_below', 'line_spacing']);
+  deq(p.required, ['start', 'end', 'style', 'align', 'list', 'indent_start', 'indent_first_line', 'space_above', 'space_below', 'line_spacing', 'indent_end', 'box', 'page_break_before', 'numbers', 'prefix', 'apply_sheet']);
+  deq(p.properties.prefix, { anyOf: [{ type: 'string' }, { type: 'null' }] });
+  deq(p.properties.box.anyOf, [{ type: 'string', enum: ['shaded', 'bordered', 'none'] }, { type: 'null' }]);
   assert.strictEqual(p.additionalProperties, false);
   deq(Object.keys(p.properties), p.required);
   deq(p.properties.style.anyOf, [{ type: 'string', enum: ['title', 'subtitle', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'normal'] }, { type: 'null' }]);
   deq(p.properties.list.anyOf, [{ type: 'string', enum: ['bullet', 'number', 'checklist', 'none'] }, { type: 'null' }]);
-  deq(p.properties.line_spacing, { anyOf: [{ type: 'number' }, { type: 'null' }], description: 'Line spacing as a multiplier: 1, 1.15, 1.5, 2.' });
-  assert.strictEqual(T.TOOL_DEFS.format_lines.function.description, 'Paragraph formatting of whole lines start..end: heading style, alignment, list, indents, spacing. Every property: null = leave as it is. The text does not change. Returns the lines as they look now. Main document only.');
+  assert.ok(T.TOOL_DEFS.format_lines.function.description.startsWith('Paragraph formatting of lines start..end; null leaves a property as it is.'));
   assert.ok(T.WRITE_TOOLS.includes('format_lines') && T.LINE_NUMBER_TOOLS.includes('format_lines'));
-  assert.strictEqual(T.EDIT_TOOL_ICONS.format_lines, '📐');
+  assert.strictEqual(T['typeof EDIT_TOOL_ICONS'], 'undefined'); // no icons
 });
 
 test('every argument: its exact request and field mask, the result in notation, exact undo', async () => {
   await fresh(spec());
-  deq(as.model.lines.map((l) => [l.start, l.end]), [[1, 6], [7, 12], [13, 17], [18, 23], [27, 33], [35, 41], [42, 47], [48, 55], [56, 66], [67, 77], [78, 82]]);
+  // (the table ends one index after its last cell, as in Docs)
+  deq(as.model.lines.map((l) => [l.start, l.end]), [[1, 6], [7, 12], [13, 17], [18, 23], [27, 33], [35, 41], [43, 48], [49, 56], [57, 67], [68, 78], [79, 83]]);
   const cases = [
-    [{ style: 'h2' }, { namedStyleType: 'HEADING_2' }, 'namedStyleType', '[h2] Alpha', 'h2'],
+    // a style change also gets the formatting sheet's values (the default: h2 Times New Roman 14 space 14/0, the weight left as it is)
+    [{ style: 'h2' }, { namedStyleType: 'HEADING_2' }, 'namedStyleType', '[h2 space 14/0] {Alpha}(font=Times New Roman size=14)', 'h2'],
     [{ align: 'center' }, { alignment: 'CENTER' }, 'alignment', '[center] Alpha', 'centered'],
     [{ align: 'justify' }, { alignment: 'JUSTIFIED' }, 'alignment', '[justify] Alpha', 'justified'],
     [{ indent_start: 36 }, { indentStart: pt(36) }, 'indentStart', '[indent 36/-] Alpha', 'indent 36'],
@@ -75,27 +87,29 @@ test('every argument: its exact request and field mask, the result in notation, 
   for (const [over, ps, fields, tagged, how] of cases) {
     const w = pushTool(await exec('format_lines', fl(2, 2, over)));
     assert.ok(w._ok, w.content);
-    deq(lastPost().requests, [pstyle(7, 13, ps, fields)]);
-    assert.strictEqual(w.content, `Done: formatted line 2 (${how}).\n${FNOTE}\nLines 2-2 now:\n2: ${tagged}\nThe document now has 11 lines.`);
+    deq(noSheet(lastPost().requests), [pstyle(7, 13, ps, fields)]);
+    assert.strictEqual(w.content, `Done: formatted line 2 (${how}); the document has 11 lines.`);
+    assert.ok(RF(2, 2).endsWith(`\n2: ${tagged}`), RF(2, 2));
     assert.strictEqual(w._message, 'Formatted line 2');
     assert.strictEqual(w._cardLabel, 'Formatted lines'); assert.strictEqual(w._cardText, 'Alpha');
     const u = pushTool(await exec('undo_last_edit', {}));
     assert.ok(u._ok, u.content);
     assert.ok(!u.content.includes('re-created'), u.content); // no list involved
     deq(fake.pstyles('t.0')[1], {}); assert.strictEqual(fake.styles('t.0')[1], 'NORMAL_TEXT');
+    deq(fake.fmt('t.0')[1], []); // the sheet's text values are undone too
   }
   // indents of 0 send magnitude 0 (not a reset)
   pushTool(await exec('format_lines', fl(3, 3, { indent_start: 0 })));
-  deq(lastPost().requests, [pstyle(13, 18, { indentStart: pt(0) }, 'indentStart')]);
+  deq(noSheet(lastPost().requests), [pstyle(13, 18, { indentStart: pt(0) }, 'indentStart')]);
   pushTool(await exec('undo_last_edit', {}));
 
   // all at once on two lines: one request, the fields joined in a fixed order; undo: one inverse per stretch
   const w = pushTool(await exec('format_lines', fl(2, 3, { style: 'h2', align: 'center', indent_start: 36, indent_first_line: 18, space_above: 12, space_below: 6, line_spacing: 1.5 }), 'all'));
   const fields = 'namedStyleType,alignment,indentStart,indentFirstLine,spaceAbove,spaceBelow,lineSpacing';
-  deq(lastPost().requests, [pstyle(7, 18, { namedStyleType: 'HEADING_2', alignment: 'CENTER', indentStart: pt(36), indentFirstLine: pt(18), spaceAbove: pt(12), spaceBelow: pt(6), lineSpacing: 150 }, fields)]);
-  assert.strictEqual(w.content, `Done: formatted lines 2–3 (h2, centered, indent 36, first line at 18, space above 12, space below 6, line spacing 1.5).\n${FNOTE}\n` +
-    'Lines 2-3 now:\n2: [h2 center indent 36/18 space 12/6 line 1.5] Alpha\n3: [h2 center indent 36/18 space 12/6 line 1.5] Beta\nThe document now has 11 lines.');
-  deq(w._edit, { id: 'all', docId: 'DOC123', tabId: 't.0', kind: 'format', index: 7, end: 18, text: 'Alpha\nBeta', restore: '', paras: [],
+  deq(noSheet(lastPost().requests), [pstyle(7, 18, { namedStyleType: 'HEADING_2', alignment: 'CENTER', indentStart: pt(36), indentFirstLine: pt(18), spaceAbove: pt(12), spaceBelow: pt(6), lineSpacing: 150 }, fields)]);
+  assert.strictEqual(w.content, 'Done: formatted lines 2–3 (h2, centered, indent 36, first line at 18, space above 12, space below 6, line spacing 1.5); the document has 11 lines.');
+  assert.ok(RF(2, 3).endsWith('\n2: [h2 center indent 36/18 space 12/6 line 1.5] {Alpha}(font=Times New Roman size=14)\n3: [h2 center indent 36/18 space 12/6 line 1.5] {Beta}(font=Times New Roman size=14)'), RF(2, 3));
+  deq({ ...w._edit, requests: noSheet(w._edit.requests) }, { id: 'all', docId: 'DOC123', tabId: 't.0', kind: 'format', index: 7, end: 18, text: 'Alpha\nBeta', restore: '', paras: [],
     requests: [pstyle(7, 18, { namedStyleType: 'NORMAL_TEXT' }, fields)], title: 'Formatted lines 2–3', undone: false,
     anchor: { before: 'Title\n', after: '\nGamma\nCell A\nCell B', revision: 'rev-' + fake.revision } });
   deq(fake.pstyles('t.0').slice(1, 3), [{ alignment: 'CENTER', indentStart: 36, indentFirstLine: 18, spaceAbove: 12, spaceBelow: 6, lineSpacing: 150 }, { alignment: 'CENTER', indentStart: 36, indentFirstLine: 18, spaceAbove: 12, spaceBelow: 6, lineSpacing: 150 }]);
@@ -106,7 +120,7 @@ test('every argument: its exact request and field mask, the result in notation, 
   // prior values that differ per line: one inverse per stretch of equal values, absent ones reset
   await fresh(docSpec({ items: [{ p: 'One', style: 'HEADING_1', pstyle: { alignment: 'END', spaceAbove: 4 } }, { p: 'Two', pstyle: { alignment: 'END', spaceAbove: 4 } }, { p: 'Three' }] }));
   const x = pushTool(await exec('format_lines', fl(1, 3, { style: 'h3', align: 'left', space_above: 0 })));
-  deq(x._edit.requests, [
+  deq(noSheet(x._edit.requests), [
     pstyle(1, 5, { namedStyleType: 'HEADING_1', alignment: 'END', spaceAbove: pt(4) }, 'namedStyleType,alignment,spaceAbove'),
     pstyle(5, 9, { namedStyleType: 'NORMAL_TEXT', alignment: 'END', spaceAbove: pt(4) }, 'namedStyleType,alignment,spaceAbove'),
     pstyle(9, 15, { namedStyleType: 'NORMAL_TEXT' }, 'namedStyleType,alignment,spaceAbove'),
@@ -116,19 +130,53 @@ test('every argument: its exact request and field mask, the result in notation, 
   deq(fake.styles('t.0'), ['HEADING_1', 'NORMAL_TEXT', 'NORMAL_TEXT']);
 });
 
+test('indent "style": the line\'s own indent removed (masked, no value), so it inherits again; verified; undo puts the old value back', async () => {
+  const L = { listId: 'kix.n', preset: 'NUMBERED_DECIMAL_NESTED', level: 1 };
+  await fresh(docSpec({ items: [{ p: 'Own', pstyle: { indentStart: 36, indentFirstLine: 18 } },
+    { p: 'Heading', style: 'HEADING_2', bullet: L, pstyle: { indentStart: 72, indentFirstLine: 54 } }, { p: 'Plain' }] }));
+  const p = T.TOOL_DEFS.format_lines.function.parameters.properties;
+  deq(p.indent_start, { anyOf: [{ type: 'number' }, { type: 'string', enum: ['style'] }, { type: 'null' }], description: 'pt; "style" = inherit' });
+  let w = pushTool(await exec('format_lines', fl(1, 2, { indent_start: 'style', indent_first_line: ' Style ' })));
+  assert.ok(w._ok && !/did not apply/.test(w.content), w.content);
+  deq(noSheet(lastPost().requests), [pstyle(1, 13, {}, INDENTS)]);
+  assert.strictEqual(w.content, 'Done: formatted lines 1–2 (own indent removed, own first-line indent removed); the document has 3 lines.');
+  deq(fake.pstyles('t.0').slice(0, 2), [{}, {}]);
+  // the list item now draws its named style's indent, not its level's (style_map): none here, as the plain line
+  const m = await exec('style_map', { property: 'indent', scope: { start: 1, end: 2 } });
+  assert.strictEqual(m.content, ['indent (lines 1–2):', '- none: lines 1–2'].join('\n'));
+  // the journal keeps the own values: undo writes them back exactly
+  deq(noSheet(w._edit.requests), [pstyle(1, 5, { indentStart: pt(36), indentFirstLine: pt(18) }, INDENTS), pstyle(5, 13, { indentStart: pt(72), indentFirstLine: pt(54) }, INDENTS)]);
+  pushTool(await exec('undo_last_edit', {}));
+  deq(fake.pstyles('t.0').slice(0, 2), [{ indentStart: 36, indentFirstLine: 18 }, { indentStart: 72, indentFirstLine: 54 }]);
+  // a line without an own indent: no change; a word that is neither a number nor "style": the error names both
+  newTurn();
+  w = await exec('format_lines', fl(3, 3, { indent_start: 'style' }));
+  assert.ok(w._ok && w.content.startsWith('No change: line 3 is already formatted like this (own indent removed).'), w.content);
+  w = await exec('format_lines', fl(3, 3, { indent_start: 'inherit' }));
+  assert.strictEqual(w.content, 'Error: indent_start must be a number of points from 0 to 600 or "style" (remove the line\'s own value)');
+  // the same through edit_document, next to a format_text on the line
+  w = pushTool(await exec('edit_document', { operations: [{ op: 'format_lines', start: 1, end: 1, style: null, align: null, list: null, indent_start: 'style', indent_first_line: null,
+    space_above: null, space_below: null, line_spacing: null, indent_end: null, box: null, page_break_before: null },
+  { op: 'format_text', old_text: 'Own', line: null, all: null, bold: true, italic: null, underline: null, font: null, size: null, color: null, highlight: null, link: null }] }));
+  assert.ok(w._ok && !/did not apply/.test(w.content), w.content);
+  deq(fake.pstyles('t.0')[0], { indentFirstLine: 18 });
+  pushTool(await exec('undo_last_edit', {}));
+  deq(fake.pstyles('t.0')[0], { indentStart: 36, indentFirstLine: 18 });
+});
+
 test('loose values: names, strings with units, percent line spacing (with a note), a missing key is null', async () => {
   await fresh(spec());
   let w = pushTool(await exec('format_lines', { start: '2', end: 2, style: 'Heading 2', align: 'centre', list: null, indent_start: '36pt', indent_first_line: 'null', space_above: '', line_spacing: '150%' }));
   assert.ok(w._ok, w.content);
-  deq(lastPost().requests, [pstyle(7, 13, { namedStyleType: 'HEADING_2', alignment: 'CENTER', indentStart: pt(36), lineSpacing: 150 }, 'namedStyleType,alignment,indentStart,lineSpacing')]);
+  deq(noSheet(lastPost().requests), [pstyle(7, 13, { namedStyleType: 'HEADING_2', alignment: 'CENTER', indentStart: pt(36), lineSpacing: 150 }, 'namedStyleType,alignment,indentStart,lineSpacing')]);
   assert.ok(w.content.endsWith('\nNote: line_spacing 150% was read as a percent (1.5).'), w.content);
   pushTool(await exec('undo_last_edit', {}));
   w = pushTool(await exec('format_lines', { start: 3, end: 3, line_spacing: 115 }));
-  deq(lastPost().requests, [pstyle(13, 18, { lineSpacing: 115 }, 'lineSpacing')]);
-  assert.strictEqual(w.content, `Done: formatted line 3 (line spacing 1.15).\n${FNOTE}\nLines 3-3 now:\n3: [line 1.15] Beta\nThe document now has 11 lines.\nNote: line_spacing 115 was read as a percent (1.15).`);
+  deq(noSheet(lastPost().requests), [pstyle(13, 18, { lineSpacing: 115 }, 'lineSpacing')]);
+  assert.strictEqual(w.content, 'Done: formatted line 3 (line spacing 1.15); the document has 11 lines.\nNote: line_spacing 115 was read as a percent (1.15).');
   w = pushTool(await exec('format_lines', { start: 4, end: 4, style: '##', list: 'numbered' }));
   deq(fake.styles('t.0')[3], 'HEADING_2'); deq(fake.bullets('t.0')[3].preset, 'NUMBERED_DECIMAL_ALPHA_ROMAN');
-  assert.ok(w.content.startsWith('Done: formatted line 4 (h2, numbered list).'), w.content);
+  assert.ok(w.content.startsWith('Done: formatted line 4 (h2, numbered list);'), w.content);
 });
 
 test('every validation error text; nothing is written', async () => {
@@ -138,24 +186,24 @@ test('every validation error text; nothing is written', async () => {
   deq((await err(fl(2, 1, { style: 'h1' })))[0], 'Error: start and end must be integers with 1 <= start <= end <= 4');
   deq((await err(fl(1, 5, { style: 'h1' })))[0], 'Error: start and end must be integers with 1 <= start <= end <= 4');
   deq((await err(fl(1.5, 2, { style: 'h1' })))[0], 'Error: start and end must be integers with 1 <= start <= end <= 4');
-  deq(await err(fl(1, 1, {})), ['Error: pass at least one of style, align, list, indent_start, indent_first_line, space_above, space_below, line_spacing (null leaves it unchanged). Example: {"start":3,"end":3,"style":"h1","align":null,"list":null,"indent_start":null,"indent_first_line":null,"space_above":null,"space_below":null,"line_spacing":null}', 'format_lines: no formatting given']);
+  deq(await err(fl(1, 1, {})), ['Error: pass at least one of style, align, list, numbers, indent_start, indent_first_line, indent_end, space_above, space_below, line_spacing, box, page_break_before (null leaves it unchanged). Example: {"start":3,"end":3,"style":"h1","align":null,"list":null,"indent_start":null,"indent_first_line":null,"space_above":null,"space_below":null,"line_spacing":null,"numbers":null,"ranges":null}', 'format_lines: no formatting given']);
   deq((await err({ start: 1, end: 1 }))[1], 'format_lines: no formatting given');
   deq(await err(fl(1, 1, { style: 'Heading One' })), ['Error: style must be one of title, subtitle, h1…h6, normal (got "Heading One")', 'format_lines: invalid style']);
   deq((await err(fl(1, 1, { style: 7 })))[0], 'Error: style must be one of title, subtitle, h1…h6, normal (got 7)');
   deq(await err(fl(1, 1, { align: 'diagonal' })), ['Error: align must be left, center, right or justify', 'format_lines: invalid align']);
   deq(await err(fl(1, 1, { list: 'dots' })), ['Error: list must be bullet, number, checklist or none', 'format_lines: invalid list']);
-  deq(await err(fl(1, 1, { indent_start: 601 })), ['Error: indent_start must be a number of points from 0 to 600', 'format_lines: invalid indent_start']);
-  deq((await err(fl(1, 1, { indent_first_line: -1 })))[0], 'Error: indent_first_line must be a number of points from 0 to 600');
+  deq(await err(fl(1, 1, { indent_start: 601 })), ['Error: indent_start must be a number of points from 0 to 600 or "style" (remove the line\'s own value)', 'format_lines: invalid indent_start']);
+  deq((await err(fl(1, 1, { indent_first_line: -1 })))[0], 'Error: indent_first_line must be a number of points from 0 to 600 or "style" (remove the line\'s own value)');
   deq((await err(fl(1, 1, { space_above: 201 })))[0], 'Error: space_above must be a number of points from 0 to 200');
   deq((await err(fl(1, 1, { space_below: 'lots' })))[0], 'Error: space_below must be a number of points from 0 to 200');
   deq((await err(fl(1, 1, { space_below: true })))[0], 'Error: space_below must be a number of points from 0 to 200');
   for (const v of [0.4, 6, 600, 'double']) {
     deq(await err(fl(1, 1, { line_spacing: v })), ['Error: line_spacing must be a multiplier from 0.5 to 5 (1 = single, 1.5, 2)', 'format_lines: invalid line_spacing']);
   }
-  deq(await err(fl(1, 3, { align: 'center' })), ['Error: line 2 contains suggested changes (suggesting mode); accept or reject them in Google Docs first', 'format_lines: the line has suggested changes']);
+  deq(await err(fl(1, 3, { align: 'center' })), ['Error: line 2 contains suggested changes (suggesting mode); accept or reject them first (the comment tool, or in Google Docs)', 'format_lines: the line has suggested changes']);
   deq(await err(fl(3, 4, { list: 'bullet' })), ['Error: line 4 starts with a tab, which Google Docs turns into list nesting and deletes. Remove the tab first with replace_text, or leave that line out.', 'format_lines: a line starts with a tab']);
   as.model.lines[0].exact = false;
-  deq(await err(fl(1, 1, { align: 'center' })), ['Error: the positions in line 1 cannot be mapped exactly', 'format_lines: unmappable line']);
+  deq(await err(fl(1, 1, { align: 'center' })), ['Error: line 1 cannot be edited through the API (its positions do not add up); format the other lines, or tell the user to format it in Google Docs', 'format_lines: unmappable line']);
   as.model.lines[0].exact = true;
   assert.strictEqual(posts(), 0);
   // the tab refusal is about lists only: other properties format the line
@@ -168,12 +216,12 @@ test('groups: contiguous index ranges; a table cell ends a group; undo per group
   await fresh(spec());
   const w = pushTool(await exec('format_lines', fl(4, 7, { align: 'right' }), 'grp'));
   assert.ok(w._ok, w.content);
-  deq(lastPost().requests, [pstyle(42, 48, { alignment: 'END' }, 'alignment'), pstyle(35, 42, { alignment: 'END' }, 'alignment'),
+  deq(lastPost().requests, [pstyle(43, 49, { alignment: 'END' }, 'alignment'), pstyle(35, 42, { alignment: 'END' }, 'alignment'),
     pstyle(27, 34, { alignment: 'END' }, 'alignment'), pstyle(18, 24, { alignment: 'END' }, 'alignment')]);
   deq(fake.pstyles('t.0').slice(3, 7).map((p) => p.alignment), ['END', 'END', 'END', 'END']);
-  assert.ok(w.content.includes('\n4: [right] Gamma\n[table T1: 1 row × 2 columns, lines 5–6]\n5 [r1c1]: [right] Cell A\n6 [r1c2]: [right] Cell B\n7: [right] After\n'), w.content);
+  assert.ok(RF(4, 7).endsWith('\n4: [right] Gamma\n[table T1: 1 row × 2 columns, lines 5–6]\n5 [r1c1]: [right] Cell A\n6 [r1c2]: [right] Cell B\n7: [right] After'), RF(4, 7));
   // the anchor text is the first group's line; the inverse covers every group
-  deq([w._edit.index, w._edit.end, w._edit.text], [18, 48, 'Gamma']);
+  deq([w._edit.index, w._edit.end, w._edit.text], [18, 49, 'Gamma']);
   assert.strictEqual(w._edit.requests.length, 4);
   const u = pushTool(await exec('undo_last_edit', {}));
   assert.ok(u._ok, u.content);
@@ -181,8 +229,8 @@ test('groups: contiguous index ranges; a table cell ends a group; undo per group
   deq(fake.pstyles('t.0').slice(3, 7), [{}, {}, {}, {}]);
   // a list across the cells: bullets per group
   pushTool(await exec('format_lines', fl(5, 6, { list: 'bullet' })));
-  deq(lastPost().requests, [{ createParagraphBullets: { range: range(35, 42), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } },
-    { createParagraphBullets: { range: range(27, 34), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } }]);
+  deq(lastPost().requests, [zero(35, 42), { createParagraphBullets: { range: range(35, 42), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } },
+    zero(27, 34), { createParagraphBullets: { range: range(27, 34), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } }]);
   deq(fake.bullets('t.0').slice(4, 6).map((b) => b && b.preset), ['BULLET_DISC_CIRCLE_SQUARE', 'BULLET_DISC_CIRCLE_SQUARE']);
 });
 
@@ -190,7 +238,7 @@ test('alignment in right-to-left paragraphs: left and right swap, one request pe
   await fresh(docSpec({ items: [{ p: 'ltr' }, { p: 'rtl', pstyle: { direction: 'RIGHT_TO_LEFT' } }, { p: 'ltr2' }] }));
   const w = pushTool(await exec('format_lines', fl(1, 3, { align: 'left' })));
   deq(lastPost().requests, [pstyle(1, 5, { alignment: 'START' }, 'alignment'), pstyle(5, 9, { alignment: 'END' }, 'alignment'), pstyle(9, 14, { alignment: 'START' }, 'alignment')]);
-  assert.ok(w.content.includes('\n1: ltr\n2: rtl\n3: ltr2\n'), w.content); // left is not tagged
+  assert.ok(w._ok && RF(1, 3).endsWith('\n1: ltr\n2: rtl\n3: ltr2'), RF(1, 3)); // left is not tagged
   pushTool(await exec('undo_last_edit', {}));
   deq(fake.pstyles('t.0'), [{}, { direction: 'RIGHT_TO_LEFT' }, {}]);
 });
@@ -198,16 +246,17 @@ test('alignment in right-to-left paragraphs: left and right swap, one request pe
 test('lists: create, change kind keeping nesting, remove with the indent reset; undo with the note', async () => {
   await fresh(spec());
   const NOTE = 'Note: the list was re-created; numbering, custom bullets or ticks may differ.';
-  // create on plain lines: no deleteParagraphBullets, no paragraph style
+  // create on plain lines: no deleteParagraphBullets; the explicit 0/0 first (an indent would count as nesting)
   let w = pushTool(await exec('format_lines', fl(2, 4, { list: 'number' }), 'mk'));
-  deq(lastPost().requests, [{ createParagraphBullets: { range: range(7, 24), bulletPreset: 'NUMBERED_DECIMAL_ALPHA_ROMAN' } }]);
-  assert.strictEqual(w.content, `Done: formatted lines 2–4 (numbered list).\n${FNOTE}\nLines 2-4 now:\n2: [number] Alpha\n3: [number] Beta\n4: [number] Gamma\nThe document now has 11 lines.`);
+  deq(lastPost().requests, [zero(7, 24), { createParagraphBullets: { range: range(7, 24), bulletPreset: 'NUMBERED_DECIMAL_ALPHA_ROMAN' } }]);
+  assert.strictEqual(w.content, 'Done: formatted lines 2–4 (numbered list); the document has 11 lines.');
+  assert.ok(RF(2, 4).endsWith('\n2: [number] Alpha\n3: [number] Beta\n4: [number] Gamma'), RF(2, 4));
   assert.strictEqual(w._edit.lists, true);
   deq(w._edit.requests, [{ deleteParagraphBullets: { range: range(7, 24) } }, pstyle(7, 24, {}, INDENTS)]);
   // remove: bullets off and the indents Docs leaves reset in one paragraph-style request
   w = pushTool(await exec('format_lines', fl(2, 4, { list: 'none' }), 'rm'));
   deq(lastPost().requests, [{ deleteParagraphBullets: { range: range(7, 24) } }, pstyle(7, 24, {}, INDENTS)]);
-  assert.ok(w.content.includes('Lines 2-4 now:\n2: Alpha\n3: Beta\n4: Gamma\n'), w.content);
+  assert.ok(w._ok && RF(2, 4).endsWith('\n2: Alpha\n3: Beta\n4: Gamma'), RF(2, 4));
   deq(fake.pstyles('t.0').slice(1, 4), [{}, {}, {}]); deq(fake.bullets('t.0').slice(1, 4), [null, null, null]);
   const listId = (n) => as.model.lines[n - 1].list && as.model.lines[n - 1].list.listId;
   // undo of the removal re-creates the numbered list (a new list) with its indents
@@ -220,14 +269,15 @@ test('lists: create, change kind keeping nesting, remove with the indent reset; 
   deq(fake.bullets('t.0').slice(1, 4), [null, null, null]); deq(fake.pstyles('t.0').slice(1, 4), [{}, {}, {}]);
   assert.strictEqual(listId(2), null);
 
-  // change the kind of a nested list: delete, a tab for level 1, create over the range plus the tab
+  // change the kind of a nested list: delete, an explicit 0/0 (the removed bullet left 36 pt on level 1, which Docs would
+  // add to the tab: L3), a tab for level 1, create over the range plus the tab
   w = pushTool(await exec('format_lines', fl(9, 10, { list: 'checklist' }), 'chg'));
-  deq(lastPost().requests, [{ deleteParagraphBullets: { range: range(56, 78) } }, { insertText: { location: { index: 67, tabId: 't.0' }, text: '\t' } },
-    { createParagraphBullets: { range: range(56, 79), bulletPreset: 'BULLET_CHECKBOX' } }]);
-  assert.ok(w.content.includes('\n9: [checklist] Nested one\n10: [checklist L2] Nested two\n'), w.content);
+  deq(lastPost().requests, [{ deleteParagraphBullets: { range: range(57, 79) } }, zero(57, 79), { insertText: { location: { index: 68, tabId: 't.0' }, text: '\t' } },
+    { createParagraphBullets: { range: range(57, 80), bulletPreset: 'BULLET_CHECKBOX' } }]);
+  assert.ok(w._ok && RF(9, 10).endsWith('\n9: [checklist] Nested one\n10: [checklist L2] Nested two'), RF(9, 10));
   assert.strictEqual(fake.text('t.0').split('\n')[9], 'Nested two'); // the tab went into the level
-  deq(w._edit.requests, [{ deleteParagraphBullets: { range: range(56, 78) } }, { insertText: { location: { index: 67, tabId: 't.0' }, text: '\t' } },
-    { createParagraphBullets: { range: range(56, 79), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } }, pstyle(56, 78, {}, INDENTS)]);
+  deq(w._edit.requests, [{ deleteParagraphBullets: { range: range(57, 79) } }, zero(57, 79), { insertText: { location: { index: 68, tabId: 't.0' }, text: '\t' } },
+    { createParagraphBullets: { range: range(57, 80), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } }, pstyle(57, 79, {}, INDENTS)]);
   u = pushTool(await exec('undo_last_edit', {}));
   assert.ok(u.content.includes(NOTE) && u.content.includes('\n9: [bullet] Nested one\n10: [bullet L2] Nested two\n'), u.content);
   deq(fake.bullets('t.0').slice(8, 10).map((b) => [b.level, b.preset]), [[0, 'BULLET_DISC_CIRCLE_SQUARE'], [1, 'BULLET_DISC_CIRCLE_SQUARE']]);
@@ -235,18 +285,31 @@ test('lists: create, change kind keeping nesting, remove with the indent reset; 
 
   // none with an indent given: that indent is set, the other one reset
   w = pushTool(await exec('format_lines', fl(9, 10, { list: 'none', indent_start: 10 })));
-  deq(lastPost().requests, [{ deleteParagraphBullets: { range: range(56, 78) } }, pstyle(56, 78, { indentStart: pt(10) }, INDENTS)]);
+  deq(lastPost().requests, [{ deleteParagraphBullets: { range: range(57, 79) } }, pstyle(57, 79, { indentStart: pt(10) }, INDENTS)]);
   deq(fake.pstyles('t.0').slice(8, 10), [{ indentStart: 10 }, { indentStart: 10 }]);
-  assert.ok(w.content.includes('\n9: [indent 10/-] Nested one\n10: [indent 10/-] Nested two\n'), w.content);
+  assert.ok(w._ok && RF(9, 10).endsWith('\n9: [indent 10/-] Nested one\n10: [indent 10/-] Nested two'), RF(9, 10));
   // explicit indents with a list: after the bullets, so they win
   pushTool(await exec('undo_last_edit', {}));
   w = pushTool(await exec('format_lines', fl(2, 3, { list: 'bullet', indent_start: 50 })));
-  deq(lastPost().requests, [{ createParagraphBullets: { range: range(7, 18), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } }, pstyle(7, 18, { indentStart: pt(50) }, 'indentStart')]);
+  deq(lastPost().requests, [zero(7, 18), { createParagraphBullets: { range: range(7, 18), bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE' } }, pstyle(7, 18, { indentStart: pt(50) }, 'indentStart')]);
   deq(fake.pstyles('t.0')[1], { indentStart: 50, indentFirstLine: 18 });
   deq(w._edit.requests, [{ deleteParagraphBullets: { range: range(7, 18) } }, pstyle(7, 18, {}, INDENTS)]);
   // a style write without lists says nothing about lists on undo
   w = pushTool(await exec('format_lines', fl(11, 11, { style: 'h3' })));
   assert.strictEqual(w._edit.lists, undefined);
+});
+
+test('lists: a nested list made again keeps its levels (Docs adds a removed bullet\'s indent and counts from the shallowest line)', async () => {
+  // items at levels 1 and 2 only, a plain line before them: it lends itself as level 0 and loses its bullet again
+  const B = (p, level) => ({ p, bullet: { listId: 'kix.n', level, preset: 'BULLET_DISC_CIRCLE_SQUARE' } });
+  await fresh(docSpec({ items: [{ p: 'Intro' }, B('One', 1), B('Two', 2), { p: 'End' }] }));
+  const w = pushTool(await exec('format_lines', fl(2, 3, { list: 'number' })));
+  assert.ok(w._ok, w.content);
+  deq(fake.bullets('t.0').map((b) => b && [b.level, b.preset]), [null, [1, 'NUMBERED_DECIMAL_ALPHA_ROMAN'], [2, 'NUMBERED_DECIMAL_ALPHA_ROMAN'], null]);
+  deq(fake.pstyles('t.0')[0], {}); // the line lent: no bullet, no indent of its own, as before
+  deq(fake.text('t.0').split('\n'), ['Intro', 'One', 'Two', 'End']);
+  pushTool(await exec('undo_last_edit', {}));
+  deq(fake.bullets('t.0').map((b) => b && b.level), [null, 1, 2, null]);
 });
 
 test('no change and the same-turn repeat guard: nothing is sent, no journal entry', async () => {
@@ -280,7 +343,7 @@ test('no change and the same-turn repeat guard: nothing is sent, no journal entr
   pushTool(await exec('undo_last_edit', {}));
   n = posts();
   w = pushTool(await exec('format_lines', fl(5, 5, { align: 'center' })));
-  assert.ok(w._ok && w._edit && w.content.startsWith('Done: formatted line 5 (centered).'), w.content);
+  assert.ok(w._ok && w._edit && w.content.startsWith('Done: formatted line 5 (centered);'), w.content);
   assert.strictEqual(posts(), n + 1);
 });
 

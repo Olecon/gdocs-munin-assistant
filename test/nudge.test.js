@@ -66,7 +66,7 @@ test('Munin, Auto: an announced edit without a call gets one nudge round; no too
   assert.ok(!h.some((m) => m._auto));
 });
 
-test('once per turn, and never in Manual or for a non-announcement', async () => {
+test('once per turn, in Manual as in Auto (both edit), never in Plan or for a non-announcement', async () => {
   await fresh('munin');
   let bodies = recordFetch(env, [muText("I'll update the heading."), muText("I'll update the heading."), muText('never')]);
   await send(env, 'Go');
@@ -80,8 +80,12 @@ test('once per turn, and never in Manual or for a non-announcement', async () =>
   assert.strictEqual(bodies.length, 1);
   state.applyMode = 'manual';
   try {
-    bodies = recordFetch(env, [muText("I'll update the heading."), muText('never')]);
+    bodies = recordFetch(env, [muText("I'll update the heading."), muText('No change is needed.')]);
     await send(env, 'Manual');
+    assert.strictEqual(bodies.length, 2); // an editing turn: nudged like Auto
+    state.applyMode = 'plan';
+    bodies = recordFetch(env, [muText("I'll update the heading."), muText('never')]);
+    await send(env, 'Plan');
     assert.strictEqual(bodies.length, 1);
   } finally {
     state.applyMode = 'auto';

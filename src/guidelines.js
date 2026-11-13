@@ -1,6 +1,6 @@
 'use strict';
-// Module guidelines.js: reporting-guideline coverage (the tool guideline_coverage, Auto with the Docs API). The panel,
-// not the model, runs it: the items go in batches of GL_BATCH to quiet document passes (mode 'coverage', registered into
+// Module guidelines.js: reporting-guideline coverage (the tool guideline_coverage, editing turns with the Docs API).
+// The panel, not the model, runs it: the items go in batches of GL_BATCH to quiet document passes (mode 'coverage', registered into
 // the document-pass tables of constants.js and prompts.js at load: no chat history, the document inline when it fits,
 // else the outline and the reading tools), each answering per item covered / partly / missing with a quote and its line;
 // the quotes are verified against the document, and the results go into one Docs table (Item, Topic, Status, Where,
@@ -24,14 +24,14 @@
 //   use, all other rights reserved), so its licence for redistribution is unclear: only the item numbers and topic
 //   words, with the link; the tool result says so.
 // The attributions are repeated in vendor/NOTICES.txt.
-/* global apiEditing, buildTurnContext, DOC_PASS_HEADS, DOC_PASS_MODES, DOC_PASS_TASKS, docsBatchUpdate, fetchDocModel, finishEdit,
+/* global apiEditing, buildTurnContext, chatAsked, DOC_PASS_HEADS, DOC_PASS_MODES, DOC_PASS_TASKS, docsBatchUpdate, fetchDocModel, finishEdit,
    commitSequence, gateEdit, lineAtIndex, planInsertTable, registerTools, registerUndoHandler, reqDelete, reqInsert, setStatus,
-   tableAt, tableSignature, TABLE_LIMITS, toolLoop, writeError */
+   NOT_UNDONE, tableAt, tableSignature, TABLE_LIMITS, toolLoop, writeError */
 /* exported GUIDELINES, GL_BATCH, glAsked, guidelineBatches, parseCoverage, coverageRows, runGuidelineCoverage, undoCoverage, COVERAGE_TASK */
 
 const GL_BATCH = 8; // items per request
 const GL_QUOTE_WORDS = 20;
-const GL_TABLE_LIMITS = { ...TABLE_LIMITS, rows: 60, gateCells: Infinity }; // the panel's own table: up to 59 items
+const GL_TABLE_LIMITS = { ...TABLE_LIMITS, rows: 60 }; // the panel's own table: up to 59 items
 
 // form: 'paraphrase' (items [id, topic, paraphrase]) or 'topics' (items [id, topic]: the licence is unclear).
 const GUIDELINES = {
@@ -368,7 +368,8 @@ function planCoverageTable(model, line, rows, caption, title) {
   const where = line === 0 ? 'at the beginning' : `after line ${line}`;
   Object.assign(plan, {
     title: `Inserted the ${title} coverage table ${where}`, cardText: caption, cardLabel: 'Caption',
-    gate: { large: false, what: `inserts the ${title} coverage table (${rows.length - 1} items)`, range: line === 0 ? 'At the beginning' : `After line ${line}`, excerptLabel: 'Caption', excerpt: caption },
+    gate: { what: `inserts the ${title} coverage table (${rows.length - 1} items)`, range: line === 0 ? 'At the beginning' : `After line ${line}`,
+      blocks: [{ label: 'Table', text: rows.map((r) => r.join(' | ')).join('\n') }, { label: 'Caption', text: caption }] },
     journal: { kind: 'coverage', anchor: false },
   });
   plan.finish = (m) => {
@@ -384,7 +385,7 @@ function planCoverageTable(model, line, rows, caption, title) {
 // undoEdit for kind 'coverage': the table (found by its start or its signature) and its caption line are deleted, when
 // the caption is unchanged and alone in its line.
 async function undoCoverage(edit) {
-  const ctrlZ = 'so it cannot be undone automatically. Use Undo (Ctrl+Z) in Google Docs instead.';
+  const ctrlZ = NOT_UNDONE;
   const model = await fetchDocModel(edit.docId, edit.tabId);
   const outer = (model.tables || []).filter((t) => !t.nested);
   const t = outer.find((x) => x.start === edit.start && tableSignature(model, x) === edit.sig) ||
@@ -411,7 +412,7 @@ async function runGuidelineCoverage(name, args, snap, ui, call) {
   const total = model.lines.length;
   const line = args.line == null || args.line === '' ? total : Number(args.line);
   if (!Number.isInteger(line) || line < 0 || line > total) return writeError(`line must be an integer from 0 to ${total}, or null for the end.`, 'guideline_coverage: invalid line');
-  if (snap.responseWrite) return writeError('line numbers changed after the previous edit in this response, so the coverage table was not inserted; re-read with read_lines and call it again.', 'guideline_coverage: line numbers changed; not run');
+  if (snap.responseWrite) return writeError('line numbers changed after the previous edit in this response, so the coverage table was not inserted; re-read with read_document and call it again.', 'guideline_coverage: line numbers changed; not run');
   const view = snap.promptView || snap;
   const lines = String(view.docText || '').split('\n');
   const batches = guidelineBatches(g);
@@ -470,22 +471,17 @@ const GUIDELINE_DEF = { type: 'function', function: {
   },
 } };
 
-// Offered only in an Auto turn with the Docs API whose message names a guideline or asks for a reporting checklist:
-// the definition costs about 250 tokens, and the other turns (Munin's 64k window) stay as they were. The turn's message
-// is the same in every round, so the offer is too.
+// Offered only in an editing turn (Manual or Auto) with the Docs API whose message names a guideline or asks for a
+// reporting checklist: the definition costs about 250 tokens, and the other turns (Munin's 64k window) stay as they were. The turn's message
+// is the same in every round, so the offer is too; on a provider with a prompt cache it stays offered for the rest of
+// the chat once a message asked (request.js chatAsked).
 const GL_ASK_RE = /\b(?:CONSORT|PRISMA|STROBE|ARRIVE|CARE|TRIPOD(?:\+AI)?)\b|\b(?:consort|prisma|strobe|arrive 2|tripod)\b|reporting (?:guideline|checklist)|guideline coverage|чек-?лист|руководств\p{L}* по (?:представлению|описанию)/u;
-function glAsked(snap) {
-  const msgs = (snap && snap.chatCtx && snap.chatCtx.messages) || [];
-  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'user' && !msgs[i]._auto) return GL_ASK_RE.test(String(msgs[i].content || ''));
-  return false;
-}
+const glAsked = (snap) => chatAsked(snap, (t) => GL_ASK_RE.test(t));
 registerTools([GUIDELINE_DEF], {
   offer: (mode, snap) => apiEditing(mode, snap) && glAsked(snap),
   reading: false,
-  icon: '📋',
   pending: 'Checking the guideline items…',
   summary: (n, args) => `${String(args.guideline || '')}${args.line == null ? ' at the end' : ` after line ${args.line}`}`,
   gate: (n, plan) => plan.gate,
   run: runGuidelineCoverage,
-  prompt: [{ section: 'edit', line: `- guideline_coverage(guideline, line): which items of ${GL_NAMES.join(', ')} the document reports, as a table after line (null: the end). Only when asked.` }],
 });

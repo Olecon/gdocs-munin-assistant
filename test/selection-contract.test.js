@@ -1,7 +1,7 @@
 'use strict';
-// The Manual-mode output contract: the prompt lines (<replacement> / <insertion>, Manual only), the parser of
-// a finished answer (parseEditBlock: one block, several, malformed, Markdown inside, a fenced block), and the
-// remember hygiene lines of REMEMBER_NOTE. The rendering and the buttons: test/dom/selection-contract.test.js.
+// The output contract of the read-only chat turn: the prompt lines (<replacement> / <insertion>, that turn only), the
+// parser of a finished answer (parseEditBlock: one block, several, malformed, Markdown inside, a fenced block), and the
+// remember hygiene of the remember definition and REMEMBER_NOTE. The rendering and the buttons: test/dom/selection-contract.test.js.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
 const { deq, load } = require('./lib/sandbox');
@@ -16,7 +16,7 @@ before(async () => {
   state.docFormat = 'markdown'; state.docText = '# Doc\n\nText.'; state.docModel = null; state.selection = '';
 });
 
-test('prompt: the tag contract is in the Manual rules only (Auto and persona turns do not get it)', () => {
+test('prompt: the tag contract is in the read-only chat turn\'s rules only (Auto and persona turns do not get it)', () => {
   const rules = [
     'reply with the COMPLETE resulting text inside <replacement>...</replacement>',
     'When the user asks for new text to add at the cursor ("insert", "add", "write a paragraph"), put it inside <insertion>...</insertion>.',
@@ -40,13 +40,16 @@ test('prompt: the tag contract is in the Manual rules only (Auto and persona tur
   } finally { state.googleConnected = false; state.docFormat = 'markdown'; }
 });
 
-test('prompt: remember hygiene (lasting preferences only, remove a contradicted line, do not mention unasked)', () => {
+test('prompt: remember hygiene (lasting preferences only, replace a contradicted line, do not mention unasked; both scopes; asked reviews)', () => {
+  // when and how to remember is in the remember definition; the head keeps the one sentence for requests that do not call it
+  const def = T.TOOL_DEFS.remember.function.description;
+  assert.ok(def.includes('store lasting preferences, not one-off requests'));
+  assert.ok(def.includes('A new rule that contradicts a line added earlier replaces that line') && def.includes('never rewrite lines the user wrote by hand unless asked') && def.includes('review or change a rule for the future'));
+  assert.ok(def.includes('Only when the user explicitly asks to remember, forget') && def.includes('"from now on"'));
+  assert.strictEqual(def.split('never on your own initiative').length, 2);
   const note = T.REMEMBER_NOTE;
-  assert.ok(note.includes('Store only lasting preferences, not one-off requests.'));
-  assert.ok(note.includes('When a new rule contradicts a line added earlier with remember, remove that line, then add the new rule.'));
-  assert.ok(note.includes('Except to confirm a remember call, do not mention the document instructions unless the user asks about them.'));
-  assert.ok(note.startsWith('remember(action, text) adds a line to the document instructions or removes one: use it only when the user explicitly asks'));
-  assert.strictEqual(note.split('never on your own initiative').length, 2); // the existing guidance is not repeated
+  assert.ok(note.startsWith('If a request sounds like a standing rule but does not say so, ask whether it goes to DOC.md or MAIN.md'));
+  assert.ok(note.endsWith('never mention these files otherwise.'));
 });
 
 test('parser: one replacement block, prose around it, the tags on their own lines', () => {

@@ -1,8 +1,8 @@
 'use strict';
 // The prose check (src/prose-lint.js): proseTells per category in English and Russian (normal scientific prose
 // gives none), the dash rate, claimDrift (numbers, citations, qualifiers), and the beforeWrite hook: a lost
-// number or citation refuses once and the identical retry passes, notes on the tool result, the tools it
-// skips; through whole turns with Anthropic and Munin.
+// number or citation refuses once and a later write dropping the same items passes (any tool), a typed section number
+// is no data number, notes on the tool result, the tools it skips; through whole turns with Anthropic and Munin.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
 const { deq, load, installDocTab, installIdentity } = require('./lib/sandbox');
@@ -124,6 +124,19 @@ test('claimDrift: numbers compared by value; a unit change and a statistic\'s co
   deq(lost('(n = 48)', 'of 48 patients'), []); // "=" is no comparator
 });
 
+test('claimDrift: a superscript or subscript digit is the same digit; powers, units and formulas stay uncounted', () => {
+  const lost = (a, b) => T.claimDrift(a, b).numbers;
+  // affiliation and footnote markers that only changed their form (the reported "drops 1, 2, 3")
+  deq(lost('1Institute of Physics\n2Department of Chemistry\n3Clinic', '¹ Institute of Physics\n² Department of Chemistry\n³ Clinic'), []);
+  deq(lost('¹ Institute; ₂ note', '1 Institute; 2 note'), []);
+  deq(lost('Yushin1,2 and Lee3', 'Yushin¹,² and Lee³'), []);
+  // a real loss beside a folded marker is still a loss
+  deq(lost('1Institute, 48 patients', '¹ Institute, patients'), ['48']);
+  // a power, a unit's exponent or a formula is not a number of its own (as before): rewriting its form drops nothing
+  deq(lost('k = 5.2 s⁻¹ in 10⁵ cells of 2 m²', 'k = 5.2 per second in 10^5 cells of 2 square metres'), []);
+  deq(lost('H₂O and CO₂ at 3 mM', 'water and carbon dioxide at 3 mM'), []);
+});
+
 test('claimDrift: citation markers in both forms and DOIs; qualifiers in English and Russian', () => {
   deq(T.claimDrift('A dose (Smith, 2020; Jones & Lee, 2021) may help [1–3], doi 10.1000/xyz123.', 'A dose helps (Jones and Lee (2021)) [1, 2].'),
     { numbers: [], citations: ['10.1000/xyz123', '[3]', '(Smith, 2020)'], qualifiers: ['may'] });
@@ -138,25 +151,66 @@ test('claimDrift: citation markers in both forms and DOIs; qualifiers in English
   deq(T.claimDrift('Nothing here.', 'Nothing here at all.'), { numbers: [], citations: [], qualifiers: [] });
 });
 
-test('hook: a replace that drops a number or citation is refused once; the identical retry passes; a changed call is checked again', async () => {
+const DROP_REFUSAL = 'the new text drops 5 mg, (Smith, 2020). Keep them or, if that is intended, tell the user and send the edit again: it will pass.';
+test('hook: a write that drops a number or citation is refused once, naming them; a later write that drops only those passes, whatever its tool', async () => {
   await fresh(spec());
   const posts = () => fake.log.filter((x) => x.method === 'POST').length;
   const args = { old_text: P3, new_text: 'We used the drug, and the effect may be small and clear.' };
   let r = await exec('replace_text', args);
-  deq([r._ok, r._message, r.content], [false, 'Refused by a check',
-    'Refused by a check: the new text drops 5 mg, (Smith, 2020). Keep them, or tell the user you removed them on purpose and call the tool again.']);
+  deq([r._ok, r._message, r.content], [false, 'Refused by a check', `Refused by a check: ${DROP_REFUSAL}`]);
+  assert.strictEqual(r._detail, DROP_REFUSAL); // the card's reason
   assert.strictEqual(posts(), 0);
-  // another call (other arguments) that still drops them: refused again
-  r = await exec('replace_text', { ...args, new_text: args.new_text + ' Done.' });
-  assert.ok(!r._ok && r.content.startsWith('Refused by a check: the new text drops 5 mg, (Smith, 2020).'), r.content);
-  // the identical retry of the first call: the model decided; it goes through
+  // the identical retry passes, as before
   r = await exec('replace_text', args);
   assert.ok(r._ok, r.content);
   assert.strictEqual(posts(), 1);
+  // the saved chat: told about the items, the model sent the edit through another tool (other arguments) and met the same
+  // refusal again; now the items were named in this turn, so it passes
+  await fresh(spec());
+  r = await exec('replace_text', args);
+  assert.ok(!r._ok && r._detail === DROP_REFUSAL, r.content);
+  r = await exec('edit_document', { operations: [{ op: 'replace', old_text: P3, new_text: args.new_text + ' Done.', line: 3 }] });
+  assert.ok(r._ok, r.content);
+  // an item not named yet is refused, and the refusal names only it
+  r = await exec('replace_all', { old_text: 'rose by 12% in', new_text: 'rose sharply in' });
+  assert.strictEqual(r._detail, 'the new text drops 12%. Keep it or, if that is intended, tell the user and send the edit again: it will pass.');
   // a new turn (new snapshot) starts with an empty set
   await fresh(spec());
-  r = await exec('replace_text', { old_text: 'rose by 12% in', new_text: 'rose sharply in' });
-  assert.ok(!r._ok && r.content.includes('drops 12%'), r.content);
+  r = await exec('replace_text', { old_text: 'We used 5 mg of', new_text: 'We used some of' });
+  assert.ok(!r._ok && r.content.includes('drops 5 mg'), r.content);
+});
+
+test('hook: a typed section number renumbered or removed is no dropped number; a data number at a line start still is', async () => {
+  const NUMBERED = () => docSpec({ items: [{ p: 'Report', style: 'TITLE' }, { p: '2 Methods', style: 'HEADING_1' },
+    { p: '2.1 Model objects' }, { p: 'We used 5 mg of the drug.' }, { p: '2.3 Molecular dynamics', style: 'HEADING_2' },
+    { p: '2.3.1. Partial atomic charges' }, { p: '12 samples were measured.' }, { p: '2.5 M NaCl was added.' }] });
+  // a heading renumbered and renamed (replace_text), a body line's number changed with the rest kept (replace_all)
+  await fresh(NUMBERED());
+  let r = await exec('replace_text', { old_text: '2.3 Molecular dynamics', new_text: '2.2 MD simulations' });
+  assert.ok(r._ok, r.content);
+  r = await exec('replace_all', { old_text: '2.3.1. Partial', new_text: '2.2.1. Partial' });
+  assert.ok(r._ok, r.content);
+  r = await exec('replace_all', { old_text: '2 Methods', new_text: '3 Methods' }); // a heading through replace_all
+  assert.ok(r._ok, r.content);
+  // several lines in one edit_document: renumbered, a number removed, and a body line's number typed alone
+  await fresh(NUMBERED());
+  r = await exec('edit_document', { operations: [
+    { op: 'replace', old_text: '2.3 Molecular dynamics\n2.3.1. Partial atomic charges', new_text: '2.4 Molecular dynamics\nPartial atomic charges' },
+    { op: 'replace', old_text: '2.1', new_text: '2.2', line: 3 }] });
+  assert.ok(r._ok, r.content);
+  // a data number at the start of a line (lower case after it), a number with a unit, a real drop beside a renumbering
+  await fresh(NUMBERED());
+  r = await exec('replace_text', { old_text: '12 samples were measured.', new_text: '14 samples were measured.' });
+  assert.ok(!r._ok && r._detail.includes('the new text drops 12.'), r.content);
+  r = await exec('replace_text', { old_text: '2.5 M NaCl was added.', new_text: 'NaCl was added.' });
+  assert.ok(!r._ok && r._detail.includes('the new text drops 2.5 M.'), r.content);
+  r = await exec('edit_document', { operations: [{ op: 'replace', old_text: '2.1 Model objects\nWe used 5 mg of the drug.', new_text: '2.2 Model objects\nWe used the drug.' }] });
+  assert.ok(!r._ok && r._detail.includes('the new text drops 5 mg.'), r.content);
+  // a number in the middle of a line is not a section number
+  await fresh(NUMBERED());
+  r = await exec('replace_text', { old_text: 'Model objects', new_text: 'Model objects (see 2.3)' });
+  assert.ok(r._ok, r.content);
+  deq(T.proseCheck('replace_text', null, { old_text: 'see 2.3 Molecular', new_text: 'see 2.4 Molecular' }, as).refuse, 'the new text drops 2.3. Keep it or, if that is intended, tell the user and send the edit again: it will pass.');
 });
 
 test('hook: no refusal for a big cut, kept items, items the user named, tracked-free inserts and the tools it skips', async () => {
@@ -183,14 +237,69 @@ test('hook: no refusal for a big cut, kept items, items the user named, tracked-
   assert.ok(r._ok && !r.content.includes('Note:'), r.content);
   deq(T.proseCheck('delete_lines', null, {}, as), null);
   deq(T.proseCheck('remember', null, { action: 'add', text: 'This is crucial.' }, as), null);
-  deq(T.PROSE_TOOLS, ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection']);
+  deq(T.PROSE_TOOLS, ['replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'replace_selection', 'edit_document']);
+});
+
+test('hook: a correction the user gives passes at once (each lost number has a number the user names in its place); other drops are still refused', async () => {
+  const RATIOS = 'The mean ratio of the two distance peaks was 0.47 in the control and 1.10 after the substrate was added.';
+  const doc = () => docSpec({ items: [{ p: 'Results', style: 'HEADING_1' }, { p: RATIOS }, { p: 'We used 5 mg and 5 mg in 10 mM buffer.' }] });
+  const says = (content) => { as.chatCtx = { docId: 'DOC123', chatId: 'c1', messages: [{ role: 'user', content }] }; };
+  const fix = { old_text: 'was 0.47 in the control and 1.10 after', new_text: 'was 0.74 in the control and 1.01 after', line: 2 };
+  // the eval's case: the user's values replace the old ones in place; the first call goes through
+  await fresh(doc());
+  says('Mine shows 0.74 and 1.01.');
+  let r = await exec('replace_text', fix);
+  assert.ok(r._ok, r.content);
+  // in Russian, in an edit_document replace
+  await fresh(doc());
+  says('У меня в таблице 0,74 и 1,01.');
+  r = await exec('edit_document', { operations: [{ op: 'replace', ...fix }] });
+  assert.ok(r._ok, r.content);
+  // one value named, two replaced: the one with no named value in its place is still a drop
+  await fresh(doc());
+  says('Mine shows 0.74.');
+  r = await exec('replace_text', fix);
+  assert.ok(!r._ok && r.content.includes('the new text drops 1.10.'), r.content); // (and 1.01 is unknown: provenance.js)
+  // a lost number with nothing in its place
+  await fresh(doc());
+  says('Mine shows 0.74 and 1.01.');
+  r = await exec('replace_text', { old_text: 'was 0.47 in the control and 1.10 after', new_text: 'was 0.74 in the control and rose after', line: 2 });
+  assert.ok(!r._ok && r.content.startsWith('Refused by a check: the new text drops 1.10.'), r.content);
+  // the named number goes in by another replace of the batch: not in the lost number's place
+  await fresh(doc());
+  says('Mine shows 0.74.');
+  r = await exec('edit_document', { operations: [{ op: 'replace', old_text: 'was 0.47 in the control', new_text: 'was lower in the control', line: 2 },
+    { op: 'replace', old_text: 'We used 5 mg and 5 mg', new_text: 'We used 5 mg and 5 mg (ratio 0.74)', line: 3 }] });
+  assert.ok(!r._ok && r.content.startsWith('Refused by a check: the new text drops 0.47.'), r.content);
+  // another kind (a unit) in its place, or a number the user did not name: refused as before
+  await fresh(doc());
+  says('Use 20 mg.');
+  r = await exec('replace_text', { old_text: 'in 10 mM buffer', new_text: 'in 20 mg buffer', line: 3 });
+  assert.ok(!r._ok && r.content.startsWith('Refused by a check: the new text drops 10 mM.'), r.content);
+  await fresh(doc()); // (in the same turn the item, named once, would pass)
+  says('Fix the buffer.');
+  r = await exec('replace_text', { old_text: 'in 10 mM buffer', new_text: 'in 20 mM buffer', line: 3 });
+  assert.ok(!r._ok && r.content.includes('the new text drops 10 mM.'), r.content);
+  // one named value stands in for one of two equal numbers
+  await fresh(doc());
+  says('It was 7 mg.');
+  r = await exec('replace_text', { old_text: 'We used 5 mg and 5 mg in', new_text: 'We used 7 mg in', line: 3 });
+  assert.ok(!r._ok && r.content.startsWith('Refused by a check: the new text drops 5 mg.'), r.content);
+  r = await exec('replace_text', { old_text: 'We used 5 mg and 5 mg in', new_text: 'We used 7 mg and 7 mg in', line: 3 });
+  assert.ok(r._ok, r.content);
 });
 
 test('hook: notes for new tells and lost qualifiers reach the tool result (at most 5); the old text\'s own tells are not flagged', async () => {
   await fresh(spec());
+  // a qualifier lost inside a short change is quoted by the meaning-drift note of src/text-checks.js instead
   let r = await exec('replace_text', { old_text: 'the effect may be small', new_text: 'the effect is small' });
   assert.ok(r._ok, r.content);
-  assert.ok(r.content.endsWith("\nNote: the new text drops the qualifier 'may'; keep it unless the evidence changed."), r.content);
+  assert.ok(r.content.endsWith('\nNote: meaning may have shifted: "may be" → "is".') && !r.content.includes('qualifier'), r.content);
+  // in a longer rewrite (no quotable pair) the qualifier note stays
+  await fresh(spec());
+  r = await exec('replace_text', { old_text: 'and the effect may be small', new_text: 'and the measured response of the treated cultures stayed modest throughout' });
+  assert.ok(r._ok && r.content.includes("Note: the new text drops the qualifier 'may'; keep it unless the evidence changed."), r.content);
+  await fresh(spec());
   r = await exec('insert_after_line', { line: 6, text: 'This crucial step underscores a pivotal and robust landscape, highlighting a key role.' });
   assert.ok(r._ok, r.content);
   const notes = r.content.split('\n').filter((l) => l.startsWith('Note: '));
@@ -214,6 +323,35 @@ test('hook: replace_section is refused before its card; replace_all per occurren
   assert.ok(!r._ok && r.content.includes('drops 5 mg'), r.content);
 });
 
+test('text checks (src/text-checks.js): their notes reach the tool result after the prose notes, never refuse, and stay under 400 characters', async () => {
+  await fresh(spec());
+  // a meaning shift and a claim: notes on a successful write
+  let r = await exec('replace_text', { old_text: 'Membrane order rose by 12% in treated cells [3].', new_text: 'Membrane order never rose by 12% in treated cells [3], which proves the model.' });
+  assert.ok(r._ok, r.content);
+  const notes = r.content.split('\n').filter((l) => l.startsWith('Note: '));
+  deq(notes, ['Note: meaning may have shifted: "rose" → "never rose"; added "which proves the model".', 'Note: claims: "proves" (hype); "never" (universal claim).']);
+  // a figure the document does not have, an undefined abbreviation and a wordy phrase on an insert
+  await fresh(spec());
+  r = await exec('insert_after_line', { line: 5, text: 'In excess of 5 mg was used [3]; the MSD grew, as Figure 2 shows.' });
+  assert.ok(r._ok, r.content);
+  assert.ok(r.content.includes('Note: abbreviations not defined: "MSD"') && r.content.includes('Note: wordy: "In excess of" → "more than".'), r.content);
+  // churn on a fix request
+  await fresh(spec());
+  as.chatCtx = { docId: 'DOC123', chatId: 'c1', messages: [{ role: 'user', content: 'Fix the grammar in the Methods paragraph' }] };
+  r = await exec('replace_text', { old_text: P3, new_text: 'As (Smith, 2020) advised, patients received 5 mg; any resulting response may stay small.' });
+  assert.ok(r._ok && r.content.includes('Note: this rewrote 72% of the paragraph for a fix request; keep edits minimal unless asked to rewrite.'), r.content);
+  // many findings: the text checks' notes together stay within 400 characters
+  await fresh(spec());
+  const many = 'This novel, groundbreaking result proves it [3]. It is known that X. It always works and never fails. It was significant. '
+    + 'A mean of 5 mg [3]. Values were 3 +/- 1 and p = 0.000. In excess of 5 runs by means of a pump with the exception of one, in the vicinity of the lab. '
+    + 'MSD, RDF, VACF and PMF rose, see Figures 7, 8 and Table 9.';
+  r = await exec('insert_after_line', { line: 6, text: many });
+  assert.ok(r._ok, r.content);
+  const own = ['meaning', 'claims', 'statistics', 'not in the document', 'abbreviations', 'unit spacing', 'this rewrote', 'your text', 'wordy']
+    .flatMap((k) => r.content.split('\n').filter((l) => l.startsWith('Note: ' + k)));
+  assert.ok(own.length >= 3 && own.join('').length - 6 * own.length <= 400 && own.some((l) => /\+\d+ more\.$/.test(l)), r.content);
+});
+
 // One chat turn on the fake document with provider prov; rounds: the SSE texts. Returns the request bodies.
 async function turn(prov, rounds, text) {
   fake = fakeDocsServer(spec());
@@ -231,18 +369,20 @@ async function turn(prov, rounds, text) {
 for (const prov of ['anthropic', 'munin']) {
   test(`a turn with ${prov}: the refusal reaches the model, the identical retry is applied, notes follow the result`, async () => {
     const drop = { old_text: P3, new_text: 'We used the drug, and the effect may be small but clear.' };
-    const ins = { line: 6, text: 'This crucial result is clear.' };
+    const ins = { line: 6, text: 'This crucial result is clear in the samples we measured last week.' }; // a sentence of prose: the section note
     const call = (i, name, args) => (prov === 'munin' ? muTool('c' + i, name, args) : msgStart + tu(0, 'toolu_' + i, name, args) + stopTool);
+    // anthropic: the connectivity check of the one-paragraph insert answers OK (Munin checks 2+ paragraphs only)
     const bodies = await turn(prov, [call(1, 'replace_text', drop), call(2, 'replace_text', drop), call(3, 'insert_after_line', ins),
-      prov === 'munin' ? muText('Done.') : textRound('Done.')], 'Simplify the Methods paragraph');
-    assert.strictEqual(bodies.length, 4);
+      ...(prov === 'munin' ? [muText('Done.')] : [textRound('OK'), textRound('Done.')])], 'Simplify the Methods paragraph');
+    assert.strictEqual(bodies.length, prov === 'munin' ? 4 : 5);
     const results = state.messages.filter((m) => m.role === 'tool');
     assert.ok(results[0].content.startsWith('Refused by a check: the new text drops 5 mg, (Smith, 2020).'), results[0].content);
     assert.ok(results[1]._ok && results[1]._edit, results[1].content);
-    assert.ok(results[2]._ok && results[2].content.endsWith("\nNote: 'crucial' → say what it does."), results[2].content);
+    // the prose note, then the section note of the first write into «Results» (src/prose-tools.js)
+    assert.ok(results[2]._ok && results[2].content.includes("\nNote: 'crucial' → say what it does.\nNote: Section «Results»: continue its register;"), results[2].content);
     // what the provider received
-    const sent = JSON.stringify(bodies[3]);
+    const sent = JSON.stringify(bodies[bodies.length - 1]);
     assert.ok(sent.includes('Refused by a check: the new text drops 5 mg') && sent.includes("Note: 'crucial' → say what it does."));
-    assert.ok(fake.text('t.0').includes('the effect may be small but clear.') && fake.text('t.0').includes('This crucial result is clear.'));
+    assert.ok(fake.text('t.0').includes('the effect may be small but clear.') && fake.text('t.0').includes(ins.text));
   });
 }

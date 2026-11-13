@@ -6,7 +6,7 @@
 // style changes; exact undo with the store restored; errors.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, installDocTab, installIdentity, waitFor } = require('./lib/sandbox');
+const { deq, load, installDocTab, installIdentity } = require('./lib/sandbox');
 const { docSpec, docsBench } = require('./lib/fake-docs');
 const { fakeZotero } = require('./lib/fake-zotero');
 
@@ -45,13 +45,6 @@ const insert = (ids, after) => exec('cite', { ...NULLS, action: 'insert', ids, a
 const text = () => fake.text('t.0').split('\n');
 const store = () => storage['muninCitations:DOC123'];
 const newTurn = () => { as = T.takeSnapshot(); T.snapshotDocument(as); };
-// An edit that removes a tracked citation waits at the edit gate (write-guards.test.js): allowed here.
-async function allowed(promise) {
-  await waitFor(() => T.pendingPreviews.size === 1, 'the gate card');
-  const [[id]] = [...T.pendingPreviews.entries()];
-  T.decidePreview(id, 'accept');
-  return promise;
-}
 
 const BODY = [
   { p: 'Rafts', style: 'TITLE' },
@@ -66,12 +59,12 @@ test('offered with the grant; cite only in Auto with the Docs API; prompt lines 
   assert.ok(!names('edit').includes('find_reference') && !names('edit').includes('cite'));
   assert.ok(!T.buildSystemParts('edit', 1e5, as).head.includes('find_reference'));
   state.settings.references = true;
-  deq(names('edit').slice(-5), ['find_reference', 'cite', 'draft', 'revise_section', 'check_references']); // revise_section: src/revise.js; check_references: src/check-refs.js
+  deq(names('edit').slice(-8), ['find_reference', 'cite', 'draft', 'revise_section', 'trim_to_words', 'phrase_usage', 'check_references', 'delegate']); // revise_section: src/revise.js; trim_to_words, phrase_usage: src/prose-tools.js; check_references: src/check-refs.js; models: src/accounts.js; delegate: src/agents.js
   assert.ok(names('manual').includes('find_reference') && !names('manual').includes('cite'));
   assert.ok(!names('edit', { ...as, docFormat: 'markdown', model: null }).includes('cite'));
   const head = T.buildSystemParts('edit', 1e5, as).head;
-  assert.ok(head.includes("- find_reference(query): look up works to cite in the user's Zotero library or by DOI; returns ids for cite."));
-  assert.ok(head.includes('- cite(action, ids, after_text, style): "insert" puts an in-text citation'));
+  assert.ok(!head.includes('- find_reference')); // its definition says what it does
+  assert.ok(head.includes('\n- Citations and reference lists go in through cite; a plain form the user asks for (e.g. [doi]) is typed as text.\n'));
   assert.ok(!T.buildSystemParts('manual', 1e5, as).head.includes('- cite('));
   // the schemas: strict, every property required
   const cite = T.toolsFor('edit', as).find((t) => t.function.name === 'cite').function.parameters;
@@ -79,20 +72,24 @@ test('offered with the grant; cite only in Auto with the Docs API; prompt lines 
   // turned off mid-chat: a call is refused like an unknown tool
   state.settings.references = false;
   const r = await exec('find_reference', { query: 'smith' });
-  deq([r._ok, r.content], [false, 'Error: find_reference is not available for this message.']);
+  deq([r._ok, r.content], [false, 'Error: find_reference is not offered now; use the tools you were given.']);
   state.settings.references = true;
+  // a writing call of a tool not offered outside an editing turn: the turn's way forward (cite: Manual and Auto only)
+  const c = await T.executeTool({ id: 'cm1', function: { name: 'cite', arguments: JSON.stringify({ ...NULLS, action: 'insert', ids: ['x'], after_text: 'Rafts' }) } }, 'manual', as);
+  deq([c._ok, c.content], [false, 'Error: the document cannot be modified here. Put the complete resulting text in your answer.']);
   // the context note appears once the document has cited items
   assert.ok(!T.buildTurnContext('edit', as, null).includes('References:'));
   push(await insert(['zotero:ABCD1234'], 'ordered domains'));
   await T.runTurnHooks('panelDoc', 'DOC123');
   newTurn();
   assert.ok(T.buildTurnContext('edit', as, null).includes('</document>\nReferences: 1 cited item, style apa'));
-  assert.strictEqual(T.EXTRA_TOOLS.find((t) => t.names.includes('cite')).icon, '📚');
+  assert.strictEqual(T.EXTRA_TOOLS.find((t) => t.names.includes('cite')).icon, undefined); // no icons
   assert.strictEqual(T.pendingCardText('cite'), 'Citing…');
-  // the gate: a rewrite that removes GATE_REPLACE_CHARS or more asks; smaller ones only in tainted turns
-  deq(T.editGateInfo('cite', { removedChars: 2000, removedText: 'old list', gateWhat: 'rewrites the References section' }),
-    { large: true, what: 'rewrites the References section', range: '', excerptLabel: 'Removed text', excerpt: 'old list' });
-  assert.strictEqual(T.editGateInfo('cite', { removedChars: 10, removedText: '' }).large, false);
+  // the gate (it asks in Manual only): the text the edit writes whole, with what it replaces
+  deq(T.editGateInfo('cite', { removedText: 'old list', addedText: 'new list', gateWhat: 'rewrites the References section' }),
+    { what: 'rewrites the References section', blocks: [{ label: 'New text', text: 'new list', diff: { oldText: 'old list', newText: 'new list' } }] });
+  deq(T.editGateInfo('cite', { removedText: 'gone', addedText: '' }).blocks, [{ label: 'Removed text', text: 'gone' }]);
+  deq(T.editGateInfo('cite', { removedText: '', addedText: '' }).blocks, []);
 });
 
 test('find_reference: Zotero listing, no match, Zotero absent or its API off, DOIs through Crossref', async () => {
@@ -124,6 +121,49 @@ test('find_reference: Zotero listing, no match, Zotero absent or its API off, DO
   assert.strictEqual(r.content, 'Error: query is empty. Give an author, title words, a year or a DOI.');
 });
 
+test('find_reference after the turn: a digest of the ids for cite, titles clipped to 60, years and DOIs; other texts get the plain stub', async () => {
+  await fresh(BODY);
+  const fn = (query) => ({ name: 'find_reference', arguments: JSON.stringify({ query }) });
+  // the Crossref answer as find_reference wrote it
+  const r = await exec('find_reference', { query: 'doi:10.1038/nphys1234' });
+  assert.strictEqual(T.findReferenceDigest({ query: 'doi:10.1038/nphys1234' }, r.content, 'after the turn'),
+    '[find_reference «doi:10.1038/nphys1234»: Crossref\ndoi:10.1038/nphys1234 Membrane physics (2019)\nthe authors and journals omitted after the turn]');
+  // seven Zotero items: five kept, the rest counted
+  const item = (i) => `zotero:ABCD000${i}: Smith, J.; Lee, K.; Novak, P. (${2010 + i}). Pulsed dipolar spectroscopy of membrane proteins in native lipid bilayers ${i}. Journal of Magnetic Resonance. doi:10.1016/j.jmr.2020.0${i}`;
+  const seven = `7 Zotero items for "smith":\n${[1, 2, 3, 4, 5, 6, 7].map(item).join('\n')}`;
+  const stub = T.readingStub(fn('smith'), seven, 'after the turn');
+  assert.strictEqual(stub, '[find_reference «smith»: 7 Zotero items\n' +
+    [1, 2, 3, 4, 5].map((i) => `zotero:ABCD000${i} Pulsed dipolar spectroscopy of membrane proteins in native … (${2010 + i}) doi:10.1016/j.jmr.2020.0${i}`).join('\n') +
+    '\n2 more items, and the authors and journals omitted after the turn]');
+  assert.ok(stub.length < 700 && seven.length > 1300, `${stub.length} / ${seven.length}`); // about 220 tokens at 3 characters per token
+  // errors and other texts: the plain stub
+  assert.strictEqual(T.readingStub(fn('smith'), 'Error: ' + 'x'.repeat(300), 'after the turn'), '[find_reference: content omitted after the turn; re-read if needed]');
+  assert.strictEqual(T.findReferenceDigest({ query: 'q' }, 'No Zotero items match "q".', 'after the turn'), '');
+});
+
+test('find_reference and the lookup cache: a DOI\'s Crossref record is fetched once per document; Zotero is asked every time; errors are not kept; the grant comes first', async () => {
+  await fresh(BODY);
+  T.lookupCache.clear();
+  const doi = 'doi:10.1038/nphys1234';
+  const r1 = await exec('find_reference', { query: doi });
+  const zoteroCalls = z.calls.length;
+  newTurn(); // a later turn: the result was stubbed, the model asks again (another spelling of the same DOI)
+  const r2 = await exec('find_reference', { query: 'https://doi.org/10.1038/nphys1234' });
+  assert.ok(r2._ok && r2.content === r1.content, r2.content);
+  assert.strictEqual(z.crossrefCalls.length, 1);
+  assert.ok(z.calls.length > zoteroCalls); // the library may have changed: asked again
+  // an unknown DOI is an error: asked again next time
+  await exec('find_reference', { query: '10.9999/missing' });
+  await exec('find_reference', { query: '10.9999/missing' });
+  assert.strictEqual(z.crossrefCalls.length, 3);
+  // without the grant: the refusal, never the cached record
+  state.settings.references = false;
+  newTurn(); as.refsOffer = true; as.quiet = true; // offered (the message named references), nobody to ask: refused
+  const r3 = await exec('find_reference', { query: doi });
+  deq([r3._ok, r3.content], [false, T.REFS_DENIED_TEXT]);
+  state.settings.references = true;
+});
+
 test('cite insert: a new References section at the end (top heading level), the store, exact undo', async () => {
   await fresh([...BODY, { p: 'Methods', style: 'HEADING_2' }, { p: 'We measured.' }]);
   const r = push(await insert(['zotero:ABCD1234'], 'ordered domains'));
@@ -131,8 +171,7 @@ test('cite insert: a new References section at the end (top heading level), the 
   deq(text(), ['Rafts', 'Lipid rafts are ordered domains (Smith & Lee, 2020).', 'Cholesterol matters too.', 'Methods', 'We measured.', 'References',
     'Smith, J., & Lee, K. (2020). Lipid rafts in membranes. Biophysical Journal.']);
   deq(fake.styles('t.0').slice(-3), ['NORMAL_TEXT', 'HEADING_2', 'NORMAL_TEXT']);
-  assert.strictEqual(r.content, 'Done: inserted « (Smith & Lee, 2020)» after «ordered domains» on line 2; References (lines 6–7) lists 1 work.\n' +
-    'Lines 2, 6, 7 now:\n2: Lipid rafts are ordered domains (Smith & Lee, 2020).\n6: References\n7: Smith, J., & Lee, K. (2020). Lipid rafts in membranes. Biophysical Journal.\nThe document now has 7 lines.');
+  assert.strictEqual(r.content, 'Done: inserted « (Smith & Lee, 2020)» after «ordered domains» on line 2; References (lines 6–7) lists 1 work; the document has 7 lines.');
   deq([r._message, r._cardText, r._cardLabel, r._edit.kind], ['Cited Smith & Lee 2020 on line 2', ' (Smith & Lee, 2020)', 'Citation', 'cite']);
   // one batch: the bibliography first (back to front), then the citation
   const posts = fake.log.filter((x) => x.method === 'POST');
@@ -159,7 +198,7 @@ test('cite insert: inside an existing References section (before the next headin
   assert.ok(r._ok, r.content);
   deq(text(), ['Rafts', 'Lipid rafts are ordered domains (Smith & Lee, 2020).', 'Cholesterol matters too.', 'References:',
     'Smith, J., & Lee, K. (2020). Lipid rafts in membranes. Biophysical Journal.', '', 'Appendix', 'Data.']);
-  assert.ok(r.content.includes('; References: (lines 4–5) lists 1 work.'), r.content);
+  assert.ok(r.content.includes('; References: (lines 4–5) lists 1 work;'), r.content);
   // a second work: sorted before Smith; only the new entry is written
   newTurn();
   r = push(await insert(['zotero:EFGH5678'], 'matters too'));
@@ -179,6 +218,18 @@ test('cite insert: inside an existing References section (before the next headin
   assert.ok(u._ok, u.content);
   assert.strictEqual(text()[0], 'Rafts');
   deq(store().marks.length, 2);
+});
+
+test('cite undo after a bare References heading: the heading keeps its own text styles (no named style is sent: Docs would clear them)', async () => {
+  await fresh([...BODY, { p: 'Bibliography', style: 'HEADING_1', fmt: [[0, 12, { italic: true, color: '#FF0000' }]] }]);
+  assert.ok(push(await insert(['doi:10.1038/nphys1234'], 'Cholesterol matters too'))._ok);
+  const u = await exec('undo_last_edit', {});
+  assert.ok(u._ok, u.content);
+  const undo = fake.log.filter((x) => x.method === 'POST').pop().body.requests;
+  assert.ok(!undo.some((q) => q.updateParagraphStyle), JSON.stringify(undo));
+  deq(text(), ['Rafts', 'Lipid rafts are ordered domains.', 'Cholesterol matters too.', 'Bibliography']);
+  deq(fake.styles('t.0').slice(-1), ['HEADING_1']);
+  deq(fake.fmt('t.0').slice(-1), [[[0, 12, { italic: true, color: '#FF0000' }]]]);
 });
 
 test('cite insert: after a bare References heading; DOIs through Crossref (author-date label)', async () => {
@@ -227,15 +278,22 @@ test('numeric style: [n] labels in order of first citation, renumbering, a citat
   deq(text().slice(1, 4), ['Lipid rafts are ordered domains [1].', 'Cholesterol matters too [2].', 'Results are clear [3].']);
   deq(text().slice(-3), ['[1] A. M. Brown, Cholesterol and order. Springer, 2018.', '[2] J. Doe, R. Roe, and P. Poe, “Membrane physics,” Nature Physics, 2019.', '[3] J. Smith and K. Lee, “Lipid rafts in membranes,” Biophys. J., 2020.']);
   assert.ok(r.content.includes('renumbered 1 citation'), r.content);
-  // the user deletes a citation by hand: it cannot be found and keeps its label; refresh renumbers the rest
+  // the user deletes a citation by hand: it cannot be found and keeps its label; refresh renumbers the rest. (Here the
+  // model deletes it in Auto: no card; the writing check refuses the dropped citation once, like any; the row names it.)
   newTurn();
-  push(await allowed(exec('replace_text', { old_text: 'domains [1].', new_text: 'domains.' })));
+  const drop = { old_text: 'domains [1].', new_text: 'domains.' };
+  const once = await exec('replace_text', drop);
+  assert.ok(!once._ok && once.content.startsWith('Refused by a check: the new text drops [1].'), once.content);
+  const dropped = push(await exec('replace_text', drop));
+  assert.ok(dropped._ok && dropped._decision === undefined, dropped.content);
+  assert.strictEqual(dropped._detail, 'Removed citation [1].');
+  assert.strictEqual(T.pendingPreviews.size, 0);
   newTurn();
   r = push(await exec('cite', { ...NULLS, action: 'refresh' }));
   assert.ok(r._ok, r.content);
   deq(text().slice(1, 4), ['Lipid rafts are ordered domains.', 'Cholesterol matters too [1].', 'Results are clear [2].']);
   deq(text().slice(-3), ['[1] J. Doe, R. Roe, and P. Poe, “Membrane physics,” Nature Physics, 2019.', '[2] J. Smith and K. Lee, “Lipid rafts in membranes,” Biophys. J., 2020.', '[3] A. M. Brown, Cholesterol and order. Springer, 2018.']);
-  assert.ok(r.content.startsWith('Done: refreshed the bibliography; References (lines 5–8) lists 3 works; relabeled 2 citations.'), r.content);
+  assert.ok(r.content.startsWith('Done: refreshed the bibliography; References (lines 5–8) lists 3 works; relabeled 2 citations; the document has'), r.content);
   assert.ok(r.content.endsWith('\nNote: 1 earlier citation («[1]») could not be found in the text (edited by hand?) and keeps its label.'), r.content);
   assert.strictEqual(r._message, 'References refreshed (3)');
 });
@@ -251,7 +309,7 @@ test('undo: found again after text above moved it; refused when the citation cha
   await fresh([...BODY]);
   const r2 = push(await insert(['zotero:ABCD1234'], 'ordered domains'));
   newTurn();
-  push(await allowed(exec('replace_text', { old_text: '(Smith & Lee, 2020)', new_text: '(Smith and Lee, 2020)' })));
+  push(await exec('replace_text', { old_text: '(Smith & Lee, 2020)', new_text: '(Smith and Lee, 2020)' })); // Auto: no card
   await assert.rejects(T.undoEdit(r2._edit), /the citation or the References section changed after that edit, so it cannot be undone automatically/);
   // the store changed after the edit (another tab cited): the document is undone, the store kept, with a note
   await fresh([...BODY]);
@@ -274,12 +332,33 @@ test('style change relabels located citations and rewrites the bibliography; und
   assert.ok(r._ok, r.content);
   deq(text().slice(1, 4), ['Lipid rafts are ordered domains [1].', 'Cholesterol matters too.', 'Results are clear [2].']);
   assert.strictEqual(r._message, 'Citation style set to ieee');
-  assert.ok(r.content.startsWith('Done: set the citation style to ieee (numeric); References (lines 5–7) lists 2 works; relabeled 2 citations.'), r.content);
+  assert.ok(r.content.startsWith('Done: set the citation style to ieee (numeric); References (lines 5–7) lists 2 works; relabeled 2 citations; the document has'), r.content);
   deq([store().style, store().numeric], ['ieee', true]);
   const u = await exec('undo_last_edit', {});
   assert.ok(u._ok, u.content);
   deq(text(), before);
   deq([store().style, store().numeric], ['apa', false]);
+});
+
+test('cite undo puts removed text back with its own text styles: a relabeled citation and a rewritten entry', async () => {
+  await fresh([...BODY, { p: 'Results are clear.' }]);
+  push(await insert(['zotero:ABCD1234'], 'Results are clear'));
+  newTurn();
+  push(await insert(['zotero:EFGH5678'], 'ordered domains'));
+  // "Smith" of a citation and a journal name in italics (mixed styles inside the replaced text)
+  newTurn();
+  const F = { bold: null, underline: null, font: null, size: null, color: null, highlight: null, link: null };
+  for (const [old_text, italic] of [['Smith & Lee, 2020)', true], [' & Lee, 2020)', false], ['Biophysical Journal', true]]) {
+    const f = push(await exec('format_text', { ...F, old_text, italic }));
+    assert.ok(f._ok, f.content);
+  }
+  deq(fake.fmt('t.0')[3], [[19, 24, { italic: true }]]);
+  newTurn();
+  const before = { t: text(), f: fake.fmt('t.0') };
+  const r = push(await exec('cite', { ...NULLS, action: 'style', style: 'ieee' }));
+  assert.ok(r._ok, r.content);
+  assert.ok((await exec('undo_last_edit', {}))._ok);
+  deq({ t: text(), f: fake.fmt('t.0') }, before);
 });
 
 test('errors: ids, after_text not found or repeated or in the bibliography, Zotero absent, Docs API changed meanwhile', async () => {

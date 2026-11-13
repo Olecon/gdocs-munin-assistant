@@ -2,7 +2,7 @@
 // Module google-auth.js: Sign in with Google (the built-in OAuth client GOOGLE_CLIENT_ID; tokens: getDocsToken
 // over chrome.identity.launchWebAuthFlow; connectGoogle, switchGoogleAccount, disconnectGoogle,
 // renderGoogleStatus) and the Docs API fetch wrapper (docsApi, docsApiError, resetDocsApiTurn).
-/* global addNotice, DOCS_API_URL, DOCS_SCOPE, el, GOOGLE_ACCOUNT_KEY, GOOGLE_AUTH_URL, GOOGLE_CLIENT_ID,
+/* global DOCS_API_URL, DOCS_SCOPE, el, GOOGLE_ACCOUNT_KEY, GOOGLE_AUTH_URL, GOOGLE_CLIENT_ID,
    GOOGLE_CONNECTED_KEY, GOOGLE_REVOKE_URL, GOOGLE_SIGNIN_SCOPES, GOOGLE_TOKEN_KEY, state, USERINFO_URL */
 /* exported sanitizeGoogleAccount, renderGoogleStatus, connectGoogle, switchGoogleAccount, disconnectGoogle, docsApi,
    resetDocsApiTurn */
@@ -107,13 +107,21 @@ async function runWebAuthFlow(interactive) {
 }
 
 // The token for a Docs API call (never interactive): the stored one while it is valid, else a silent renewal.
-// A token of another client (an earlier build, the removed client-ID setting) is not used.
+// A token of another client (an earlier build, the removed client-ID setting) is not used. Callers that need a renewal
+// at the same time (the live-document poll, a turn's read, the first-run pass) share one silent flow: Chrome may
+// refuse a second concurrent launchWebAuthFlow, which would read as "not signed in".
+let silentRenewal = null;
 async function getDocsToken() {
   const t = await storedWebToken();
   if (t && t.clientId === GOOGLE_CLIENT_ID && t.expiresAt > Date.now()) return t.token;
-  const fresh = await runWebAuthFlow(false);
-  await setWebToken(fresh);
-  return fresh.token;
+  if (!silentRenewal) {
+    silentRenewal = (async () => {
+      const fresh = await runWebAuthFlow(false);
+      await setWebToken(fresh);
+      return fresh.token;
+    })().finally(() => { silentRenewal = null; });
+  }
+  return silentRenewal;
 }
 
 // The signed-in account as stored: { email, name? } or null.
@@ -146,7 +154,7 @@ async function storeGoogleAccount(acc) {
 function renderGoogleStatus(hint, warn) {
   const on = state.googleConnected;
   const acc = on ? state.googleAccount : null;
-  el.googleStatus.title = on ? (acc ? `Signed in as ${acc.email}` : 'Signed in') : 'Not signed in';
+  el.googleStatus.dataset.tip = on ? (acc ? `Signed in as ${acc.email}` : 'Signed in') : 'Not signed in';
   el.googleStatus.classList.toggle('on', on);
   el.googleConnect.classList.toggle('hidden', on);
   el.googleSwitch.classList.toggle('hidden', !on);
@@ -188,8 +196,7 @@ async function signInGoogle(switching) {
   await setWebToken(t);
   await storeGoogleAccount(acc);
   await setGoogleConnected(true);
-  renderGoogleStatus();
-  addNotice(`Signed in with Google${acc ? ` as ${acc.email}` : ''}: from the next message the document is read and edited through the Google Docs API.`);
+  renderGoogleStatus(acc ? `Signed in as ${acc.email}.` : null); // the settings say it; nothing in the chat
   return true;
 }
 
@@ -208,8 +215,7 @@ async function disconnectGoogle() {
   if (t) { await revokeToken(t.token); await setWebToken(null); }
   await storeGoogleAccount(null);
   await setGoogleConnected(false);
-  renderGoogleStatus();
-  addNotice('Signed out of Google: the document is read through the export again.');
+  renderGoogleStatus(); // the settings show Sign in again; nothing in the chat
 }
 
 // HTTP 403 of the Docs API by cause, told apart by the server's message and error reasons: the token
@@ -250,6 +256,8 @@ async function docsApiError(resp) {
   const err = new Error(msg);
   err.status = resp.status;
   err.serverMessage = serverMsg || '';
+  err.google = true; // errorWords: a Docs API answer
+  if (resp.status === 403) err.advice = docs403Advice(serverMsg || '', reasons);
   return err;
 }
 
@@ -283,6 +291,7 @@ async function docsApi(path, { method = 'GET', body } = {}) {
     try { resp = await fetch(DOCS_API_URL + path, init); } catch (e) {
       const err = new Error(`could not reach the Google Docs API (${e.message}).`);
       err.network = true;
+      err.google = true;
       throw err;
     }
     if (resp.status === 401 && attempt === 0) {

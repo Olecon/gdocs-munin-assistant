@@ -1,12 +1,12 @@
 'use strict';
 // Module draft.js: draft mode for long texts, all through the registry: the draft tool (plan / done / end), its
-// prompt line, a beforeTurn line while a plan exists, a finish notice when the last section is written, and the
+// prompt line, a beforeTurn line while a plan exists, a row of the turn when the last section is written, and the
 // plan checklist card in the chat. The plan belongs to one chat: muninDraft:<docId>:<chatId> in
 // chrome.storage.local, { sections: [{ heading, intent, done }], readers: [{ reader, question, section }], updatedAt }.
 // A section counts as written when draft(done) marked it or when the document has its heading (normalized) with at
 // least DRAFT_BODY_WORDS words below it before the next heading (draftStatus): the checklist follows the document,
 // not only the tool. A reader question is open while the section it names is not written.
-/* global addNotice, apiEditing, appendToChat, countWords, el, escapeHtml, registerTools, registerTurnHook, state, storageSet */
+/* global addChatRow, addError, addLateTurnRow, addTurnRow, apiEditing, appendToChat, countWords, el, escapeHtml, registerTools, registerTurnHook, state, storageSet */
 /* exported DRAFT_PREFIX, DRAFT_MAX_SECTIONS, DRAFT_DEF, draftKey, readDraft, draftLine, draftTool, draftStatus, draftHeadingKey,
    openReaderQuestions, refreshDraftCard, endDraftFromCard */
 
@@ -194,7 +194,7 @@ async function draftTool(args, snap) {
     const st = draftStatus(plan, draftSnapDoc(snap));
     const n = st.length;
     const written = st.filter((x) => x.written).length;
-    if (written === n && !wasComplete) snap.draftCompleted = n; // the finish hook's notice
+    if (written === n && !wasComplete) snap.draftCompleted = n; // the finish hook's row
     return { content: written === n
       ? `Marked «${s.heading}» written: all ${n} sections are written. Call draft(end) when the text is complete.`
       : `Marked «${s.heading}» written (${written} of ${n}). ${nextText(st)}`, _ok: true, _message: `done: «${s.heading}» (${written} of ${n})` };
@@ -209,7 +209,7 @@ async function draftTool(args, snap) {
 
 const DRAFT_DEF = { type: 'function', function: {
   name: 'draft',
-  description: 'The outline of a long text written section by section: plan saves it, done marks a section written, end clears it.',
+  description: 'The outline of a long text written section by section: plan saves it, done marks a section written, end clears it. Before plan: name 3–4 readers of the text\'s type (for a paper: reviewer 2, methods expert, newcomer) with 1–2 questions each and ask_user which one to drop (skip this when the user just approved your outline); the kept questions go into readers. Then one section per edit (insert_after_line or replace_section), each marked with done; end when the text is complete.',
   parameters: {
     type: 'object',
     properties: {
@@ -229,7 +229,8 @@ const DRAFT_DEF = { type: 'function', function: {
   },
 } };
 
-// Offered in Auto turns with the Docs API, where the long text is written with insert_after_line / replace_section.
+// Offered in editing turns (Manual and Auto) with the Docs API, where the long text is written with insert_after_line /
+// replace_section.
 const offerDraft = (mode, snap) => !!snap && !snap.side && apiEditing(mode, snap);
 
 function draftSummary(name, args) {
@@ -261,11 +262,11 @@ function draftCard(plan, key) {
   const qs = openReaderQuestions(plan, st);
   const d = document.createElement('div');
   d.className = 'tool-card draft-card';
-  d.innerHTML = `<div class="dc-title">🗂 Draft plan: ${written} of ${draftPlural(st.length, 'section')} written</div>` +
-    `<ul class="dc-list">${st.map((s) => `<li${s.written ? ' class="done"' : ''}>${s.written ? '☑' : '☐'} ${escapeHtml(s.heading)}</li>`).join('')}</ul>` +
+  d.innerHTML = `<div class="dc-title">Draft plan: ${written} of ${draftPlural(st.length, 'section')} written</div>` +
+    `<ul class="dc-list">${st.map((s) => `<li${s.written ? ' class="done" data-tip="Written"' : ''}>${escapeHtml(s.heading)}</li>`).join('')}</ul>` +
     `<div class="dc-next">${next ? `Next: ${escapeHtml(next.heading)}${next.intent ? ` (${escapeHtml(next.intent)})` : ''}` : 'All sections are written.'}</div>` +
     (qs.length ? `<div class="dc-label">Open reader questions</div><ul class="dc-questions">${qs.map((q) => `<li>${escapeHtml(q.reader)}: ${escapeHtml(q.question)} <span class="dc-where">(${escapeHtml(q.section)})</span></li>`).join('')}</ul>` : '') +
-    '<div class="tool-actions"><button class="btn small" type="button" data-draft="end" title="Clear the draft plan of this chat">End draft</button></div>';
+    '<div class="tool-actions"><button class="btn small" type="button" data-draft="end" data-tip="Clear the draft plan">End draft</button></div>';
   d.addEventListener('click', (ev) => {
     const b = ev.target && ev.target.closest ? ev.target.closest('button[data-draft="end"]') : null;
     if (b) endDraftFromCard(key);
@@ -287,11 +288,11 @@ async function refreshDraftCard() {
 
 // End draft on the card: the same as draft(end). Not while an answer runs (its draft calls would race).
 async function endDraftFromCard(key = panelDraftKey()) {
-  if (state.busy) { addNotice('Wait for the answer to finish, then end the draft.'); return false; }
+  if (state.busy) { addError('Wait for the answer to finish, then end the draft.'); return false; }
   const r = await clearDraft(key);
-  if (r.error) { addNotice('The draft plan could not be cleared. Try again.'); return false; }
+  if (r.error) { addError('The draft plan could not be cleared. Try again.'); return false; }
   await refreshDraftCard();
-  addNotice('Draft ended: the plan of this chat is cleared.');
+  addChatRow('Draft ended: the plan of this chat is cleared.'); // a command outside any turn: a row of the chat
   return true;
 }
 
@@ -310,28 +311,29 @@ registerTools([DRAFT_DEF], {
   reading: true, // no document edit: a quiet action-log row, no card, no edit gate
   run: (name, args, snap) => draftTool(args, snap),
   summary: draftSummary,
-  icon: '🗂',
-  prompt: [{ section: 'edit', line: '- draft(action, sections, section, readers): for a text over about two pages, first name 3–4 readers of its type (paper: reviewer 2, methods expert, newcomer; grant: programme officer, neighbouring-field reviewer; thesis: examiner, future student) with 1–2 questions each and ask_user which one to drop; save the outline with draft(plan), the kept questions as readers; write one section per edit (insert_after_line or replace_section), mark it with draft(done); draft(end) when the text is complete.' }],
+  // When to draft; the procedure (readers, one section per edit) is in the definition.
+  prompt: [{ section: 'edit', line: '- A new text over about two pages: write it with draft, section by section.' }],
 });
 registerTurnHook('beforeTurn', async (mode, snap) => {
   if (!offerDraft(mode, snap)) return '';
   const plan = await readDraft(draftChat(snap));
   if (!plan) return '';
-  snap.draftOpen = draftStatus(plan, draftSnapDoc(snap)).filter((s) => !s.written).length; // for the finish notice
+  snap.draftOpen = draftStatus(plan, draftSnapDoc(snap)).filter((s) => !s.written).length; // for the finish row
   return draftLine(plan, draftSnapDoc(snap));
 });
-// The notice when the last section got written in this turn (marked, or found in the document), and the card.
-registerTurnHook('finish', async (userMsg, snap) => {
+// A row of the turn when its last section got written in this turn (marked, or found in the document), and the card.
+// Marked: stored at once (the turn saves and draws it); found by reading the plan: stored once the turn has ended.
+registerTurnHook('finish', async (userMsg, snap, chatCtx) => {
   const docId = snap && snap.docId;
+  const msgs = (chatCtx && chatCtx.messages) || [];
+  const at = msgs[msgs.length - 1] || null;
+  const row = (k) => `Draft complete: ${draftPlural(k, 'section')}`;
   let n = snap && snap.draftCompleted;
-  if (!n && snap && snap.draftOpen > 0) {
+  if (n && at) addTurnRow(row(n), { at });
+  else if (snap && snap.draftOpen > 0) {
     const plan = await readDraft(draftChat(snap));
     const st = plan ? draftStatus(plan, draftPanelDoc()) : [];
-    if (st.length && st.every((s) => s.written)) n = st.length;
+    if (st.length && st.every((s) => s.written)) { n = st.length; addLateTurnRow(row(n), at); }
   }
-  whenDraftIdle(() => {
-    if (state.docId !== docId) return;
-    if (n) addNotice(`Draft complete: ${draftPlural(n, 'section')}`, { sticky: true });
-    refreshDraftCard();
-  });
+  whenDraftIdle(() => { if (state.docId === docId) refreshDraftCard(); });
 });

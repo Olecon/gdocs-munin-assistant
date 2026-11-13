@@ -1,20 +1,26 @@
 'use strict';
-// Module check.js: /check, the pre-submission report (no model call): runCheck reads the open document (the Docs API
-// line model, or the export), runs the deterministic checks of check-text.js (and the open comments through
+// Module check.js: /check, the pre-submission report (no model call but the journal limits of doc-checks.js): runCheck
+// reads the open document (the Docs API line model, or the export), runs the deterministic checks of check-text.js (and the open comments through
 // docs-comments.js), shows a report card grouped by check with a line link per finding (scrollToLine, tab-bridge.js),
 // then, with the References grant, checks the reference list against Crossref and OpenAlex (check-refs.js) with a
-// progress line and Cancel; without it the group has Allow lookups (Chrome's prompt, then the same check). The card is a notice like the self-test's report (not stored, gone on a re-render); Copy
+// progress line and Cancel; without it the group has Allow lookups (Chrome's prompt, then the same check). The card is a report box like the self-test's (not stored, gone on a re-render); Copy
 // report copies its Markdown (checkMarkdown, the self-test's copy action). With the Docs API, an Error or Warning entry whose
 // Crossref record is known has "Replace with the Crossref record" (checkReplaceEntry): one replace_text through runWriteTool
 // (the gate, the verified write, the undo journal), recorded in the chat as a short exchange so its card has Undo.
-/* global addError, addNotice, appendToChat, applyPendingSelection, CHAT_WAIT_STATUS, CK_GROUPS, CK_REF_MAX, checkDocument, ckCitationStyle,
+// The passes of doc-checks.js add their groups (leftovers, consistent forms with Apply, the abstract and limitations,
+// wordy phrases, the journal limits of an attached guidelines file, the density block); a finding of theirs shows its
+// rule id in a fold, and DOC.md's "Checks:" line (checkIgnores) silences rule ids and accepted terms in every group.
+// Apply rewrites the finding's lines in one edit_document call through the same write path as Replace.
+/* global addError, appendToChat, checkIgnores, checkRuleIgnored, DC_BATCH_LINES, DC_GROUPS, docChecks, journalLimitsFor, applyPendingSelection, CHAT_WAIT_STATUS, CK_GROUPS, CK_REF_MAX, checkDocument, ckCitationStyle,
    ckDocument, ckEntryPrefix, ckFormatCsl, ckOpenAlexAllowed, ckSortFindings, ckVerifyReferences, closePopup, commentPlace, crossrefMeta,
    docIdFromUrl, docStatusText, el, escapeHtml, grantReferences, fetchComments, fetchDocText, getDocTab, holdChatLock, OBJECT_CHAR, readChatForTurn,
-   referencesOn, refreshContext, renderHistoryKeepingNotices, resetDocsApiTurn, runWriteTool, saveHistory, scrollToLine, setBusy,
+   referencesOn, refreshContext, renderHistoryKeepingUnstored, resetDocsApiTurn, runWriteTool, saveHistory, scrollToLine, setBusy,
    setStatus, snapshotDocument, state, takeSnapshot, useDocModel */
-/* exported runCheck, checkMarkdown, checkCard, checkReport, CHECK_ICONS, checkReplaceEntry, checkCanReplace */
+/* exported runCheck, checkMarkdown, checkCard, checkReport, CHECK_MARKS, checkReplaceEntry, checkCanReplace, checkGroupList, checkApplyFix,
+   checkFixOps, checkCardWrite, checkItemHtml, checkFindingOf, checkDate */
 
-const CHECK_ICONS = { error: '❌', warning: '⚠️', note: 'ℹ️' };
+// The severity's mark: a coloured dot (CSS .mk); the severity is also written out. No emoji.
+const CHECK_MARKS = { error: 'fail', warning: 'warn', note: 'note' };
 const CHECK_REF_LABEL = { error: 'Error', warning: 'Warning', unverified: 'Unverified', suspect: 'Suspect' };
 const CHECK_REF_SEVERITY = { error: 'error', warning: 'warning', unverified: 'note', suspect: 'warning' };
 const checkDate = (ms) => { const d = new Date(ms); const p = (x) => String(x).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
@@ -35,12 +41,31 @@ async function checkComments(model) {
 }
 
 // The report of a document source ({ model } or { text, format }): { at, title, docId, format, groups, entries, budget,
-// lineText (line -> text, for the line links), reflist }. Pure apart from the comments, which the caller passes.
-function checkReport(src, { title = '', docId = '', instructions = '', comments, at = Date.now() } = {}) {
+// density, lineText (line -> text, for the line links and Apply), reflist }. Pure apart from the comments and the journal
+// limits (journalLimitsFor's record), which the caller passes. DOC.md's "Checks:" line silences rule ids in every group.
+function checkReport(src, { title = '', docId = '', instructions = '', comments, limits = null, at = Date.now() } = {}) {
   const doc = ckDocument(src);
   const res = checkDocument(doc, { instructions, comments });
+  const ignore = checkIgnores(instructions);
+  const extra = docChecks(doc, { model: src.model || null, instructions, terms: ignore.terms, limits, entries: res.entries, budget: res.budget });
+  const groups = { ...res.groups, ...extra.groups };
+  for (const id of Object.keys(groups)) groups[id] = groups[id].filter((f) => !checkRuleIgnored(ignore.rules, f.rule || f.kind));
+  const density = checkRuleIgnored(ignore.rules, 'density') ? null : extra.density;
   const lineText = new Map(doc.lines.map((l) => [l.line, l.text]));
-  return { at, title, docId, format: doc.format, ...res, lineText, reflist: { state: 'off', done: 0, total: 0, results: [] } };
+  return { at, title, docId, format: doc.format, ...res, groups, density, lineText, reflist: { state: 'off', done: 0, total: 0, results: [] } };
+}
+// The report's groups in order: check-text.js's, each followed by the doc-checks.js groups placed after it (an optional
+// group only when its pass ran: report.groups has it).
+function checkGroupList(report) {
+  const out = [];
+  const place = (id) => {
+    for (const g of DC_GROUPS.filter((x) => x.after === id)) {
+      if (!g.optional || (report && report.groups[g.id])) out.push(g);
+      place(g.id);
+    }
+  };
+  for (const g of CK_GROUPS) { out.push(g); place(g.id); }
+  return out;
 }
 
 // The reference-list group from the lookup state: the findings of the entries that do not match, a summary note.
@@ -71,10 +96,12 @@ function checkRefFindings(rl) {
 const checkEntryLabel = (e) => `${e.n != null ? `[${e.n}] ` : ''}${e.surname || e.text.slice(0, 30)}${e.year ? ` (${e.year})` : ''}`;
 // An Error or Warning entry whose Crossref record is known (a Crossref record, or a found work with a DOI) can be replaced.
 const checkCanReplace = (r) => (r.verdict === 'error' || r.verdict === 'warning') && !!r.work && (r.work.source === 'Crossref' ? !!r.work.csl : !!r.work.doi);
-const checkGroupFindings = (report, id) => (id === 'reflist' ? checkRefFindings(report.reflist) : report.groups[id] || []);
+// The density block is no list of findings: it is drawn on its own and not counted.
+const checkGroupFindings = (report, id) => (id === 'reflist' ? checkRefFindings(report.reflist) : id === 'density' ? [] : report.groups[id] || []);
+const checkDensityLines = (report) => (report.density ? report.density.lines : []);
 function checkCounts(report) {
   const n = { error: 0, warning: 0, note: 0 };
-  for (const g of CK_GROUPS) for (const f of checkGroupFindings(report, g.id)) n[f.severity]++;
+  for (const g of checkGroupList(report)) for (const f of checkGroupFindings(report, g.id)) n[f.severity]++;
   return n;
 }
 const checkSummary = (report) => { const n = checkCounts(report); return `${checkPlural(n.error, 'error')}, ${checkPlural(n.warning, 'warning')}, ${checkPlural(n.note, 'note')}`; };
@@ -87,48 +114,74 @@ function checkMarkdown(report) {
   const note = checkFormatNote(report);
   if (note) out.push(`- ${note}`);
   out.push('', `**Summary:** ${checkSummary(report)}`);
-  for (const g of CK_GROUPS) {
+  for (const g of checkGroupList(report)) {
     const list = checkGroupFindings(report, g.id);
     out.push('', `### ${g.title}`, '');
+    if (g.id === 'density') {
+      const lines = checkDensityLines(report);
+      if (!lines.length) out.push('- Nothing to measure (no section of 40 words or more).');
+      for (const d of lines) out.push(`${d.quote ? '  ' : ''}- ${d.text}`);
+      continue;
+    }
     if (g.id === 'reflist' && report.reflist.state === 'running') out.push(`- Checking ${report.reflist.done} of ${report.reflist.total}…`);
     if (!list.length) { if (!(g.id === 'reflist' && report.reflist.state === 'running')) out.push('- Nothing found.'); continue; }
-    for (const f of list) out.push(`- ${CHECK_ICONS[f.severity]} ${f.severity}${f.line ? ` · line ${f.line}` : ''} · ${f.text}`);
+    for (const f of list) out.push(`- ${f.severity}${f.line ? ` · line ${f.line}` : ''} · ${f.text}${f.rule ? ` (${f.rule})` : ''}`);
   }
   return out.join('\n') + '\n';
 }
 
 function checkItemHtml(f, report) {
-  const link = f.line ? `<button type="button" class="ck-line" data-line="${f.line}" title="Show line ${f.line} in the document">line ${f.line}</button> ` : '';
+  const link = f.line ? `<button type="button" class="ck-line" data-line="${f.line}" data-tip="Show in the document">line ${f.line}</button> ` : '';
   const replace = f.replace != null && report && report.format === 'docs-api'
-    ? ` <button type="button" class="btn small ck-replace" data-ref="${f.replace}"${f.replaced ? ' disabled' : ''} title="${f.severity === 'error' ? 'Rewrite this entry as the work its DOI resolves to' : 'Rewrite this entry from its Crossref record'} (one edit; Undo reverts it)">${f.replaced ? 'Replaced' : 'Replace with the Crossref record'}</button>` : '';
-  const allow = f.kind === 'ref-off' ? ' <button type="button" class="btn small ck-allow" title="Chrome asks once; you can remove the access later in chrome://extensions">Allow lookups</button>' : '';
-  return `<div class="ck-item ck-${f.severity}"><span class="ck-sev" title="${f.severity}">${CHECK_ICONS[f.severity]}</span> ${link}<span class="ck-text">${escapeHtml(f.text)}</span>${replace}${allow}</div>`;
+    ? ` <button type="button" class="btn small ck-replace" data-ref="${f.replace}"${f.replaced ? ' disabled' : ''} data-tip="${f.severity === 'error' ? 'Rewrite from the DOI' : 'Rewrite from Crossref'}">${f.replaced ? 'Replaced' : 'Replace with the Crossref record'}</button>` : '';
+  const allow = f.kind === 'ref-off' ? ' <button type="button" class="btn small ck-allow" data-tip="Chrome asks once">Allow lookups</button>' : '';
+  const where = f._ref ? ` data-group="${f.group}" data-i="${f._ref}"` : '';
+  const apply = f.fix && f._ref && report && report.format === 'docs-api'
+    ? ` <button type="button" class="btn small ck-apply"${where}${f.applied ? ' disabled' : ''}>${f.applied ? 'Applied' : 'Apply'}</button>` : '';
+  // A finding of doc-checks.js: its text opens a fold with the details and the rule id (the name DOC.md's Checks line takes).
+  const text = f.rule
+    ? `<button type="button" class="ck-text ck-fold-toggle"${where} aria-expanded="${f._open ? 'true' : 'false'}">${escapeHtml(f.text)}</button>`
+    : `<span class="ck-text">${escapeHtml(f.text)}</span>`;
+  const fold = f.rule && f._open
+    ? `<div class="ck-fold">${(f.detail || []).map((d) => `<div>${escapeHtml(d)}</div>`).join('')}<div class="ck-rule">Rule: ${escapeHtml(f.rule)}</div></div>` : '';
+  return `<div class="ck-item ck-${f.severity}"><span class="ck-sev mk ${CHECK_MARKS[f.severity]}" role="img" aria-label="${f.severity}" data-tip="${f.severity}"></span> ${link}${text}${replace}${allow}${apply}${fold}</div>`;
 }
+function checkDensityHtml(report) {
+  const lines = checkDensityLines(report);
+  if (!lines.length) return '<div class="ck-item ck-none">Nothing to measure (no section of 40 words or more).</div>';
+  return lines.map((d) => `<div class="ck-item ck-density${d.quote ? ' ck-quote' : ''}">${d.quote ? '' : `<button type="button" class="ck-line" data-line="${d.line}" data-tip="Show in the document">line ${d.line}</button> `}${escapeHtml(d.text)}</div>`).join('');
+}
+// The finding a button of the card names (data-group, data-i: its index + 1 in the group).
+const checkFindingOf = (report, btn) => (report.groups[btn.dataset.group] || [])[Number(btn.dataset.i) - 1] || null;
 function checkInnerHtml(report) {
-  const head = `<div class="ck-head">☑️ Check · ${escapeHtml(checkDate(report.at))} · «${escapeHtml(report.title)}» · ${escapeHtml(CHECK_FORMAT_LABEL[report.format])}</div>`;
+  const head = `<div class="ck-head">Check · ${escapeHtml(checkDate(report.at))} · «${escapeHtml(report.title)}» · ${escapeHtml(CHECK_FORMAT_LABEL[report.format])}</div>`;
   const note = checkFormatNote(report);
-  const groups = CK_GROUPS.map((g) => {
+  const groups = checkGroupList(report).map((g) => {
     const list = checkGroupFindings(report, g.id);
+    list.forEach((f, i) => { if (f.rule && report.groups[g.id] === list) f._ref = i + 1; });
     const running = g.id === 'reflist' && report.reflist.state === 'running';
     const progress = running ? `<div class="ck-progress">Checking ${report.reflist.done} of ${report.reflist.total}… <button type="button" class="btn small ck-cancel">Cancel</button></div>` : '';
-    const body = list.length ? list.map((f) => checkItemHtml(f, report)).join('') : running ? '' : '<div class="ck-item ck-none">✓ Nothing found.</div>';
+    const body = g.id === 'density' ? checkDensityHtml(report)
+      : list.length ? list.map((f) => checkItemHtml(f, report)).join('') : running ? '' : '<div class="ck-item ck-none">Nothing found.</div>';
     const n = list.filter((f) => f.severity !== 'note').length;
     return `<div class="ck-group" data-group="${g.id}"><div class="ck-group-head">${escapeHtml(g.title)}${n ? ` <span class="ck-count">${n}</span>` : ''}</div>${progress}${body}</div>`;
   }).join('');
   return head + (note ? `<div class="ck-sub">${escapeHtml(note)}</div>` : '') + groups +
     `<div class="ck-summary">${escapeHtml(checkSummary(report))}</div>` +
-    '<div class="tool-actions ck-actions"><button class="btn small" type="button" data-act="copy-selftest" title="Copy the whole report as Markdown">Copy report</button></div>';
+    '<div class="tool-actions ck-actions"><button class="btn small" type="button" data-act="copy-selftest" data-tip="Copy as Markdown">Copy report</button></div>';
 }
-// (Re)paints the card from the report; the Markdown for Copy report follows.
+// (Re)paints the card from the report; the Markdown for Copy report follows. A card of another report (/polish) paints
+// itself (card._paint), so checkCardWrite serves both.
 function checkPaint(card) {
+  if (card._paint) { card._paint(card); return; }
   card.innerHTML = checkInnerHtml(card._check);
   card._report = checkMarkdown(card._check);
 }
-// The report card in the chat: a notice (renderHistory drops it), never stored. A line link scrolls the Docs tab to
+// The report card in the chat: a report box (renderHistory drops it), never stored. A line link scrolls the Docs tab to
 // its line (on click only); Cancel stops the reference lookups (card._cancel).
 function checkCard(report) {
   const d = document.createElement('div');
-  d.className = 'msg notice check-report';
+  d.className = 'msg report check-report';
   d._check = report;
   checkPaint(d);
   d.addEventListener('click', (ev) => {
@@ -139,7 +192,11 @@ function checkCard(report) {
     const replace = ev.target.closest && ev.target.closest('button.ck-replace');
     if (replace && !replace.disabled) { checkReplaceEntry(d, Number(replace.dataset.ref), replace); return; }
     const allow = ev.target.closest && ev.target.closest('button.ck-allow');
-    if (allow && !allow.disabled) checkAllowLookups(d, allow);
+    if (allow && !allow.disabled) { checkAllowLookups(d, allow); return; }
+    const fold = ev.target.closest && ev.target.closest('button.ck-fold-toggle');
+    if (fold) { const f = checkFindingOf(report, fold); if (f) { f._open = !f._open; checkPaint(d); } return; }
+    const apply = ev.target.closest && ev.target.closest('button.ck-apply');
+    if (apply && !apply.disabled) { const f = checkFindingOf(report, apply); if (f) checkApplyFix(d, f, apply); }
   });
   return appendToChat(d);
 }
@@ -188,7 +245,10 @@ async function runCheck() {
     const model = state.docFormat === 'docs-api' ? state.docModel : null;
     const comments = model ? await checkComments(model) : undefined;
     const src = model ? { model } : { text: state.docText, format: state.docFormat };
-    const report = checkReport(src, { title: state.docTitle || '', docId: state.docId || '', instructions: state.docInstructions || '', comments });
+    // An attached author-guidelines file: its limits (one quiet request to the chat's provider when not stored yet).
+    const limits = await journalLimitsFor({ docId: state.docId, files: state.docFiles, snap: takeSnapshot(), signal: abort.signal, onStatus: setStatus });
+    if (abort.signal.aborted) return null;
+    const report = checkReport(src, { title: state.docTitle || '', docId: state.docId || '', instructions: state.docInstructions || '', comments, limits });
     card = checkCard(report);
     card._cancel = () => abort.abort();
     if (referencesOn() || !report.entries.length) await checkReferenceList(card, abort.signal);
@@ -211,7 +271,7 @@ async function runCheck() {
 // Allow lookups (the reference-list group without the grant): Chrome's prompt first (it needs the click's user gesture),
 // then the list is checked as /check does, busy, with Stop and Cancel. Returns whether the list was checked.
 async function checkAllowLookups(card, btn) {
-  if (state.busy) { addNotice('Wait until the current answer is finished, then click Allow lookups again.'); return false; }
+  if (state.busy) { addError('Wait until the current answer is finished, then click Allow lookups again.'); return false; }
   btn.disabled = true;
   const rl = card._check.reflist;
   if (!(await grantReferences())) {
@@ -250,16 +310,15 @@ function checkEntryLine(model, entry) {
   const same = model.lines.filter((l) => flat(l) === want);
   return same.length === 1 ? same[0] : null;
 }
-// The click: owns the chat like a turn (the chat lock, the stored history), reads the document, rewrites the entry's line
-// as a plain-text entry in the document's dominant style (keeping its number) with replace_text, and records the edit as
-// a user request, the call and its result, and a one-line answer, so the edit card has Undo and the model sees what
-// happened. Returns true when the edit was made.
-async function checkReplaceEntry(card, i, btn) {
+// A write from the card: owns the chat like a turn (the chat lock, the stored history), reads the document, lets
+// job.plan(model) build the call ({ name, args, user, answer }; it throws with what to do when the document changed),
+// runs it through runWriteTool (the gate, the verified write, the undo journal) and records it as a user request, the
+// call and its result, and a one-line answer, so the edit card has Undo and the model sees what happened. job: { plan,
+// done, label (the error prefix, "Replace" / "Apply"), busy (the status line) }. Returns true when the edit was made.
+async function checkCardWrite(card, btn, job) {
   const report = card._check;
-  const r = report.reflist.results[i];
-  if (!r || r.replaced || !checkCanReplace(r)) return false;
-  if (state.busy || state.undoing) { addNotice('Wait until the current answer is finished, then click Replace again.'); return false; }
-  if (!state.googleConnected) { addNotice('Connect a Google account in Settings to edit the document.'); return false; }
+  if (state.busy || state.undoing) { addError(`Wait until the current answer is finished, then click ${job.label} again.`); return false; }
+  if (!state.googleConnected) { addError('Connect a Google account in Settings to edit the document.', true); return false; }
   const snap = takeSnapshot();
   setBusy(true);
   const abort = new AbortController();
@@ -281,34 +340,29 @@ async function checkReplaceEntry(card, i, btn) {
     snapshotDocument(snap);
     snap.chatCtx = { docId, chatId, messages: state.messages };
     if (snap.docFormat !== 'docs-api' || !snap.model) throw new Error('The document could not be read through the Google Docs API. Check the Google account in Settings.');
-    const line = checkEntryLine(snap.model, r.entry);
-    if (!line) throw new Error('The reference entry changed since the check. Run /check again.');
-    const csl = r.work.csl || await crossrefMeta(r.work.doi);
-    const style = ckCitationStyle(report.entries);
-    const args = { old_text: line.text, new_text: ckEntryPrefix(line.text) + ckFormatCsl(csl, style) };
+    const call = await job.plan(snap.model);
     const id = 'check_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    setStatus('Replacing the reference entry…');
+    setStatus(job.busy);
     // The number and provenance checks refuse a first write that drops or brings numbers, and let the identical call
-    // through: the click is that decision (the new numbers come from the Crossref record the user chose).
+    // through: the click is that decision (Replace: the numbers of the Crossref record; Apply: "three" for "3").
     let res = null;
-    for (let k = 0; k < 3 && (!res || /^Refused by a check/.test(String(res.content))); k++) res = await runWriteTool('replace_text', args, snap, id, { args });
+    for (let k = 0; k < 3 && (!res || /^Refused by a check/.test(String(res.content))); k++) res = await runWriteTool(call.name, call.args, snap, id, { args: call.args });
     if (!res._ok) throw new Error(String(res.content || res._message).replace(/^Error: /, ''));
-    const label = checkEntryLabel(r.entry);
-    const tc = { id, type: 'function', function: { name: 'replace_text', arguments: JSON.stringify(args) } };
+    const tc = { id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } };
     state.messages.push(
-      { role: 'user', content: `Replace the reference entry ${label} (line ${line.line}) with its Crossref record.` },
+      { role: 'user', content: call.user },
       { role: 'assistant', content: '', tool_calls: [tc] },
       { role: 'tool', tool_call_id: id, ...res },
-      { role: 'assistant', content: `Replaced the reference entry ${label} with its Crossref record (${style === 'numeric' ? 'numeric' : 'author-year'} style, from the /check report).` },
+      { role: 'assistant', content: call.answer },
     );
     await saveHistory(snap.chatCtx);
     useDocModel(snap.model);
-    r.replaced = true;
+    job.done();
     done = true;
-    renderHistoryKeepingNotices();
+    renderHistoryKeepingUnstored();
     return true;
   } catch (e) {
-    if (!(e && e.name === 'AbortError')) addError(`Replace: ${e.message || e}`);
+    if (!(e && e.name === 'AbortError')) addError(`${job.label}: ${e.message || e}`);
     return false;
   } finally {
     if (release) release();
@@ -320,4 +374,70 @@ async function checkReplaceEntry(card, i, btn) {
     applyPendingSelection();
     setStatus(docStatusText(), state.docText == null);
   }
+}
+
+// Replace with the Crossref record: rewrites the entry's line as a plain-text entry in the document's dominant style
+// (keeping its number) with replace_text.
+async function checkReplaceEntry(card, i, btn) {
+  const report = card._check;
+  const r = report.reflist.results[i];
+  if (!r || r.replaced || !checkCanReplace(r)) return false;
+  return checkCardWrite(card, btn, {
+    label: 'Replace', busy: 'Replacing the reference entry…',
+    plan: async (model) => {
+      const line = checkEntryLine(model, r.entry);
+      if (!line) throw new Error('The reference entry changed since the check. Run /check again.');
+      const csl = r.work.csl || await crossrefMeta(r.work.doi);
+      const style = ckCitationStyle(report.entries);
+      const label = checkEntryLabel(r.entry);
+      return {
+        name: 'replace_text', args: { old_text: line.text, new_text: ckEntryPrefix(line.text) + ckFormatCsl(csl, style) },
+        user: `Replace the reference entry ${label} (line ${line.line}) with its Crossref record.`,
+        answer: `Replaced the reference entry ${label} with its Crossref record (${style === 'numeric' ? 'numeric' : 'author-year'} style, from the /check report).`,
+      };
+    },
+    done: () => { r.replaced = true; },
+  });
+}
+
+// ---- Apply: a mechanical fix of a doc-checks.js finding -------------------------------------------------------------------
+// The edit_document operations of a fix on the model read now: one replace per line (the whole line as old_text, the
+// line given, so equal lines elsewhere do not matter; precise replacement rewrites only the changed words), at most
+// DC_BATCH_LINES lines. The line must read as in the report, else { error }. { ops, count, lines } otherwise.
+function checkFixOps(model, fix, lineText) {
+  const flat = (t) => String(t || '').replaceAll('\u000b', ' ').replace(new RegExp(OBJECT_CHAR, 'g'), ' ');
+  const byLine = new Map();
+  for (const e of fix.edits) { if (!byLine.has(e.line)) byLine.set(e.line, []); byLine.get(e.line).push(e); }
+  const lines = [...byLine.keys()].sort((a, b) => a - b).slice(0, DC_BATCH_LINES);
+  const ops = [];
+  let count = 0;
+  for (const n of lines) {
+    const l = model.lines[n - 1];
+    if (!l || flat(l.text) !== lineText.get(n)) return { error: `Line ${n} changed since the check. Run /check again.` };
+    let text = l.text;
+    for (const e of byLine.get(n).slice().sort((a, b) => b.at - a.at)) { text = text.slice(0, e.at) + e.to + text.slice(e.at + e.len); count++; }
+    if (text !== l.text) ops.push({ op: 'replace', old_text: l.text, new_text: text, line: n });
+  }
+  return { ops, count, lines, more: byLine.size - lines.length };
+}
+// The Apply button: the fix as one edit_document call through checkCardWrite. Returns true when it was written.
+function checkApplyFix(card, f, btn) {
+  if (!f || !f.fix || f.applied) return Promise.resolve(false);
+  const report = card._check;
+  return checkCardWrite(card, btn, {
+    label: 'Apply', busy: 'Applying the fix…',
+    plan: async (model) => {
+      const r = checkFixOps(model, f.fix, report.lineText);
+      if (r.error) throw new Error(r.error);
+      if (!r.ops.length) throw new Error('Nothing to change: the document already reads so. Run /check again.');
+      const where = `${r.lines.length === 1 ? 'line' : 'lines'} ${r.lines.join(', ')}`;
+      const more = r.more ? `; ${r.more} more ${r.more === 1 ? 'line' : 'lines'} left, run /check again for them` : '';
+      return {
+        name: 'edit_document', args: { operations: r.ops },
+        user: `Unify ${f.fix.label} on ${where} (${f.rule}, from the /check report).`,
+        answer: `Unified ${f.fix.label}: ${r.count} ${r.count === 1 ? 'change' : 'changes'} on ${where}${more}.`,
+      };
+    },
+    done: () => { f.applied = true; },
+  });
 }

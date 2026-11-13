@@ -8,7 +8,7 @@ const path = require('path');
 
 const BENCH_DIR = path.join(__dirname, '..', 'fixtures', 'bench');
 // The implemented checks, in report order; a defect with planned: true names a check the panel does not have yet.
-const CHECKS = ['tells', 'hidden', 'typography', 'citations', 'claimDrift', 'provenance', 'check'];
+const CHECKS = ['tells', 'hidden', 'typography', 'language', 'citations', 'claimDrift', 'provenance', 'check'];
 const REFS_HEADING_RE = /^(?:references|bibliography|literature cited|список литературы|литература)\s*$/iu;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -92,6 +92,18 @@ function typographyFindings(T, text) {
     const note = T.typographyNote('', sp.text, habits);
     if (!note) continue;
     for (const [kind, re] of TYPO_PARTS) if (re.test(note)) out.push({ check: 'typography', kind, start: sp.start, end: sp.end, text: note });
+  }
+  return out;
+}
+
+// A sentence in the other language inside a paragraph, as the language check notes it for new text (src/lang-check.js):
+// langOddSentences per line against the line's own language; lines too short or too mixed to judge are skipped.
+function languageFindings(T, text) {
+  const out = [];
+  for (const line of lineSpans(text)) {
+    for (const sp of T.langOddSentences(line.text, T.langOf(line.text))) {
+      out.push({ check: 'language', kind: 'lang-sentence', start: line.start + sp.start, end: line.start + sp.end, text: sp.text });
+    }
   }
   return out;
 }
@@ -199,6 +211,7 @@ function runChecks(T, bench) {
     add(d.file, tellFindings(T, d.text));
     add(d.file, hiddenFindings(T, d.text));
     add(d.file, typographyFindings(T, d.text));
+    add(d.file, languageFindings(T, d.text));
     add(d.file, citationFindings(T, d.text));
     add(d.file, checkFindings(T, d.text));
     if (d.revised) {
@@ -250,12 +263,14 @@ function score(bench, findings) {
 // arguments } }] }, { role: 'tool', tool_call_id, content, _ok }. One turn = a user message (not _auto) and what
 // follows it up to the next one.
 const WRITE_TOOLS = ['replace_selection', 'replace_text', 'replace_all', 'replace_section', 'insert_after_line', 'delete_lines',
-  'format_text', 'format_lines', 'undo_last_edit', 'table', 'page_parts', 'cite', 'draft'];
-const READ_TOOLS = ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'read_comments',
+  'format_text', 'format_lines', 'edit_document', 'undo_last_edit', 'table', 'page_parts', 'cite', 'draft'];
+// Saved transcripts of earlier versions use the old reading tools (get_outline, read_lines, read_formatting, read_comments).
+const READ_TOOLS = ['read_document', 'get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'read_comments',
   'open_document', 'document_changes', 'find_reference'];
 // A request to check, review or find, with no request to change anything.
 const CHECK_RE = /\b(?:check|review|proofread|find|list|look (?:for|at|over|through)|spot|flag|scan|audit|are there|is there|what(?:'s| is| are) wrong)\b|провер|найд|найт|посмотр|перечисл|укаж|есть ли|какие ошибки/iu;
-const EDIT_RE = /\b(?:fix|correct|rewrite|edit|change|replace|improve|revise|update|apply|remove|delete|shorten|polish|rephrase|make)\b|исправ|перепиш|замен|отредакт|улучш|сократ|удал|поправ|перефраз|сделай/iu;
+// "add", "insert" and "cite" are edit verbs: "add a section with a numbered list", "find a source and cite it".
+const EDIT_RE = /\b(?:fix|correct|rewrite|edit|change|replace|improve|revise|update|apply|remove|delete|shorten|polish|rephrase|make|add|insert|cite)\b|исправ|перепиш|замен|отредакт|улучш|сократ|удал|поправ|перефраз|сделай|добав|встав/iu;
 // "Do not edit anything", "without changing", "ничего не меняй": a request not to edit is not an edit request.
 const NO_EDIT_RE = /\b(?:do not|don't|without|never)\s+(?:\w+\s+){0,2}?(?:edit|chang|rewrit|fix|modif|correct)\w*|(?:ничего )?не (?:меняй|меняйте|правь|исправляй|редактируй|трогай)\p{L}*/giu;
 const isCheckOnly = (text) => {
@@ -313,5 +328,5 @@ function gradeTranscript(transcript, opts = {}) {
   }));
 }
 
-module.exports = { BENCH_DIR, CHECKS, loadBench, runChecks, score, lineSpans, changedPairs, tellFindings, hiddenFindings, typographyFindings,
+module.exports = { BENCH_DIR, CHECKS, loadBench, runChecks, score, lineSpans, changedPairs, tellFindings, hiddenFindings, typographyFindings, languageFindings,
   citationFindings, checkFindings, driftFindings, provenanceFindings, isCheckOnly, splitTurns, gradeRewrote, gradeClaimedChecks, gradeTranscript, WRITE_TOOLS, READ_TOOLS };

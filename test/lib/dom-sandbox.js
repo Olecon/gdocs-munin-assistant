@@ -11,11 +11,10 @@ const { JSDOM, VirtualConsole } = require('jsdom');
 // Console output of the page goes to the test's console; jsdom's "not implemented" notices (window.focus
 // and the like) are dropped, uncaught exceptions in the page are kept.
 const quietConsole = () => new VirtualConsole().forwardTo(console, { jsdomErrors: ['unhandled-exception'] });
-const { ROOT, SCRIPTS, TEST_CLIENT_ID, panelSource } = require('./sandbox');
+const { ROOT, TEST_CLIENT_ID, runPanelScripts, compiledScript, fileText, withConsts, assertConstsUsed, fakeIndexedDB } = require('./sandbox');
+const { installLegacySettings } = require('./legacy-settings');
 
 const HTML = fs.readFileSync(path.join(ROOT, 'sidepanel.html'), 'utf8');
-const sources = new Map(); // file -> source text (read once per process)
-const source = (f) => { if (!sources.has(f)) sources.set(f, fs.readFileSync(path.join(ROOT, f), 'utf8')); return sources.get(f); };
 
 // chrome.storage.local over a plain object, plus session storage, tabs, runtime and scripting stubs
 // (the same surface as sandbox.js). Tests replace single methods as they need.
@@ -71,7 +70,7 @@ function makeMatchMedia(window, light) {
   return { matchMedia, media };
 }
 
-// Timers that do not keep the test process alive (notices fade after 10 s); close() clears them all.
+// Timers that do not keep the test process alive; close() clears them all.
 function installTimers(window) {
   const live = new Set();
   window.setTimeout = (fn, ms, ...a) => {
@@ -84,6 +83,64 @@ function installTimers(window) {
   window.requestAnimationFrame = (fn) => window.setTimeout(() => fn(Date.now()), 0);
   window.cancelAnimationFrame = (t) => window.clearTimeout(t);
   return () => { for (const t of live) clearTimeout(t); live.clear(); };
+}
+
+// A manual clock: setTimeout / setInterval / clearTimeout / clearInterval and now() on a time that only
+// clock.advance(ms) moves, so what a test sees depends on the code's own time and not on how fast the machine runs it
+// (a descheduled process no longer stretches a 25 ms window). advance(ms) first lets the promises and the mutation
+// records already queued settle (a setImmediate turn: jsdom delivers MutationObserver records on a microtask), then
+// runs every timer due within ms in the order of its time (ties: the one scheduled first), each at its own time and
+// followed by a settled turn, so a message a timer sends is logged before the next timer runs; then the time is the end
+// of the window. clock.pending(): the delays from now of the timers waiting (soonest first); clock.clear(): drops them.
+function manualClock(start = Date.UTC(2026, 10, 1)) {
+  let now = start;
+  let seq = 0;
+  const timers = new Map(); // id -> { at, order, fn, args, every }
+  const add = (fn, ms, args, every) => {
+    const id = ++seq;
+    timers.set(id, { at: now + Math.max(0, Number(ms) || 0), order: id, fn, args, every });
+    return id;
+  };
+  const settle = () => new Promise((r) => setImmediate(r));
+  const due = (end) => {
+    let hit = null;
+    for (const [id, t] of timers) if (t.at <= end && (!hit || t.at < hit.t.at || (t.at === hit.t.at && t.order < hit.t.order))) hit = { id, t };
+    return hit;
+  };
+  return {
+    now: () => now,
+    setTimeout: (fn, ms, ...args) => add(fn, ms, args, 0),
+    setInterval: (fn, ms, ...args) => add(fn, ms, args, Math.max(1, Number(ms) || 0)),
+    clearTimeout: (id) => { timers.delete(id); },
+    clearInterval: (id) => { timers.delete(id); },
+    pending: () => [...timers.values()].sort((a, b) => a.at - b.at || a.order - b.order).map((t) => t.at - now),
+    clear: () => timers.clear(),
+    async advance(ms) {
+      const end = now + ms;
+      await settle();
+      for (let n = 0, hit = due(end); hit; hit = due(end), n++) {
+        if (n >= 10000) throw new Error('clock.advance: more than 10000 timers ran (a timer loop?)');
+        const { id, t } = hit;
+        now = t.at;
+        if (t.every) Object.assign(t, { at: t.at + t.every, order: ++seq }); else timers.delete(id);
+        t.fn(...t.args);
+        await settle();
+      }
+      now = end;
+      await settle();
+    },
+  };
+}
+
+// The page's timers (and the animation frames over them) and its Date.now on a manual clock (loadContent({ clock: true
+// })); new Date() keeps the wall clock. Returns the clock.
+function installClock(window) {
+  const clock = manualClock();
+  window.Date.now = clock.now;
+  Object.assign(window, { setTimeout: clock.setTimeout, setInterval: clock.setInterval, clearTimeout: clock.clearTimeout, clearInterval: clock.clearInterval });
+  window.requestAnimationFrame = (fn) => clock.setTimeout(() => fn(clock.now()), 0);
+  window.cancelAnimationFrame = clock.clearTimeout;
+  return clock;
 }
 
 // Browser APIs jsdom lacks and the scripts use: pointer capture, clipboard events with a DataTransfer.
@@ -107,11 +164,13 @@ function polyfill(window) {
 
 // Loads the panel. opts: storage (initial chrome.storage.local items), hash ('#tabId=7' for overlay
 // mode), light (the system prefers the light theme), settle (ms to let init() finish), googleClientId (the
-// built-in OAuth client, as in sandbox.js).
+// built-in OAuth client, as in sandbox.js), docInit (the first-run document instructions may run, as in sandbox.js), autoTitle (the automatic chat title may run, as in sandbox.js),
+// chatProbe (explicit checks send the chat probe, as in sandbox.js),
+// legacySettings (the per-type settings shape of earlier versions, as in sandbox.js).
 // Returns { dom, window, document, ctx, T, get, run, state, PROVIDERS, el, storage, chrome, media,
 // clipboard, close }. ctx is the window (assign ctx.fetch to mock the network); T.<name> evaluates any
 // top-level name of the panel scripts; clipboard.writes lists the texts copied.
-async function load({ storage: initial = {}, hash = '', light = false, settle = 30, googleClientId = TEST_CLIENT_ID } = {}) {
+async function load({ storage: initial = {}, hash = '', light = false, settle = 30, googleClientId = TEST_CLIENT_ID, docInit = false, autoTitle = false, chatProbe = false, legacySettings = true, consts = null } = {}) {
   const dom = new JSDOM(HTML, { url: 'chrome-extension://testextid/sidepanel.html' + hash, runScripts: 'outside-only', virtualConsole: quietConsole() });
   const { window } = dom;
   const storage = JSON.parse(JSON.stringify(initial));
@@ -123,15 +182,19 @@ async function load({ storage: initial = {}, hash = '', light = false, settle = 
   Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: {
     writeText: async (t) => { if (clipboard.fail) throw new Error(clipboard.fail); clipboard.writes.push(t); },
   } });
-  Object.assign(window, { chrome, matchMedia, fetch: async (url) => { throw new Error('unexpected fetch ' + url); } });
+  Object.assign(window, { chrome, matchMedia, indexedDB: fakeIndexedDB(), fetch: async (url) => { throw new Error('unexpected fetch ' + url); } });
   const ctx = dom.getInternalVMContext();
-  for (const f of SCRIPTS) new vm.Script(panelSource(f, googleClientId), { filename: f }).runInContext(ctx);
+  runPanelScripts(ctx, { googleClientId, consts }); // consts: as in sandbox.js load()
+  if (legacySettings) installLegacySettings((code) => vm.runInContext(code, ctx)); // as in sandbox.js
   await new Promise((r) => setTimeout(r, settle)); // let init() settle
   const run = (code) => vm.runInContext(code, ctx);
+  if (!docInit) run('shouldDocInit = async () => false'); // the first-run pass only where a test asks for it (docInit)
+  if (!autoTitle) run('autoTitleOn = () => false'); // the automatic chat title likewise (autoTitle)
+  if (!chatProbe) run('chatProbeOn = () => false'); // the chat probe of explicit checks likewise (chatProbe)
   const T = new Proxy({}, { get: (_, name) => (typeof name === 'string' && name !== 'then' ? run(name) : undefined) });
   const close = () => { clearTimers(); window.close(); };
   return { dom, window, document: window.document, ctx: window, T, get: run, run, state: run('state'), PROVIDERS: run('PROVIDERS'), el: run('el'),
-    storage, chrome, media, clipboard, close };
+    storage, chrome, media, clipboard, close, idb: window.indexedDB };
 }
 
 // A minimal fetch Response for the content script's export requests.
@@ -143,9 +206,12 @@ function textResponse(text, { status = 200, type = 'text/plain; charset=utf-8', 
 
 // Loads content.js on a fake Google Docs page: #docs-chrome (the header) and the hidden editor
 // iframe (.docs-texteventtarget-iframe, its body contenteditable). opts: url, title, storage, run
-// (false: do not inject yet). Returns { dom, window, document, chrome, storage, iframe, editorDoc,
-// inject(), send(msg) -> Promise<response>, sent (runtime.sendMessage log), fetchLog, close }.
-async function loadContent({ url = 'https://docs.google.com/document/d/DOC123/edit', title = 'My Doc - Google Docs', storage: initial = {}, run = true } = {}) {
+// (false: do not inject yet), consts (test-time values of content.js's constants by name, e.g.
+// { PAGE_CHANGE_GAP: 50 }: the timers of the change signal; see withConsts in sandbox.js), clock (true: the page's
+// timers and Date.now run on a manual clock, c.clock; see installClock). Returns { dom, window, document, chrome,
+// storage, iframe, editorDoc, inject(), send(msg) -> Promise<response>, sent (runtime.sendMessage log), fetchLog, clock
+// (null without opts.clock), close }.
+async function loadContent({ url = 'https://docs.google.com/document/d/DOC123/edit', title = 'My Doc - Google Docs', storage: initial = {}, run = true, consts = null, clock: manual = false } = {}) {
   const dom = new JSDOM('<!doctype html><html><head><title></title></head><body><div id="docs-chrome" style="height:100px">Docs header</div>' +
     '<div class="kix-appview-editor"><iframe class="docs-texteventtarget-iframe"></iframe></div></body></html>', { url, runScripts: 'outside-only', virtualConsole: quietConsole() });
   const { window } = dom;
@@ -156,6 +222,7 @@ async function loadContent({ url = 'https://docs.google.com/document/d/DOC123/ed
   const sent = [];
   chrome.runtime.sendMessage = async (msg) => { sent.push(JSON.parse(JSON.stringify(msg))); return msg && msg.type === 'GET_TAB_ID' ? { tabId: 7 } : undefined; };
   const clearTimers = installTimers(window);
+  const clock = manual ? installClock(window) : null;
   polyfill(window);
   const fetchLog = [];
   Object.assign(window, { chrome, fetch: async (u) => { fetchLog.push(u); throw new Error('unexpected fetch ' + u); } });
@@ -163,7 +230,10 @@ async function loadContent({ url = 'https://docs.google.com/document/d/DOC123/ed
   const editorDoc = iframe.contentDocument;
   editorDoc.body.setAttribute('contenteditable', 'true');
   const ctx = dom.getInternalVMContext();
-  const inject = () => new vm.Script(source('content.js'), { filename: 'content.js' }).runInContext(ctx);
+  const used = new Set();
+  const content = withConsts(fileText('content.js'), consts, used);
+  assertConstsUsed(consts, used, 'loadContent({ consts })');
+  const inject = () => compiledScript('content.js', content).runInContext(ctx);
   if (run) { inject(); await new Promise((r) => setTimeout(r, 10)); }
   // Calls every registered onMessage listener like Chrome does: resolves with the first response,
   // serialized like a real message (a plain object of this realm).
@@ -174,8 +244,8 @@ async function loadContent({ url = 'https://docs.google.com/document/d/DOC123/ed
     for (const fn of chrome.runtime.onMessage.listeners) if (fn(msg, { id: 'testextid' }, respond) === true) async = true;
     if (!async) setTimeout(() => respond(undefined), 0);
   });
-  const close = () => { clearTimers(); window.close(); };
-  return { dom, window, document, chrome, storage, iframe, editorDoc, inject, send, sent, fetchLog, textResponse, close };
+  const close = () => { clearTimers(); if (clock) clock.clear(); window.close(); };
+  return { dom, window, document, chrome, storage, iframe, editorDoc, inject, send, sent, fetchLog, textResponse, clock, close };
 }
 
 // ---- real DOM events -------------------------------------------------------------------------------
@@ -201,4 +271,4 @@ const pointer = (node, type, init = {}) => {
 };
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-module.exports = { load, loadContent, textResponse, click, mouse, key, typeInto, pointer, tick };
+module.exports = { load, loadContent, manualClock, textResponse, click, mouse, key, typeInto, pointer, tick };

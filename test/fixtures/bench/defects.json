@@ -74,6 +74,16 @@
     { "file": "en-climate.txt", "kind": "acronym-before-definition", "check": "check", "quote": "SOC stocks in the top 20 cm did not follow elevation" },
     { "file": "en-climate.txt", "kind": "dangling-table", "check": "check", "quote": "Q10 increased with elevation from 2.1 to 3.4 (Table 4), and soil moisture" },
     { "file": "en-climate.txt", "kind": "uncited-reference", "check": "check", "quote": "[6] Schatz W. et al. (2013). Decomposition along two alpine elevation gradients" },
-    { "file": "en-climate.txt", "kind": "acronym-undefined", "check": "check", "quote": "three PVC collars were inserted" }
+    { "file": "en-climate.txt", "kind": "acronym-undefined", "check": "check", "quote": "three PVC collars were inserted" },
+    { "file": "en-climate.txt", "kind": "lang-sentence", "check": "language", "quote": "Повреждённые коллары переустанавливали на прежнем месте через два дня после обнаружения" },
+    { "file": "en-climate.txt", "kind": "tell-markdown", "check": "tells", "quote": "The decline was **close to linear**, with a slope of 0.32 µmol" },
+    { "file": "en-climate.txt", "kind": "tell-markdown", "check": "tells", "quote": "## Discussion\nThe rise of Q10 with elevation agrees with the view" },
+    { "file": "en-climate.txt", "kind": "tell-markdown", "check": "tells", "quote": "The raw fluxes are stored in `fluxes_2019.csv` with one row per collar" },
+    { "file": "en-climate.txt", "kind": "typed-heading-number", "check": "check", "quote": "2. Methods\nFive sites were placed at 450, 680, 900", "knownMiss": "no check flags a number typed before a heading: the structure check only compares heading numbers with each other, and plain text cannot tell a typed number from a Docs list number" },
+    { "file": "ru-sorption.txt", "kind": "lang-sentence", "check": "language", "quote": "The diffraction patterns were recorded on the same instrument for both samples" },
+    { "file": "ru-sorption.txt", "kind": "tell-markdown", "check": "tells", "quote": "Все опыты повторяли **трижды**, расхождение параллельных проб не превышало пяти процентов" },
+    { "file": "ru-sorption.txt", "kind": "typo-quotes", "check": "typography", "quote": "Технологи называют такой сорбент \"мягким\", хотя натрий в нём замещён не полностью" },
+    { "file": "ru-sorption.txt", "kind": "typo-hyphen-dash", "check": "typography", "quote": "Регенерация - главное преимущество модифицированного цеолита перед активированным углём" },
+    { "file": "ru-sorption.txt", "kind": "typed-heading-number", "check": "check", "quote": "2. Методика\nЦеолит фракции от 0,5 до 1 мм промывали", "knownMiss": "no check flags a number typed before a heading: the structure check only compares heading numbers with each other, and plain text cannot tell a typed number from a Docs list number" }
   ]
 }

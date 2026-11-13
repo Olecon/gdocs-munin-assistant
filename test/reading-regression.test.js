@@ -40,6 +40,7 @@ function outputs(spec, tabId) {
     read_lines: T.runReadingTool('read_lines', { start: 1, end: n }, snap),
     read_lines_part: T.runReadingTool('read_lines', { start: 2, end: 4 }, snap, { chars: 40, lines: 2 }),
     read_formatting: T.runReadingTool('read_formatting', { start: 1, end: n }, snap),
+    read_document: T.runReadingTool('read_document', { scope: 'all', include: null, doc: null }, snap), // the default view: heading labels, list markers
     find: T.runReadingTool('find_in_document', { query: 'a' }, snap),
     find_cell: T.runReadingTool('find_in_document', { query: 'C1' }, snap),
     outline: T.runReadingTool('get_outline', {}, snap),

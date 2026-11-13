@@ -111,11 +111,11 @@ test('a long document: the outline and the reading tools, read in parts; the hea
   T.snapshotDocument(snap);
   state.messages = [{ role: 'user', content: 'Review this document.', _persona: 'review', _context: T.buildTurnContext('review', snap, null) }];
   const req = T.buildRequest('review', snap);
-  deq(req.body.tools.map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection']);
+  deq(req.body.tools.map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection']);
   const [system, user] = req.body.messages.map((m) => m.content);
   assert.ok(system.includes(T.DOC_PASS_READ_NOTE));
   assert.ok(user.includes('Outline (line: heading):\nL1: # Long paper\nL2: ## Results'));
-  assert.ok(user.includes('[The document is too long for one message (6,002 lines): read it in parts with read_lines.]'));
+  assert.ok(user.includes('[The document is too long for one message (6,002 lines): read it in parts with read_document.]'));
   assert.ok(user.includes(T.REVIEW_RUBRIC) && !user.includes('Sentence number 3000'));
   // every round of the turn sends the same tools and head
   deq(T.buildRequest('review', snap).body.messages[0], req.body.messages[0]);
@@ -140,10 +140,10 @@ test('Fix flagged: the message lists the flagged findings with lines and quotes;
     'Change only those places, one edit per finding; keep every number and citation.');
   const keep = { applyMode: state.applyMode, googleConnected: state.googleConnected, docFormat: state.docFormat };
   try {
-    Object.assign(state, { applyMode: 'manual', googleConnected: true, docFormat: 'docs-api' });
-    deq(T.fixFlaggedState(), { ok: false, reason: 'Fix flagged edits the document: switch to Edit automatically first.' });
-    Object.assign(state, { applyMode: 'plan', googleConnected: true, docFormat: 'docs-api' }); // Plan refuses writes like Manual
-    deq(T.fixFlaggedState(), { ok: false, reason: 'Fix flagged edits the document: switch to Edit automatically first.' });
+    Object.assign(state, { applyMode: 'manual', googleConnected: true, docFormat: 'docs-api' }); // Manual edits (each edit asks)
+    deq(T.fixFlaggedState(), { ok: true, reason: '' });
+    Object.assign(state, { applyMode: 'plan', googleConnected: true, docFormat: 'docs-api' }); // Plan refuses writes
+    deq(T.fixFlaggedState(), { ok: false, reason: 'Fix flagged edits the document: switch to Manual or Auto first.' });
     Object.assign(state, { applyMode: 'auto', googleConnected: false, docFormat: 'markdown' });
     deq(T.fixFlaggedState(), { ok: false, reason: 'Fix flagged needs the Google Docs API: sign in with Google in Settings.' });
     Object.assign(state, { applyMode: 'auto', googleConnected: true, docFormat: 'docs-api' });

@@ -7,7 +7,7 @@
 // calls (no snap.readFirst) are not checked.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, waitFor, load, installDocTab, installIdentity } = require('./lib/sandbox');
+const { deq, load, installDocTab, installIdentity } = require('./lib/sandbox');
 const { sseResponse, tu, msgStart, stopTool, textRound } = require('./lib/streams');
 const { fakeDocsServer, docSpec, docsBench } = require('./lib/fake-docs');
 
@@ -43,19 +43,13 @@ async function freshTurn(spec) {
   await fresh(spec);
   as.readFirst = true; // as in a visible turn (toolLoop)
 }
-async function allowCard(promise) {
-  await waitFor(() => T.pendingPreviews.size === 1, 'the gate card');
-  const [[id]] = [...T.pendingPreviews.entries()];
-  T.decidePreview(id, 'accept');
-  return promise;
-}
 
 test('delete_lines over unread lines: refused once with the current text; the identical call then passes', async () => {
   await freshTurn(sectionSpec());
   const r1 = await exec('delete_lines', { start: 4, end: 5 });
   assert.strictEqual(r1._ok, false);
   assert.strictEqual(r1.content, `${REFUSED} lines 4–5 in this message. They currently say:\n4: Method line 4.\n5: Method line 5.\n` +
-    'Read them with read_lines if you need more, then call the tool again.');
+    'Read them with read_document if you need more, then call the tool again.');
   assert.strictEqual(fake.text('t.0').split('\n').length, 18, 'nothing deleted');
   const r2 = await exec('delete_lines', { start: 4, end: 5 });
   assert.ok(r2._ok, r2.content);
@@ -77,8 +71,8 @@ test('the excerpt of a long span: first and last 5 lines, 120 characters each; t
 
 test('after a read the write passes at once: read_lines, find_in_document, get_selection', async () => {
   await freshTurn(sectionSpec());
-  await exec('read_lines', { start: 3, end: 16 });
-  const r = await allowCard(exec('replace_section', { heading: 'Methods', new_text: 'One line.' }));
+  await exec('read_document', { scope: { start: 3, end: 16 }, include: ['text'], doc: null });
+  const r = await exec('replace_section', { heading: 'Methods', new_text: 'One line.' }); // Auto: no card
   assert.ok(r._ok, r.content);
   // find_in_document shows the lines it finds
   await freshTurn(sectionSpec());
@@ -94,14 +88,14 @@ test('after a read the write passes at once: read_lines, find_in_document, get_s
   assert.ok((await exec('delete_lines', { start: 4, end: 5 }))._ok);
   // a part read: only the unread lines are named
   await freshTurn(sectionSpec());
-  await exec('read_lines', { start: 3, end: 10 });
+  await exec('read_document', { scope: { start: 3, end: 10 }, include: ['text'], doc: null });
   const part = await exec('delete_lines', { start: 9, end: 12 });
   assert.ok(part.content.startsWith(`${REFUSED} lines 11–12 in this message.`), part.content);
 });
 
 test('no effect when every line was read (a document read whole), for insert and format tools, or without snap.readFirst', async () => {
   await freshTurn(sectionSpec());
-  await exec('read_lines', { start: 1, end: 18 });
+  await exec('read_document', { scope: { start: 1, end: 18 }, include: ['text'], doc: null });
   assert.ok((await exec('delete_lines', { start: 3, end: 16 }))._ok);
   await freshTurn(sectionSpec());
   assert.ok((await exec('insert_after_line', { line: 4, text: 'New.' }))._ok);
@@ -113,9 +107,9 @@ test('no effect when every line was read (a document read whole), for insert and
   assert.strictEqual(T.readFirstCheck('delete_lines', null, {}, { readFirst: true, docText: 'a' }), null);
   // reads of an opened document do not count for the main one
   const snap = { readFirst: true, docText: 'a\nb\nc' };
-  T.noteSeenLines('read_lines', { start: 1, end: 3, doc: 'doc2' }, { _ok: true, content: 'Lines 1-3 of 3:\n1: a\n2: b\n3: c' }, snap);
+  T.noteSeenLines('read_document', { scope: { start: 1, end: 3 }, include: ['text'], doc: 'doc2' }, { _ok: true, content: 'Lines 1-3 of 3:\n1: a\n2: b\n3: c' }, snap);
   assert.strictEqual(snap.seenLines, undefined);
-  T.noteSeenLines('read_lines', { start: 1, end: 3 }, { _ok: true, content: 'Lines 1-3 of 3:\n1: a\n2 [r1c1]: b\n3: c' }, snap);
+  T.noteSeenLines('read_document', { scope: { start: 1, end: 3 }, include: ['text'], doc: null }, { _ok: true, content: 'Lines 1-3 of 3:\n1: a\n2 [r1c1]: b\n3: c' }, snap);
   deq([...snap.seenLines].sort(), [1, 2, 3]);
 });
 
@@ -140,4 +134,38 @@ test('in a full turn: the model gets the refusal with the text, calls again, and
   assert.strictEqual(refusal.type, 'tool_result');
   assert.ok(refusal.content.startsWith(`${REFUSED} lines 4–5 in this message. They currently say:\n4: Method line 4.`), refusal.content);
   assert.ok(!fake.text('t.0').includes('Method line 4.'));
+});
+
+test('a write shifts the seen lines: no refusal for read lines that moved, a refusal for unread lines that took their numbers', async () => {
+  // read all, insert 5 lines after line 2, delete the old lines 15-16 (now 20-21): passes
+  await freshTurn(sectionSpec());
+  await exec('read_document', { scope: { start: 1, end: 18 }, include: ['text'], doc: null });
+  const ins = await exec('insert_after_line', { line: 2, text: 'A1.\nA2.\nA3.\nA4.\nA5.' });
+  assert.ok(ins._ok, ins.content);
+  assert.ok(as.seenLines.has(23), 'the old line 18 is seen as line 23');
+  const d = await exec('delete_lines', { start: 20, end: 21 });
+  assert.ok(d._ok, d.content);
+  assert.ok(!fake.text('t.0').includes('Method line 15.'));
+  // read 10-14, insert 10 lines at the top, delete 10-14 (now unread text): refused
+  await freshTurn(sectionSpec());
+  await exec('read_document', { scope: { start: 10, end: 14 }, include: ['text'], doc: null });
+  const top = await exec('insert_after_line', { line: 1, text: Array.from({ length: 10 }, (_, k) => `B${k}.`).join('\n') });
+  assert.ok(top._ok, top.content);
+  deq([...as.seenLines].sort((x, y) => x - y), [20, 21, 22, 23, 24]);
+  const r = await exec('delete_lines', { start: 10, end: 14 });
+  assert.strictEqual(r._ok, false);
+  assert.ok(r.content.startsWith(`${REFUSED} lines 10–14 in this message. They currently say:\n10: B8.`), r.content);
+  assert.ok(fake.text('t.0').includes('Method line 10.'));
+});
+
+test('remapSeenLines: lines before keep, lines after move, lines inside the change keep only unique moved text', () => {
+  const snap = { docText: 'a\nX\nb\nc\nd', seenLines: new Set([1, 2, 3, 4]) };
+  T.remapSeenLines(snap, 'a\nb\nc\nd');
+  deq([...snap.seenLines].sort(), [1, 3, 4, 5]); // X inserted after a: b c d move to 3 4 5
+  const s2 = { docText: 'a\nY\nc\nd\nZ\nf', seenLines: new Set([1, 2, 3, 4, 5, 6]) };
+  T.remapSeenLines(s2, 'a\nb\nc\nd\ne\nf');
+  deq([...s2.seenLines].sort(), [1, 3, 4, 6]); // b and e replaced: c, d unique in both stretches keep being seen
+  const s3 = { docText: 'same', seenLines: new Set([1]) };
+  T.remapSeenLines(s3, 'same');
+  deq([...s3.seenLines], [1]);
 });

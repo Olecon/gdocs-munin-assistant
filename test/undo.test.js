@@ -121,22 +121,27 @@ test('the journal is saved right after each edit; Undo all reverts the edits of 
   const key = () => 'muninChatHistory:DOC123:' + state.chatId;
   const saved = [];
   let posts = 0;
-  // two edits in one response; when the second is sent, the first is already in storage
+  // two edits in one response: the first runs, the second waits for the next response (ONE_EDIT_TEXT), which sends it
+  // again; when the second edit is written (the second Docs API write), the first is already in storage
   await runTurn([
-    msgStart + tu(0, 'toolu_a', 'replace_text', { old_text: 'Intro', new_text: 'Preface' }) + tu(1, 'toolu_b', 'replace_text', { old_text: 'Last line', new_text: 'Final line' }) + stopTool,
+    msgStart + tu(0, 'toolu_a', 'replace_text', { old_text: 'Intro', new_text: 'Preface' }) + tu(1, 'toolu_b0', 'replace_text', { old_text: 'Last line', new_text: 'Final line' }) + stopTool,
+    msgStart + tu(0, 'toolu_b', 'replace_text', { old_text: 'Last line', new_text: 'Final line' }) + stopTool,
     textRound('Done.'),
   ], () => { posts++; if (posts === 2) saved.push(JSON.parse(JSON.stringify(env.storage[key()] || []))); });
   assert.strictEqual(posts, 2);
+  assert.strictEqual(saved[0].find((m) => m.tool_call_id === 'toolu_b0').content, T.ONE_EDIT_TEXT);
   const firstSaved = saved[0].find((m) => m._edit && m._edit.id === 'toolu_a');
   assert.ok(firstSaved && firstSaved._edit.restore === 'Intro', JSON.stringify(saved[0]));
   assert.ok(!saved[0].some((m) => m._edit && m._edit.id === 'toolu_b'));
-  // the latest card has Undo and "Undo all (2)"; the older one neither
+  // the latest edit's row has Undo and Undo all (2 edits); the older one neither (no cards: the rows stand in for them)
   T.el.chat.children.length = 0;
   T.renderHistory();
-  const cards = T.el.chat.children.filter((c) => c.className.includes('tool-card'));
-  assert.strictEqual(cards.length, 2);
-  assert.ok(cards[1].innerHTML.includes('data-act="undo-all" data-edit="toolu_b"') && cards[1].innerHTML.includes('Undo all (2)'), cards[1].innerHTML);
-  assert.ok(!cards[0].innerHTML.includes('data-act="undo'));
+  const writeRows = () => T.el.chat.children.flatMap((c) => c._rows || []).filter((r) => r.className.includes('write-row'));
+  assert.strictEqual(T.el.chat.children.filter((c) => c.className.includes('tool-card')).length, 0);
+  const rows = writeRows();
+  assert.strictEqual(rows.length, 2);
+  assert.ok(rows[1].innerHTML.includes('data-act="undo-all" data-edit="toolu_b"') && rows[1].innerHTML.includes('data-tip="Undo all 2 edits"'), rows[1].innerHTML);
+  assert.ok(!rows[0].innerHTML.includes('data-act="undo'));
   deq(T.answerEdits('toolu_a'), []); // only from the most recent edit
   // Undo all: newest to oldest, the document is back, the card says so
   assert.strictEqual((await undoAll('toolu_b')).r, true);
@@ -148,11 +153,13 @@ test('the journal is saved right after each edit; Undo all reverts the edits of 
   await runTurn([msgStart + tu(0, 'toolu_c', 'replace_text', { old_text: 'Intro', new_text: 'Preface' }) + stopTool, textRound('Done.')]);
   T.el.chat.children.length = 0;
   T.renderHistory();
-  assert.ok(lastCard().innerHTML.includes('data-act="undo-edit" data-edit="toolu_c"') && !lastCard().innerHTML.includes('undo-all'));
+  const rowC = writeRows().pop();
+  assert.ok(rowC.innerHTML.includes('data-act="undo-edit" data-edit="toolu_c"') && !rowC.innerHTML.includes('undo-all'));
   assert.ok(pushTool(await exec('undo_last_edit', {}, 'toolu_cu'))._ok);
   // stops at the first edit that cannot be undone and says what was undone and what was not
   await runTurn([
-    msgStart + tu(0, 'toolu_d', 'replace_text', { old_text: 'Intro', new_text: 'Preface' }) + tu(1, 'toolu_e', 'replace_text', { old_text: 'Last line', new_text: 'Final line' }) + stopTool,
+    msgStart + tu(0, 'toolu_d', 'replace_text', { old_text: 'Intro', new_text: 'Preface' }) + stopTool,
+    msgStart + tu(0, 'toolu_e', 'replace_text', { old_text: 'Last line', new_text: 'Final line' }) + stopTool,
     textRound('Done.'),
   ]);
   fake.tabs[0].blocks[0].paras[1].text = 'Preface!! 😀 text.'; fake.revision++; // the user edits right at the older edit

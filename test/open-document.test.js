@@ -72,7 +72,7 @@ test('open_document through the Docs API: alias, outline, reading with "doc", er
   os.chatCtx = { docId: 'DOC123', chatId: state.chatId, messages: state.messages };
   os.mainUrl = 'https://docs.google.com/document/u/1/d/DOC123/edit';
   deq(os.docs, []);
-  deq(T.toolsFor('edit', os).map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'open_document', 'remember', ...WRITE_SET, 'replace_selection', 'ask_user', 'table', 'page_parts', 'read_comments', 'draft', 'revise_section']);
+  deq(T.toolsFor('edit', os).map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', ...WRITE_SET, 'replace_selection', 'ask_user', 'table', 'page_parts', 'document_styles', 'style_map', 'draft', 'revise_section', 'trim_to_words', 'phrase_usage', 'chat_title', 'delegate']); // chat_title: offered with a chat (chatCtx)
   const call = (id, name, args) => T.executeTool({ id, function: { name, arguments: JSON.stringify(args) } }, 'edit', os);
   od;
   deq(C.parseDocRef(`https://docs.google.com/document/u/2/d/${REF_ID}/edit?tab=t.0#heading=h.x`), { id: REF_ID, tab: 't.0', authuser: '2' });
@@ -86,20 +86,20 @@ test('open_document through the Docs API: alias, outline, reading with "doc", er
   od = await call('o1', 'open_document', { url: `https://docs.google.com/document/d/${REF_ID}/edit` });
   assert.strictEqual(T.pendingPreviews.size, 0); // named by the user: no confirmation
   assert.strictEqual(od.content, 'Opened as doc2. Title: "Reference paper". 5 lines, 74 characters.\nOutline (line: heading):\n' +
-    'L1: [Title] Reference paper\nL2: [H1] Background\nL4: [H1] Results\nRead it with read_lines, find_in_document and get_outline with doc: "doc2". It is read-only.');
+    'L1: [Title] Reference paper\nL2: [H1] Background\nL4: [H1] Results\nRead it with read_document and find_in_document with doc: "doc2". It is read-only.');
   assert.ok(od._ok && od._reading); assert.strictEqual(od._message, 'doc2: Reference paper');
   assert.strictEqual(fake2.log.length, 1); assert.strictEqual(exportCalls.length, 0); // read through the API
   deq(os.docs, [{ alias: 'doc2', id: REF_ID, title: 'Reference paper', lines: 5 }]);
   deq(storage['muninChats:DOC123'].find((c) => c.id === state.chatId).docs, [{ alias: 'doc2', id: REF_ID, title: 'Reference paper', lines: 5 }]); // persisted per chat
-  let rd = await call('r1', 'read_lines', { start: 3, end: 5, doc: 'doc2' });
+  let rd = await call('r1', 'read_document', { scope: { start: 3, end: 5 }, include: ['text'], doc: 'doc2' });
   assert.strictEqual(rd.content, 'Lines 3-5 of 5:\n3: Lipid rafts are small.\n4: Results\n5: Rafts move fast.');
   assert.strictEqual(rd._message, 'lines 3–5 (doc2)');
   assert.strictEqual((await call('r2', 'find_in_document', { query: 'RAFTS', doc: 'DOC2' })).content, '2 lines contain "RAFTS":\n3: Lipid rafts are small.\n5: Rafts move fast.');
-  assert.strictEqual((await call('r3', 'get_outline', { doc: 'doc2' })).content, '3 headings (5 lines in total):\nL1: [Title] Reference paper\nL2: [H1] Background\nL4: [H1] Results');
-  assert.strictEqual((await call('r4', 'read_lines', { start: 1, end: 1, doc: null })).content, 'Lines 1-1 of 10:\n1: Report 📊'); // null: the main document
+  assert.strictEqual((await call('r3', 'read_document', { scope: 'outline', include: null, doc: 'doc2' })).content, '3 headings (5 lines in total):\nL1: [Title] Reference paper\nL2: [H1] Background\nL4: [H1] Results');
+  assert.strictEqual((await call('r4', 'read_document', { scope: { start: 1, end: 1 }, include: ['text'], doc: null })).content, 'Lines 1-1 of 10:\n1: Report 📊'); // null: the main document
   assert.strictEqual(fake2.log.length, 1); // read once in this turn
   // errors: unknown alias, get_selection and writes on an opened document, the main document, bad links, no access
-  assert.strictEqual((await call('e1', 'read_lines', { start: 1, end: 2, doc: 'doc9' })).content,
+  assert.strictEqual((await call('e1', 'read_document', { scope: { start: 1, end: 2 }, include: ['text'], doc: 'doc9' })).content,
     'Error: no document "doc9" is open in this chat (opened: doc2). Open it with open_document first, or pass doc: null for the main document.');
   assert.strictEqual((await call('e2', 'get_selection', { doc: 'doc2' })).content, 'Error: get_selection works only on the main document (omit doc or pass null).');
   let wr = await call('e3', 'replace_text', { old_text: 'Rafts', new_text: 'X', doc: 'doc2' });
@@ -111,8 +111,7 @@ test('open_document through the Docs API: alias, outline, reading with "doc", er
   assert.ok(!od._ok && od.content === 'Error: "https://example.com/file" is not a Google Docs document link or ID. Pass a link like https://docs.google.com/document/d/<id>/edit or the document ID.');
   od = await call('e6', 'open_document', { url: NOACCESS_ID }); // API 404, then the export answers with a sign-in page
   assert.ok(!od._ok);
-  assert.strictEqual(od.content, `Error: could not open the document ${NOACCESS_ID} (Google Docs API: The Docs API cannot find this document (HTTP 404): the connected Google account probably has no access to it (is it the account you use in this tab?). ` +
-    'export: Export returned HTML (no access or sign-in required); export returned HTML (no access)). The user may have no access to it with the Google account of this tab, or the link is wrong.');
+  assert.strictEqual(od.content, `Error: could not open the document ${NOACCESS_ID} (this Google account has no access to the document). The user may have no access to it with the Google account of this tab, or the link is wrong.`);
   deq(tabCalls, [{ docId: NOACCESS_ID, authuser: '1' }]); // the content-script export first, the panel's as the fallback
   od = await call('e7', 'open_document', { url: 'https://docs.google.com/document/d/e/2PACX-1vTpublishedId/pub' });
   assert.ok(!od._ok && od.content.startsWith('Error: this is a link to a published copy (/document/d/e/.../pub)'));
@@ -123,7 +122,7 @@ test('open_document through the Docs API: alias, outline, reading with "doc", er
   deq(os.docs.map((d) => d.alias), ['doc2']);
   // the action log row of the call
   deq(T.actionLogFromToolCalls([{ id: 'o1', function: { name: 'open_document', arguments: JSON.stringify({ url: REF_ID }) } }]),
-    [{ log: true, name: 'open_document', summary: REF_ID, args: { url: REF_ID }, result: null, status: 'pending' }]);
+    [{ log: true, id: 'o1', name: 'open_document', summary: REF_ID, args: { url: REF_ID }, result: null, status: 'pending' }]);
 });
 
 test('open_document without a Google account: content-script export (panel export as fallback), authuser, title, Markdown cleanup', async () => {
@@ -136,9 +135,9 @@ test('open_document without a Google account: content-script export (panel expor
   exportCalls.length = 0; tabCalls.length = 0;
   od = await T.executeTool({ id: 'x1', function: { name: 'open_document', arguments: JSON.stringify({ url: `https://docs.google.com/document/d/${EXP_ID}/edit` }) } }, 'manual', os2);
   assert.strictEqual(od.content, 'Opened as doc3. Title: "Notes ü". 7 lines, 51 characters.\nOutline (line: heading):\nL1: # Notes\nL5: ## Part two\n' +
-    'Read it with read_lines, find_in_document and get_outline with doc: "doc3". It is read-only.');
+    'Read it with read_document and find_in_document with doc: "doc3". It is read-only.');
   deq(tabCalls, [{ docId: EXP_ID, authuser: '1' }]); deq(exportCalls, []); // exported by the content script
-  assert.strictEqual((await T.executeTool({ id: 'x2', function: { name: 'read_lines', arguments: '{"start":3,"end":3,"doc":"doc3"}' } }, 'manual', os2)).content, 'Lines 3-3 of 7:\n3: First - point.'); // export escapes removed
+  assert.strictEqual((await T.executeTool({ id: 'x2', function: { name: 'read_document', arguments: '{"scope":{"start":3,"end":3},"include":["text"],"doc":"doc3"}' } }, 'manual', os2)).content, 'Lines 3-3 of 7:\n3: First - point.'); // export escapes removed
   assert.strictEqual(C.exportTitle({ headers: { get: () => 'attachment; filename="Plain title.txt"' } }), 'Plain title');
   // an old content script answers for the main document: the panel's own export is used instead
   od = await T.executeTool({ id: 'x3', function: { name: 'open_document', arguments: JSON.stringify({ url: OLD_ID }) } }, 'manual', os2);
@@ -164,8 +163,8 @@ test('opened documents: kept per chat across a reload, read lazily once per turn
   const head3 = T.buildTurnContext('edit', os3); // feat/context: the list is in the turn context
   assert.ok(head3.includes('</document>\n[Documents opened in this chat with open_document (read them with doc: "<alias>"; no need to open them again): doc2 "Reference paper" (5 lines); doc3 "Notes ü" (7 lines); doc4 "Notes ü" (7 lines).]'));
   const gets = fake2.log.length;
-  assert.strictEqual((await T.executeTool({ id: 'y1', function: { name: 'read_lines', arguments: '{"start":5,"end":5,"doc":"doc2"}' } }, 'edit', os3)).content, 'Lines 5-5 of 5:\n5: Rafts move fast.');
-  await T.executeTool({ id: 'y2', function: { name: 'get_outline', arguments: '{"doc":"doc2"}' } }, 'edit', os3);
+  assert.strictEqual((await T.executeTool({ id: 'y1', function: { name: 'read_document', arguments: '{"scope":{"start":5,"end":5},"include":["text"],"doc":"doc2"}' } }, 'edit', os3)).content, 'Lines 5-5 of 5:\n5: Rafts move fast.');
+  await T.executeTool({ id: 'y2', function: { name: 'read_document', arguments: '{"scope":"outline","include":null,"doc":"doc2"}' } }, 'edit', os3);
   assert.strictEqual(fake2.log.length, gets + 1); // lazily, once in this turn
   // the Munin persona turn has no client tools and does not list the opened documents
   const os3m = { ...os3, prov: PROVIDERS.munin };
@@ -181,7 +180,7 @@ test('open_document confirmation: Allow, Deny, Allow all in this turn, user-name
   let gp = openCall('g1', `https://docs.google.com/document/d/${GATE1}/edit`);
   await waitFor(() => T.pendingPreviews.size === 1, 'the open preview');
   let gcard = pending()[0].card;
-  assert.ok(gcard.innerHTML.startsWith(`<div class="pv-head">📂 <span class="pv-tool">open_document</span> · Open document ${GATE1}?</div><div class="pv-body">` +
+  assert.ok(gcard.innerHTML.startsWith(`<div class="pv-head"><span class="pv-tool">open_document</span> · Open document ${GATE1}?</div><div class="pv-body">` +
     `<div class="pv-anchor">The assistant wants to read this document and send its text to the AI provider:</div><div class="pv-line">https://docs.google.com/document/d/${GATE1}/edit</div></div>`));
   assert.ok(gcard.innerHTML.includes('>Allow</button>') && gcard.innerHTML.includes('>Deny</button>') && gcard.innerHTML.includes('>Allow all in this turn</button>'));
   await new Promise((r) => setTimeout(r, 10));
@@ -245,15 +244,14 @@ test('lazy re-read of an opened document: unreadable now (error), grown (line co
   let os5 = T.takeSnapshot(); T.snapshotDocument(os5);
   unreadable.add(REF_ID);
   fake2.failNext = { status: 404, message: 'Requested entity was not found.' };
-  const rr = await T.executeTool({ id: 'u1', function: { name: 'read_lines', arguments: '{"start":1,"end":2,"doc":"doc2"}' } }, 'edit', os5);
+  const rr = await T.executeTool({ id: 'u1', function: { name: 'read_document', arguments: '{"scope":{"start":1,"end":2},"include":["text"],"doc":"doc2"}' } }, 'edit', os5);
   assert.ok(!rr._ok);
-  assert.strictEqual(rr.content, `Error: could not open the document ${REF_ID} (Google Docs API: The Docs API cannot find this document (HTTP 404): the connected Google account probably has no access to it (is it the account you use in this tab?). ` +
-    'export: Export returned HTML (no access or sign-in required); export returned HTML (no access)). The user may have no access to it with the Google account of this tab, or the link is wrong.');
+  assert.strictEqual(rr.content, `Error: could not open the document ${REF_ID} (this Google account has no access to the document). The user may have no access to it with the Google account of this tab, or the link is wrong.`);
   unreadable.delete(REF_ID);
   // a document that grew: the stored line count follows the re-read (the next prompt is current)
   fake2.typeParagraph(5, 'Added later.');
   let os6 = T.takeSnapshot(); T.snapshotDocument(os6); os6.chatCtx = { docId: 'DOC123', chatId: state.chatId, messages: [] };
-  await T.executeTool({ id: 'u2', function: { name: 'get_outline', arguments: '{"doc":"doc2"}' } }, 'edit', os6);
+  await T.executeTool({ id: 'u2', function: { name: 'read_document', arguments: '{"scope":"outline","include":null,"doc":"doc2"}' } }, 'edit', os6);
   assert.strictEqual(os6.docs.find((d) => d.alias === 'doc2').lines, 6);
   assert.strictEqual(storage['muninChats:DOC123'].find((c) => c.id === state.chatId).docs.find((d) => d.alias === 'doc2').lines, 6);
 });

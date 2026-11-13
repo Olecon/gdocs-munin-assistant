@@ -247,3 +247,32 @@ test('the bench fixtures: the planted /check defects are found and the control g
   deq(kinds(all('control-en.txt')), []);
   deq(kinds(all('en-enzyme.txt')).sort(), ['acronym-before-definition@3', 'acronym-undefined@7', 'acronym-undefined@7', 'dangling-figure@13', 'uncited-reference@21', 'unknown-citation@5'].sort());
 });
+
+test('the report: the doc-checks.js groups in their places, the density block, rule ids in the Markdown; the DOC.md Checks line silences rule ids and accepts terms', () => {
+  const src = { text: ['A study', 'Abstract', 'We measured XRD in soils [1].', 'Introduction',
+    'The colour and the colour of the centre differ; the color too. TODO add  more.', 'We used three samples and 4 runs and two sets.',
+    'Discussion', 'It works.', 'References', '[1] Smith J. A title. J Catal. 2019;18:45-58.'].join('\n'), format: 'text' };
+  const r = T.checkReport(src, { title: 'A study', docId: 'D' });
+  deq(T.checkGroupList(r).map((g) => g.id), ['acronyms', 'pointers', 'references', 'reflist', 'budgets', 'placeholders', 'leftovers', 'consistency',
+    'wordy', 'sections', 'blind', 'readability', 'density']); // wordy: src/concision.js is loaded, so the group exists
+  deq(r.groups.leftovers.map((f) => f.rule), ['leftover-todo', 'double-space']);
+  deq(r.groups.consistency.map((f) => f.rule), ['variant-spelling', 'variant-numeral']);
+  deq(r.groups.sections.map((f) => f.rule), ['abstract-citation', 'abstract-abbreviation', 'limitations-missing']);
+  assert.ok(r.density && Array.isArray(r.density.lines));
+  const md = T.checkMarkdown(r);
+  assert.ok(md.indexOf('### Placeholders') < md.indexOf('### Leftovers') && md.indexOf('### Leftovers') < md.indexOf('### Consistent forms'));
+  assert.ok(md.indexOf('### Readability') < md.indexOf('### Density per section'));
+  assert.ok(md.includes('- error · line 5 · TODO left in the text. (leftover-todo)'));
+  // the optional groups appear only when their pass ran: a guidelines record adds Journal limits after the budgets
+  const withLimits = T.checkReport(src, { limits: { alias: 'doc2', title: 'guide.pdf', limits: { abstract_words: 3 } } });
+  deq(T.checkGroupList(withLimits).map((g) => g.id).slice(4, 7), ['budgets', 'limits', 'placeholders']);
+  assert.strictEqual(withLimits.groups.limits[0].text, 'Abstract: 6 words, 3 over the limit of 3.');
+  // DOC.md: ignore a whole family, a rule of check-text.js and the density block; then accept a term
+  const quiet = T.checkReport(src, { instructions: 'Checks: ignore leftover, variant-numeral, acronym-undefined, density' });
+  deq(quiet.groups.leftovers.map((f) => f.rule), ['double-space']);
+  deq(quiet.groups.consistency.map((f) => f.rule), ['variant-spelling']);
+  deq(quiet.groups.acronyms.map((f) => f.kind).filter((k) => k === 'acronym-undefined'), []);
+  assert.strictEqual(quiet.density, null);
+  const accepted = T.checkReport(src, { instructions: 'Checks: accept color' });
+  deq(accepted.groups.consistency.map((f) => f.rule), ['variant-numeral']);
+});

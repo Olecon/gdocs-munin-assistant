@@ -57,11 +57,12 @@ function held(env) {
 }
 const send = (env, text) => { env.T.el.input.value = text; return env.T.sendMessage(); };
 const pairs = (msgs) => msgs.map((m) => [m.role, m.content]);
-const notices = (env) => env.T.el.chat.children.filter((c) => c.className && c.className.includes('notice')).map((c) => c.innerHTML);
+// The errors and the rows outside a turn that reached the chat.
+const notices = (env) => env.T.el.chat.children.filter((c) => c.className && /\b(error|chat-row)\b/.test(c.className)).map((c) => c._text || c.innerHTML);
 // The text of the messages of a request body (Anthropic): what the model saw of the chat.
 const sentTexts = (body) => body.messages.map((m) => m.content.filter((c) => c.type === 'text').map((c) => c.text).join(' '));
 
-test('a turn in tab A appears in tab B as it is saved, without a notice; the lock is taken per chat', async () => {
+test('a turn in tab A appears in tab B as it is saved, with nothing in the chat; the lock is taken per chat', async () => {
   const store = sharedStorage();
   const locks = webLocks();
   const A = await panel(store, locks);
@@ -81,7 +82,7 @@ test('a turn in tab A appears in tab B as it is saved, without a notice; the loc
   deq(pairs(B.state.messages), [['user', 'Hello from A'], ['assistant', 'Hi, A.']]);
   deq(B.state.messages, A.state.messages);
   assert.ok(!notices(B).some((n) => /another tab/.test(n))); // followed silently
-  assert.strictEqual(B.T.el.docStatus.textContent, FOLLOW);
+  assert.strictEqual(B.state.statusText.text, FOLLOW);
   assert.ok(!locks.held(`munin:chat:${DOC}:${x}`));
   assert.ok(!notices(A).some((n) => /another tab/.test(n)));
 });
@@ -100,7 +101,7 @@ test('A and B send at once: B waits for A, then starts from the history with A\'
   await tick(20);
   // B follows A's saved question through a chain of timers, which can take longer than 20 ms on a busy machine
   await waitFor(() => B.state.messages.length === 1, 'B to follow A\'s question');
-  assert.strictEqual(B.T.el.docStatus.textContent, WAIT);
+  assert.strictEqual(B.state.statusText.text, WAIT);
   assert.strictEqual(B.bodies.length, 0); // nothing sent while A answers
   assert.strictEqual(B.T.el.input.value, 'Question B'); // not taken from the input yet
   assert.strictEqual(B.state.busy, true); // Stop is shown
@@ -128,7 +129,7 @@ test('Stop while waiting for the lock: no request, the message stays in the inpu
   const turnA = send(A, 'Long question');
   await waitFor(() => A.bodies.length === 1, 'the request of A');
   const turnB = send(B, 'My draft');
-  await waitFor(() => B.T.el.docStatus.textContent === WAIT, 'B to wait');
+  await waitFor(() => B.state.statusText.text === WAIT, 'B to wait');
   B.state.abort.abort(); // the Stop button
   await turnB;
   assert.strictEqual(B.bodies.length, 0);
@@ -136,7 +137,7 @@ test('Stop while waiting for the lock: no request, the message stays in the inpu
   assert.strictEqual(B.state.busy, false);
   assert.strictEqual(B.state.chatWait, false);
   assert.ok(notices(B).includes('Stopped. Your message is still in the input box.'));
-  assert.notStrictEqual(B.T.el.docStatus.textContent, WAIT);
+  assert.notStrictEqual(B.state.statusText.text, WAIT);
   s.finish('Done.');
   await turnA;
   await tick(); // the lock is released after the turn's promise settles
@@ -271,7 +272,7 @@ test('the open chat deleted in B while A is idle: A switches away; switching or 
   await waitFor(() => A.state.chatId !== x, 'A to switch away');
   assert.ok(!A.state.chats.some((c) => c.id === x));
   assert.ok(A.state.chats.some((c) => c.id === A.state.chatId));
-  assert.ok(notices(A).includes('This chat was deleted in another tab.'));
+  assert.ok(!notices(A).some((n) => /deleted in another tab/.test(n))); // silently: the switcher shows it
   assert.ok(!(histKey(x) in store.items));
 });
 
@@ -300,7 +301,7 @@ test('compaction in A, then a turn in B: B starts from the compacted history', a
   await send(B, 'Question in B');
   assert.strictEqual(B.bodies.length, 1); // no compaction of its own
   const texts = sentTexts(B.bodies[0]);
-  assert.ok(texts[0].startsWith('[Summary of the earlier conversation]\nThe summary.'), texts[0]);
+  assert.ok(texts[0].startsWith(`${A.T.SUMMARY_PREFIX}\nThe summary.`), texts[0]);
   assert.ok(!JSON.stringify(B.bodies[0]).includes('aaaaaaaa')); // the compacted turns are not sent
   assert.ok(texts.some((t) => t.endsWith('Question in A')) && texts[texts.length - 1].endsWith('Question in B'));
   const stored = store.items[histKey(x)];

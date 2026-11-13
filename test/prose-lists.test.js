@@ -1,6 +1,6 @@
 'use strict';
 // The tell lists (src/prose-lists.js) through proseTells: the shape of every entry, one hit per category in
-// English and in Russian (fillers are Russian only), the sentence-start entries, and normal scientific paragraphs
+// English and in Russian (fillers are Russian only), Markdown left in document text, the sentence-start entries, and normal scientific paragraphs
 // in both languages that produce no tell.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
@@ -15,7 +15,7 @@ before(async () => {
 
 test('every list entry: a known category, a compiling pattern, a plain alternative, known flags', () => {
   const order = JSON.parse(JSON.stringify(T.PROSE_TELL_ORDER));
-  deq(order, ['chat', 'staging', 'tail', 'opener', 'stock', 'filler', 'hedge', 'wordy', 'redundant']);
+  deq(order, ['chat', 'markdown', 'staging', 'tail', 'opener', 'stock', 'filler', 'hedge', 'wordy', 'redundant']);
   deq(Object.keys(T.PROSE_TELLS).sort(), [...order].sort());
   for (const kind of order) {
     for (const entry of T.PROSE_TELLS[kind]) {
@@ -50,6 +50,15 @@ test('one hit per category in Russian', () => {
   deq(tells('Как известно, выход растёт при нагреве.'), ['hedge: Как известно,']);
   deq(tells('Выход вырос в связи с тем, что нагрев был сильнее.'), ['wordy: в связи с тем, что']);
   deq(tells('Мы повторили снова оба опыта.'), ['redundant: повторили снова']);
+});
+
+test('Markdown left in document text: bold, a heading mark, backticks; not a lone asterisk, a hash inside a line or a number sign', () => {
+  deq(tells('The **key** result held.'), ['markdown: **key**']);
+  deq(tells('## Methods'), ['markdown: ## Methods']);
+  deq(tells('Results\n# Выводы'), ['markdown: # Выводы']);
+  deq(tells('The fits are in `q10_fits.csv` online.'), ['markdown: `q10_fits.csv`']);
+  deq(tells('Выход вырос в **два раза**.'), ['markdown: **два раза**']);
+  deq(tells('A footnote* and a C# program; sample #3 and 5 * 4 = 20.'), []);
 });
 
 test('"play a vital role" and its family, and the near-misses of the stock and wordy lists', () => {

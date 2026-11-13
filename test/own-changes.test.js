@@ -12,7 +12,7 @@ const { docBench, recordFetch, useProvider, send } = require('./lib/context');
 let env, T, state, doc;
 const BASE = ['# Paper', '', 'Intro.', '', '## Methods', '', 'We used 5 mg.', '', '## Results', '', 'It worked.'];
 const ctx = (i) => state.messages[i]._context || '';
-const ownLine = (i) => ctx(i).split('\n').find((l) => l.startsWith('Since your last message') || l.startsWith('You changed about')) || '';
+const ownLine = (i) => ctx(i).split('\n').find((l) => l.startsWith('Since your previous turn')) || '';
 
 before(async () => {
   env = await load();
@@ -23,24 +23,24 @@ before(async () => {
 
 test('ownChangesLine: changed, added and deleted lines; equal texts give nothing', () => {
   assert.strictEqual(T.ownChangesLine('a\nb\nc', 'a\nb\nc'), '');
-  assert.strictEqual(T.ownChangesLine('a\nb\nc', 'a\nB\nc'), 'Since your last message you changed line 2: «b» → «B».');
+  assert.strictEqual(T.ownChangesLine('a\nb\nc', 'a\nB\nc'), 'Since your previous turn the document was changed outside the panel (by the user or a collaborator): changed line 2: «b» → «B».');
   assert.strictEqual(T.ownChangesLine('a\nb\nc\nd', 'a\nX\nY\nc\nd\ne'),
-    'Since your last message you changed lines 2–3: «b» → «X / Y»; added line 6: «e».');
-  assert.strictEqual(T.ownChangesLine('a\nb\nc\nd', 'a\nd'), 'Since your last message you deleted at line 2: «b / c».');
+    'Since your previous turn the document was changed outside the panel (by the user or a collaborator): changed lines 2–3: «b» → «X / Y»; added line 6: «e».');
+  assert.strictEqual(T.ownChangesLine('a\nb\nc\nd', 'a\nd'), 'Since your previous turn the document was changed outside the panel (by the user or a collaborator): deleted at line 2: «b / c».');
 });
 
 test('ownChangesLine: a long line is cut around the change; more than 5 ranges or about 400 tokens give the count', () => {
   const long = 'Lorem ipsum dolor sit amet, '.repeat(10);
   const line = T.ownChangesLine(`x\n${long}n = 48 participants, ${long}\ny`, `x\n${long}n = 52 participants, ${long}\ny`);
-  assert.ok(line.startsWith('Since your last message you changed line 2: «…'), line);
+  assert.ok(line.startsWith('Since your previous turn the document was changed outside the panel (by the user or a collaborator): changed line 2: «…'), line);
   assert.ok(line.includes('n = 48 participants') && line.includes('n = 52 participants') && line.length < 400, line);
   const many = Array.from({ length: 20 }, (_, i) => `line ${i}`);
   const edited = many.map((l, i) => (i % 3 === 0 ? l + ' edited' : l));
-  assert.strictEqual(T.ownChangesLine(many.join('\n'), edited.join('\n')), 'You changed about 7 lines since your last message (too many to list).');
+  assert.strictEqual(T.ownChangesLine(many.join('\n'), edited.join('\n')), 'Since your previous turn the document was changed outside the panel (by the user or a collaborator): about 7 lines (too many to list).');
   const big = Array.from({ length: 5 }, (_, i) => `para ${i} ` + 'w'.repeat(400));
   const bigEdited = big.map((l, i) => 'z'.repeat(400) + i);
   // a long block: each side cut to 120 characters
-  const m = /^Since your last message you changed lines 2–6: «(para 0 w+…)» → «(z+…)»\.$/.exec(T.ownChangesLine(['a', ...big, 'b'].join('\n'), ['a', ...bigEdited, 'b'].join('\n')));
+  const m = /^Since your previous turn the document was changed outside the panel \(by the user or a collaborator\): changed lines 2–6: «(para 0 w+…)» → «(z+…)»\.$/.exec(T.ownChangesLine(['a', ...big, 'b'].join('\n'), ['a', ...bigEdited, 'b'].join('\n')));
   assert.ok(m && m[1].length === 120 && m[2].length === 120);
 });
 
@@ -56,13 +56,13 @@ test('chat turns: nothing on the first turn or when unchanged; one edited line; 
   assert.strictEqual(ownLine(2), ''); // unchanged
   doc.text = BASE.map((l) => (l === 'We used 5 mg.' ? 'We used 10 mg.' : l)).join('\n');
   await send(env, 'third');
-  assert.strictEqual(ownLine(4), 'Since your last message you changed line 7: «We used 5 mg.» → «We used 10 mg.».');
+  assert.strictEqual(ownLine(4), 'Since your previous turn the document was changed outside the panel (by the user or a collaborator): changed line 7: «We used 5 mg.» → «We used 10 mg.».');
   // the line sits after the document block, before the selection line
-  assert.ok(/<\/document>\n(?:<document_changes>.*<\/document_changes>\n)?Since your last message/.test(ctx(4)), ctx(4));
+  assert.ok(/<\/document>\n(?:<document_changes>.*<\/document_changes>\n)?Since your previous turn/.test(ctx(4)), ctx(4));
   // a pasted page: many scattered changes
   doc.text = BASE.map((l, i) => (l ? `${l} (pasted ${i})` : l)).join('\n');
   await send(env, 'fourth');
-  assert.strictEqual(ownLine(6), 'You changed about 6 lines since your last message (too many to list).');
+  assert.strictEqual(ownLine(6), 'Since your previous turn the document was changed outside the panel (by the user or a collaborator): about 6 lines (too many to list).');
 });
 
 test('a turn that pasted, or another panel\'s later turn, leaves no line', async () => {

@@ -1,9 +1,9 @@
 'use strict';
-// Module dom.js: the element table (el, $), small DOM/status helpers (escapeHtml, setStatus, fmtNum,
+// Module dom.js: the element table (el, $), small DOM/status helpers (escapeHtml, setStatus, renderDocLine, fmtNum,
 // scrollToBottom, appendToChat), the Markdown-lite renderer (renderInline, renderMarkdown, actionButtons) and the chat's
 // copy handler (onChatCopy: Ctrl+C without the panel's colours).
-/* global docAsOfSuffix, docLineCounts, NUM_LOCALE, state */
-/* exported $, el, escapeHtml, scrollToBottom, appendToChat, setStatus, fmtNum, docStatusText, actionButtons, renderMarkdown, onChatCopy */
+/* global docAsOfSuffix, docLineCounts, docLineReady, NUM_LOCALE, state */
+/* exported $, el, escapeHtml, scrollToBottom, appendToChat, setStatus, renderDocLine, fmtNum, docStatusText, actionButtons, renderMarkdown, onChatCopy */
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -12,17 +12,17 @@ const $ = (id) => document.getElementById(id);
 const el = {
   chat: $('chat'), input: $('input'), action: $('actionBtn'),
   docTitle: $('docTitle'), docStatus: $('docStatus'), brandLogo: $('brandLogo'),
-  settings: $('settings'), provider: $('provider'), apiKeyLabel: $('apiKeyLabel'), apiKey: $('apiKey'), keyWarn: $('keyWarn'),
-  modelSelect: $('modelSelect'), checkModels: $('checkModels'), modelStatus: $('modelStatus'),
+  settings: $('settings'), accountList: $('accountList'), addProviderBtn: $('addProviderBtn'),
   googleStatus: $('googleStatus'), googleConnect: $('googleConnect'), googleSwitch: $('googleSwitch'),
   googleDisconnect: $('googleDisconnect'), googleHint: $('googleHint'),
   selBox: $('selBox'), selPreview: $('selPreview'), selFull: $('selFull'),
   trimNote: $('trimNote'), composer: $('composer'), splitter: $('splitter'), collapseBtn: $('collapseBtn'),
   cmdPopup: $('cmdPopup'), cmdBtn: $('cmdBtn'),
-  modeCycle: $('modeCycle'), modeLabel: $('modeLabel'), modeMenu: $('modeMenu'),
+  modeCycle: $('modeCycle'), modeLabel: $('modeLabel'), modeMenu: $('modeMenu'), chatModel: $('chatModel'), modelMenu: $('modelMenu'),
   newChatBtn: $('newChatBtn'), chatSwitchBtn: $('chatSwitchBtn'), chatSwitchTitle: $('chatSwitchTitle'), chatMenu: $('chatMenu'),
-  instructions: $('instructions'), instructionsBtn: $('instructionsBtn'), instructionsDot: $('instructionsDot'),
-  instructionsText: $('instructionsText'), instructionsCount: $('instructionsCount'),
+  files: $('files'), filesBtn: $('filesBtn'), filesAdd: $('filesAdd'), filesList: $('filesList'), filesPane: $('filesPane'),
+  filesPaneName: $('filesPaneName'), filesPaneNote: $('filesPaneNote'), instructionsText: $('instructionsText'), fileViewer: $('fileViewer'),
+  agentsBtn: $('agentsBtn'), agentMap: $('agentMap'),
 };
 
 function escapeHtml(s) {
@@ -45,10 +45,21 @@ function appendToChat(node, scroll = true) {
   return node;
 }
 
+// Progress and wait texts are recorded, never shown: the line under the title is the document line only (the turn's
+// bubble says what is going on). Every call repaints that line, so the callers that used to put it back keep it current.
 function setStatus(text, warn) {
-  el.docStatus.textContent = text || '';
-  el.docStatus.title = text || '';
-  el.docStatus.classList.toggle('warn', !!warn);
+  state.statusText = { text: text || '', warn: !!warn };
+  renderDocLine();
+}
+
+// The line under the title: the document line of the open document, "Document text unavailable" (red) after a
+// failed read, empty before the first read.
+function renderDocLine() {
+  const failed = state.docText == null && !!state.docError;
+  const text = docLineReady() || failed ? docStatusText() : '';
+  el.docStatus.textContent = text;
+  el.docStatus.dataset.tip = text;
+  el.docStatus.classList.toggle('warn', failed);
 }
 
 const fmtNum = (n) => Number(n).toLocaleString(NUM_LOCALE);
@@ -96,14 +107,14 @@ function renderInline(text) {
 
 // Icon buttons under answers and in code-block bars: "Apply to selection" (arrow into a box) and
 // "Copy" (two sheets; shows a check mark for a moment after copying). The text stays as the tooltip.
-const ICON_APPLY = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M21 3.01H3c-1.1 0-2 .9-2 2V9h2V4.99h18v14.03H3V15H1v4.01c0 1.1.9 1.98 2 1.98h18c1.1 0 2-.88 2-1.98v-14c0-1.11-.9-2-2-2zM11 16l4-4-4-4v3H1v2h10v3z"/></svg>';
-const ICON_COPY = '<svg class="icon-copy" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>' +
-  '<svg class="icon-check" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+const ICON_CHECK = '<svg class="icon-check" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+const ICON_APPLY = '<svg class="icon-apply" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M21 3.01H3c-1.1 0-2 .9-2 2V9h2V4.99h18v14.03H3V15H1v4.01c0 1.1.9 1.98 2 1.98h18c1.1 0 2-.88 2-1.98v-14c0-1.11-.9-2-2-2zM11 16l4-4-4-4v3H1v2h10v3z"/></svg>';
+const ICON_COPY = '<svg class="icon-copy" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>' + ICON_CHECK;
 // applyAct null: Copy only (a Plan answer).
 function actionButtons(applyAct, copyAct, idx) {
   const data = idx == null ? '' : ` data-idx="${idx}"`;
-  return (applyAct ? `<button class="btn icon" data-act="${applyAct}"${data} title="Apply to selection" aria-label="Apply to selection">${ICON_APPLY}</button>` : '') +
-    `<button class="btn icon" data-act="${copyAct}"${data} title="Copy" aria-label="Copy">${ICON_COPY}</button>`;
+  return (applyAct ? `<button class="btn icon" data-act="${applyAct}"${data} data-tip="Apply to selection" aria-label="Apply to selection">${ICON_APPLY}${ICON_CHECK}</button>` : '') +
+    `<button class="btn icon" data-act="${copyAct}"${data} data-tip="Copy" aria-label="Copy">${ICON_COPY}</button>`;
 }
 
 // Returns { html, codes } where codes holds the contents of code blocks (for the buttons). codes: an
@@ -119,7 +130,8 @@ function renderMarkdown(src, codes = []) {
     para = [];
   };
   const flushList = () => {
-    if (list) html += `<${list.tag}>` + list.items.map((t) => '<li>' + renderInline(t) + '</li>').join('') + `</${list.tag}>`;
+    // A numbered list that resumes after a paragraph keeps its numbers (start="N"), as the model wrote them.
+    if (list) html += `<${list.tag}${list.tag === 'ol' && list.start > 1 ? ` start="${list.start}"` : ''}>` + list.items.map((t) => '<li>' + renderInline(t) + '</li>').join('') + `</${list.tag}>`;
     list = null;
   };
   const flushAll = () => { flushPara(); flushList(); };
@@ -161,10 +173,10 @@ function renderMarkdown(src, codes = []) {
       list.items.push(m[1]);
       continue;
     }
-    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+    if ((m = line.match(/^\s*(\d+)[.)]\s+(.*)$/))) {
       flushPara();
-      if (!list || list.tag !== 'ol') { flushList(); list = { tag: 'ol', items: [] }; }
-      list.items.push(m[1]);
+      if (!list || list.tag !== 'ol') { flushList(); list = { tag: 'ol', items: [], start: parseInt(m[1], 10) || 1 }; }
+      list.items.push(m[2]);
       continue;
     }
     if (list && /^\s{2,}\S/.test(line)) { // continuation of a list item
@@ -186,10 +198,13 @@ function renderMarkdown(src, codes = []) {
 // HTML copy instead: structural tags only, no attributes but a link's http(s) href.
 const COPY_KEEP_TAGS = new Set(['P', 'BR', 'HR', 'STRONG', 'B', 'EM', 'I', 'U', 'S', 'UL', 'OL', 'LI', 'A', 'CODE', 'PRE',
   'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD']);
-// Panel UI inside the chat, not answer content: buttons, the action log, token usage, code-block bars, card
-// controls, badges, the Thinking and summary-divider headers (class names from src/render.js and dom.js).
-const COPY_DROP = 'button, svg, input, textarea, select, script, style, .msg-meta, .msg-actions, .activity, .activity-row, ' +
-  '.code-bar, .tool-actions, .side-badge, .persona-badge, .thinking > summary, .summary-divider > summary';
+// Panel UI inside the chat, not answer content: buttons, the action rows of a round (its head and rows; the round's
+// own text and its Sources stay, they are the model's message and its links), the footer (the status and the token
+// line), code-block bars, card controls and waiting cards, badges, the Thinking item's label, the summary-divider
+// headers and the Sources count (class names from src/render.js, web-search.js and dom.js). The timeline rail's dots
+// and line are pseudo-elements, never in a copy.
+const COPY_DROP = 'button, svg, input, textarea, select, script, style, .msg-foot, .msg-meta, .msg-cards, .stage-head, .stage-rows, .activity-row, ' +
+  '.code-bar, .tool-actions, .side-badge, .persona-badge, .thinking > summary, .summary-divider > summary, .sources-count';
 const COPY_BLOCK_TAGS = /^(P|PRE|H[1-6]|BLOCKQUOTE|LI|TR|HR|UL|OL|TABLE)$/;
 
 // Cleans a node list in place (recursively). Returns true when panel UI with text was dropped.
@@ -202,23 +217,31 @@ function sanitizeCopy(parent) {
     if (sanitizeCopy(n)) dropped = true;
     const tag = n.tagName;
     const href = tag === 'A' && /^https?:\/\//i.test(n.getAttribute('href') || '') ? n.getAttribute('href') : null;
-    // A div with its own text (a user bubble, a notice) becomes a paragraph; other unknown tags are unwrapped.
-    const asPara = tag === 'DIV' && [...n.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim());
+    // A div with its own text (a user bubble, an error) becomes a paragraph; other unknown tags are unwrapped.
+    // The Sources fold's summary is the list's title line, as its div was before the fold.
+    const asPara = (tag === 'DIV' || tag === 'SUMMARY') && [...n.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim());
     if (!asPara && (!COPY_KEEP_TAGS.has(tag) || (tag === 'A' && !href))) { n.replaceWith(...n.childNodes); continue; }
     const clean = document.createElement(asPara ? 'p' : tag.toLowerCase());
     if (href) clean.setAttribute('href', href);
+    if (tag === 'OL' && n.getAttribute('start')) clean.setAttribute('start', n.getAttribute('start')); // the numbering survives the copy
     clean.append(...n.childNodes);
     n.replaceWith(clean);
   }
   return dropped;
 }
 
-// Plain text of a cleaned fragment with line breaks at blocks (used only when UI text was dropped).
+// Plain text of a cleaned fragment with line breaks at blocks and list markers ("1. ", "- "): the browser's own
+// selection text has no numbers, so a copied numbered list would lose them.
 function copyPlainText(node) {
   let out = '';
+  let n0 = 0;
   for (const n of node.childNodes) {
     if (n.nodeType === 3) { out += n.textContent; continue; }
     if (n.tagName === 'BR') { out += '\n'; continue; }
+    if (n.tagName === 'LI') {
+      const parent = n.parentElement;
+      if (parent && parent.tagName === 'OL') { n0 = n0 || (parseInt(parent.getAttribute('start'), 10) || 1); out += `${n0++}. `; } else if (parent && parent.tagName === 'UL') out += '- ';
+    }
     out += copyPlainText(n);
     if (COPY_BLOCK_TAGS.test(n.tagName)) out += /^(LI|TR)$/.test(n.tagName) ? '\n' : '\n\n';
   }
@@ -241,6 +264,6 @@ function onChatCopy(ev) {
   const box = document.createElement('div');
   box.append(frag);
   ev.preventDefault();
-  ev.clipboardData.setData('text/plain', dropped ? copyPlainText(box).replace(/\n{3,}/g, '\n\n').trim() : text);
+  ev.clipboardData.setData('text/plain', dropped || box.querySelector('li') ? copyPlainText(box).replace(/\n{3,}/g, '\n\n').trim() : text);
   if (box.querySelector('*')) ev.clipboardData.setData('text/html', '<meta charset="utf-8">' + box.innerHTML);
 }

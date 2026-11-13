@@ -52,7 +52,7 @@ test('a build without a client ID: Sign in says so and does nothing else; not si
   const b = await bench({ googleClientId: '' });
   const { T, state } = b;
   assert.strictEqual(T.GOOGLE_CLIENT_ID, '');
-  assert.strictEqual(T.el.googleStatus.title, 'Not signed in');
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Not signed in');
   assert.strictEqual(await T.connectGoogle(), false);
   deq(b.flows, []); deq(b.fetches, []); deq(b.userinfo, []);
   assert.strictEqual(T.el.googleHint.textContent, 'This build has no Google client ID. See the README, section Google account.');
@@ -82,9 +82,10 @@ test('Sign in with Google: the account chooser with the sign-in scopes, the toke
   deq(storage.muninGoogleAccount, { email: 'ann@example.com', name: 'Ann Example' });
   deq(state.googleAccount, { email: 'ann@example.com', name: 'Ann Example' });
   assert.strictEqual(state.googleConnected, true); assert.strictEqual(storage.muninGoogleConnected, true);
-  assert.strictEqual(T.el.googleStatus.title, 'Signed in as ann@example.com');
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Signed in as ann@example.com');
   assert.ok(!shown(T.el.googleConnect) && shown(T.el.googleSwitch) && shown(T.el.googleDisconnect));
-  assert.ok(T.el.chat.children.some((c) => /Signed in with Google as ann@example\.com/.test(c.innerHTML)));
+  assert.strictEqual(T.el.googleHint.textContent, 'Signed in as ann@example.com.'); // the settings say it, the chat does not
+  assert.ok(!T.el.chat.children.some((c) => /Signed in/.test(c.innerHTML || '')));
   // a Docs API call: the bearer token, no new flow
   await T.docsApi('DOC123');
   deq(b.fetches, ['Bearer tok-1']); assert.strictEqual(b.flows.length, 1);
@@ -100,7 +101,7 @@ test('Sign in: a failing userinfo request still signs in, without an email', asy
   assert.strictEqual(await b.T.connectGoogle(), true);
   assert.strictEqual(b.state.googleConnected, true); assert.strictEqual(b.state.googleAccount, null);
   assert.ok(!('muninGoogleAccount' in b.storage));
-  assert.strictEqual(b.T.el.googleStatus.title, 'Signed in');
+  assert.strictEqual(b.T.el.googleStatus.dataset.tip, 'Signed in');
   assert.strictEqual(b.session.muninGoogleToken.token, 'tok-1');
 });
 
@@ -179,7 +180,7 @@ test('Switch account: a new sign-in replaces the token and the account; a closed
   assert.strictEqual(b.flows[1].interactive, true); assert.strictEqual(b.flows[1].params.prompt, 'select_account');
   assert.strictEqual(session.muninGoogleToken.token, 'tok-2');
   deq(storage.muninGoogleAccount, { email: 'bob@example.com' }); deq(state.googleAccount, { email: 'bob@example.com' });
-  assert.strictEqual(T.el.googleStatus.title, 'Signed in as bob@example.com');
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Signed in as bob@example.com');
   deq(b.revoked, []); // the old token is not revoked: that could revoke the grant of the same account
   // the window closed: nothing changes, the reason shown under the status
   b.chrome.identity.launchWebAuthFlow = async () => { throw new Error('The user did not approve access.'); };
@@ -187,7 +188,7 @@ test('Switch account: a new sign-in replaces the token and the account; a closed
   assert.strictEqual(session.muninGoogleToken.token, 'tok-2'); assert.strictEqual(b.env.run('webToken.token'), 'tok-2');
   deq(storage.muninGoogleAccount, { email: 'bob@example.com' });
   assert.strictEqual(state.googleConnected, true);
-  assert.strictEqual(T.el.googleStatus.title, 'Signed in as bob@example.com');
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Signed in as bob@example.com');
   assert.strictEqual(T.el.googleHint.textContent, 'Could not switch the account: The user did not approve access.');
   await T.docsApi('DOC123');
   deq(b.fetches, ['Bearer tok-2']);
@@ -202,9 +203,9 @@ test('Sign out revokes and forgets the token and the account', async () => {
   assert.ok(!('muninGoogleToken' in session)); assert.strictEqual(b.env.run('webToken'), null);
   assert.ok(!('muninGoogleAccount' in storage)); assert.strictEqual(state.googleAccount, null);
   assert.strictEqual(state.googleConnected, false); assert.strictEqual(storage.muninGoogleConnected, false);
-  assert.strictEqual(T.el.googleStatus.title, 'Not signed in');
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Not signed in');
   assert.ok(shown(T.el.googleConnect) && !shown(T.el.googleSwitch) && !shown(T.el.googleDisconnect));
-  assert.ok(T.el.chat.children.some((c) => /Signed out of Google/.test(c.innerHTML)));
+  assert.ok(!T.el.chat.children.some((c) => /Signed out/.test(c.innerHTML || ''))); // the settings show Sign in again
   // the next Sign in opens the account chooser again
   assert.strictEqual(await T.connectGoogle(), true);
   assert.strictEqual(b.flows.length, 2); assert.strictEqual(b.flows[1].interactive, true);
@@ -215,4 +216,25 @@ test('the client-ID setting of earlier versions is removed silently at startup',
   b.storage.muninGoogleClientId = '42-x.apps.googleusercontent.com';
   await b.T.loadSettings();
   assert.ok(!('muninGoogleClientId' in b.storage));
+});
+
+test('silent renewal: parallel callers share one launchWebAuthFlow; a failed renewal is not kept for the next call', async () => {
+  const b = await bench();
+  const { T } = b;
+  await T.connectGoogle();
+  b.env.run('webToken.expiresAt = Date.now() - 1');
+  const flowsBefore = b.flows.length;
+  const toks = await Promise.all([T.getDocsToken(), T.getDocsToken(), T.docsApi('DOC123').then(() => 'api')]);
+  assert.strictEqual(b.flows.length, flowsBefore + 1, 'one silent flow for three callers');
+  deq(toks, ['tok-2', 'tok-2', 'api']);
+  deq(b.fetches, ['Bearer tok-2']);
+  // a failed renewal: both callers get the error, the next call starts a new flow
+  b.env.run('webToken.expiresAt = Date.now() - 1');
+  b.reply = () => `${REDIRECT}#error=interaction_required`;
+  const res = await Promise.allSettled([T.getDocsToken(), T.getDocsToken()]);
+  deq(res.map((r) => r.status), ['rejected', 'rejected']);
+  assert.strictEqual(b.flows.length, flowsBefore + 2);
+  b.reply = () => `${REDIRECT}#access_token=tok-new&expires_in=3599&scope=${encodeURIComponent(SCOPES)}`;
+  assert.strictEqual(await T.getDocsToken(), 'tok-new');
+  assert.strictEqual(b.flows.length, flowsBefore + 3);
 });

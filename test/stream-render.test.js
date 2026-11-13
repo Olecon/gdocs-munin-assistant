@@ -188,10 +188,17 @@ test('in a turn: chunks between frames are painted once with the latest text; th
   state.settings.provider = 'anthropic';
   Object.assign(state.settings.providers.anthropic, { apiKey: 'sk-ant-x', model: 'claude-opus-5-5' });
   await T.createChat();
-  // Frames run only when the test says so.
+  // Frames run only when the test says so; the panel's clock (Date.now: the sandbox has no performance) stands still
+  // unless the test moves it, so a render measures 0 ms (the minimum interval stays STREAM_RENDER_MIN_MS) however
+  // slowly the machine runs it.
   const frames = [];
   const savedRaf = sandbox.requestAnimationFrame;
   sandbox.requestAnimationFrame = (fn) => { frames.push(fn); return frames.length; };
+  const PanelDate = env.run('Date');
+  const savedNow = PanelDate.now;
+  let clock = savedNow();
+  PanelDate.now = () => clock;
+  assert.ok(!('performance' in sandbox), 'the coordinator measures with Date.now');
   const paints = [];
   sandbox.__paints = paints;
   env.run('(() => { const orig = updateAssistantBubble; updateAssistantBubble = function (b, o) { __paints.push({ text: o.text, streaming: !!o.streaming }); return orig(b, o); }; globalThis.__restorePaint = () => { updateAssistantBubble = orig; }; })()');
@@ -210,11 +217,16 @@ test('in a turn: chunks between frames are painted once with the latest text; th
       stream.push(delta('w' + i + ' '));
       await waitFor(() => stream.reads > i + 1, 'chunk ' + i);
     }
+    // the second chunk armed the minimum interval's (real) timer, which then asks for one frame
+    await waitFor(() => frames.length > 0, 'the frame request');
     assert.strictEqual(frames.length, 1, 'one frame requested for 20 chunks');
-    assert.strictEqual(paints.length, 0, 'nothing painted before the frame');
+    // the first text chunk is painted at once (the orb goes with it), the rest wait for the frame
+    assert.strictEqual(paints.length, 1, 'only the first text chunk painted before the frame');
+    assert.strictEqual(paints[0].text, 'w1 ');
+    clock += T.STREAM_RENDER_MAX_MS + 10; // past the longest interval after that paint
     frames.shift()();
-    assert.strictEqual(paints.length, 1);
-    assert.strictEqual(paints[0].text, words.join(' ') + ' ', 'the frame paints the latest text');
+    assert.strictEqual(paints.length, 2);
+    assert.strictEqual(paints[1].text, words.join(' ') + ' ', 'the frame paints the latest text');
     stream.push(delta('end.') + ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
       ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 3 } }) + ev('message_stop', { type: 'message_stop' }));
     stream.end();
@@ -228,5 +240,6 @@ test('in a turn: chunks between frames are painted once with the latest text; th
   } finally {
     env.run('__restorePaint()');
     sandbox.requestAnimationFrame = savedRaf;
+    PanelDate.now = savedNow;
   }
 });

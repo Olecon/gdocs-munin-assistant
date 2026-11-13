@@ -10,10 +10,10 @@
 // indexed), suspect (no hit in both sources and the venue is unknown to OpenAlex). Requests run one at a time with a
 // pause, at most CK_REF_MAX entries, and stop on the signal. The same run serves the reading tool check_references
 // (ckReferencesText), and ckFormatCsl writes a Crossref record as a plain-text entry for /check's Replace button.
-/* global CROSSREF_URL, crossrefMeta, ckDocument, ckEntries, ckNormName, htmlToText, offersOpenDocument, OPENALEX_URL, refsOffered, registerTools, withReferences,
-   setStatus */
+/* global CROSSREF_URL, crossrefMeta, ckDocument, ckEntries, ckNormName, htmlToText, lookupCached, offersOpenDocument, OPENALEX_URL, refsOffered, registerTools,
+   withReferences, setStatus */
 /* exported ckVerifyReferences, ckCheckEntry, ckVerdict, ckTitleSimilarity, CK_REF_MAX, ckOpenAlexAllowed, ckSameSurname, ckEntryAuthors,
-   ckAuthorMatch, ckVenueMatches, ckPreprint, ckFormatCsl, ckCitationStyle, ckEntryPrefix, ckReferencesText, ckFromCsl */
+   ckAuthorMatch, ckVenueMatches, ckPreprint, ckFormatCsl, ckCitationStyle, ckEntryPrefix, ckReferencesText, ckReferencesDigest, ckFromCsl, ckGetJson */
 
 const CK_REF_MAX = 50;
 const CK_REF_DELAY_MS = 300; // between requests: Crossref and OpenAlex ask for a polite rate
@@ -294,7 +294,7 @@ async function ckCheckEntry(entry, io = {}) {
   if (!hit && !found.failed && !entry.notIndexed && io.openAlex && entry.venue) {
     try { found.venueKnown = await ask(() => ckVenueKnown(entry.venue, io.signal)); } catch (e) { failed(e); }
   }
-  return { ...ckVerdict(entry, found), work: hit || null };
+  return { ...ckVerdict(entry, found), work: hit || null, ...(found.failed ? { failed: true } : {}) };
 }
 
 // All entries (at most CK_REF_MAX), one at a time: [{ entry, verdict, text }]. opts: { signal, openAlex, delay,
@@ -379,7 +379,8 @@ function ckReferencesText(results, total) {
   return [head, ...rows].join('\n');
 }
 // The reference list of the document as the turn started (the reading tools never see this turn's writes), checked
-// like /check does.
+// like /check does. The same list (its entries and their lines) checked again comes from the lookup cache, unless the
+// earlier run was stopped or a lookup failed.
 async function runCheckReferences(name, args, snap) {
   const view = { ...snap, ...(snap.promptView || {}) };
   if (view.docText == null) return `Error: the document text is unavailable (${view.docError || 'export failed'}).`;
@@ -387,12 +388,32 @@ async function runCheckReferences(name, args, snap) {
   const entries = ckEntries(ckDocument(model ? { model } : { text: view.docText, format: view.docFormat }));
   if (!entries.length) return { content: 'No reference list found: no entries under a heading such as "References", "Bibliography" or "Список литературы".', _ok: true, _message: 'no reference list' };
   const openAlex = await ckOpenAlexAllowed();
-  const results = await ckVerifyReferences(entries, {
-    signal: snap.signal || null, openAlex,
-    onProgress: (done, total) => { if (done < total) setStatus(`Checking reference ${done + 1} of ${total}…`); },
-  });
-  const note = openAlex ? '' : '\nOpenAlex is not allowed, so only Crossref was searched.';
-  return { content: ckReferencesText(results, entries.length) + note, _ok: true, _message: `${results.length} entr${results.length === 1 ? 'y' : 'ies'} checked` };
+  const key = JSON.stringify([openAlex, entries.map((e) => [e.l ? e.l.line : null, e.text])]);
+  let complete = false;
+  return lookupCached(snap, 'check_references', key, async () => {
+    const results = await ckVerifyReferences(entries, {
+      signal: snap.signal || null, openAlex,
+      onProgress: (done, total) => { if (done < total) setStatus(`Checking reference ${done + 1} of ${total}…`); },
+    });
+    complete = !results.stopped && !results.some((r) => r.failed);
+    const note = openAlex ? '' : '\nOpenAlex is not allowed, so only Crossref was searched.';
+    return { content: ckReferencesText(results, entries.length) + note, _ok: true, _message: `${results.length} entr${results.length === 1 ? 'y' : 'ies'} checked` };
+  }, () => complete);
+}
+// The digest that replaces the result after the turn (registry.js digest): the summary line and the entries that are not
+// plain matches, the worst first (at most CK_DIGEST_ROWS, each clipped), read back from ckReferencesText's text; ''
+// (the plain stub) for any other text.
+const CK_DIGEST_ROWS = 6;
+const CK_DIGEST_ROW_CHARS = 110;
+const CK_DIGEST_ORDER = ['Error', 'Suspect', 'Warning', 'Unverified'];
+function ckReferencesDigest(content, why) {
+  const lines = String(content).split('\n');
+  if (!/ reference entr(?:y matches|ies match) Crossref or OpenAlex/.test(lines[0] || '')) return '';
+  const rows = lines.slice(1).map((l) => ({ l, k: CK_DIGEST_ORDER.indexOf((/, line \S+: (\w+): /.exec(l) || [])[1]) })).filter((r) => r.k >= 0)
+    .sort((a, b) => a.k - b.k).map((r) => (r.l.length > CK_DIGEST_ROW_CHARS ? r.l.slice(0, CK_DIGEST_ROW_CHARS - 1) + '…' : r.l));
+  const more = Math.max(0, rows.length - CK_DIGEST_ROWS);
+  return [`[check_references: ${lines[0]}`, ...rows.slice(0, CK_DIGEST_ROWS),
+    `${more ? `${more} more entries that do not match, and the ` : 'the '}matching entries omitted ${why}]`].join('\n');
 }
 const CHECK_REFERENCES_DEF = { type: 'function', function: {
   name: 'check_references',
@@ -401,8 +422,8 @@ const CHECK_REFERENCES_DEF = { type: 'function', function: {
 } };
 registerTools([CHECK_REFERENCES_DEF], {
   offer: (mode, snap) => refsOffered(snap) && (mode === 'edit' || mode === 'manual' || mode === 'plan') && offersOpenDocument(mode, snap),
-  reading: true, icon: '📚',
+  reading: true,
+  digest: (name, args, content, why) => ckReferencesDigest(content, why),
   summary: () => 'the reference list',
-  run: (name, args, snap, ui) => withReferences(snap, ui, 'To check the reference list.', () => runCheckReferences(name, args, snap)),
-  prompt: [{ section: 'reading', line: '- check_references(): check the reference list against Crossref and OpenAlex (a verdict per entry; slow).' }],
+  run: (name, args, snap, ui) => withReferences(snap, ui, 'To check the reference list.', () => runCheckReferences(name, args, snap), ['Crossref', 'OpenAlex']),
 });

@@ -2,9 +2,10 @@
 // Module section-scores.js: find_relevant_sections, a reading tool for documents too long for one request. The panel,
 // not the model, runs it: one short quiet request per top-level section (a two-sentence summary under the question and
 // a score from 0 to 10), then the sections go back to the model sorted by score, with their line ranges.
-/* global anthropicHeaders, apiUrl, bearerHeaders, docFitsRequest, docLines, docOutline, fmtNum, isDocPass,
+/* global chatBody, anthropicHeaders, apiUrl, bearerHeaders, docFitsRequest, docLines, docOutline, fmtNum, isDocPass,
    MUNIN_REASONING_EFFORT, openaiReasoningModel, readLimits, registerTools, runReadingTool, runStream, samplingFields,
-   setStatus */
+   setStatus, stickyOffer */
+/* global errorClause, rawError */
 /* exported SECTION_SCORE_PROMPT, SECTION_TOOL, sectionScoringOffered, docSections, parseSectionScore, sectionRequest,
    findRelevantSections */
 
@@ -26,7 +27,7 @@ const SECTION_SCORE_PROMPT = 'You rate one section of a long document for a ques
 const SECTION_TOOL = { type: 'function', function: {
   name: 'find_relevant_sections',
   description: 'For a document too long to read whole: the panel sends each top-level section (at most 24) with the question to the model in a separate short request and returns the sections sorted by relevance, with line ranges, a score from 0 to 10 and a two-sentence summary. ' +
-    'Costs one request per section (about 1-3k tokens each): call it once per question, before reading, then read the best sections with read_lines.',
+    'Costs one request per section (about 1-3k tokens each): call it once per question, before reading, then read the best sections with read_document.',
   parameters: {
     type: 'object',
     properties: { question: { type: 'string', description: 'The user\'s question, in their words.' } },
@@ -119,9 +120,9 @@ function sectionRequest(snap, user) {
   const body = {
     model: cfg.model, persona: 'raw', max_tokens: SECTION_REPLY_TOKENS.munin, stream: true, stream_options: { include_usage: true },
     messages: [{ role: 'system', content: SECTION_SCORE_PROMPT }, { role: 'user', content: user }],
-    chat_template_kwargs: { reasoning_effort: MUNIN_REASONING_EFFORT }, ...samplingFields(prov),
+    chat_template_kwargs: { reasoning_effort: MUNIN_REASONING_EFFORT }, ...samplingFields(prov, 'summary'),
   };
-  return { kind: 'chat', url: apiUrl(snap, '/chat/completions'), headers: bearerHeaders(cfg), body, tools: [] };
+  return { kind: 'chat', url: apiUrl(snap, '/chat/completions'), headers: bearerHeaders(cfg), body: chatBody(prov, body), tools: [] };
 }
 
 // The tool: every section in order, one request each; Stop (the turn's signal) ends it between sections, a failed
@@ -131,7 +132,7 @@ async function findRelevantSections(args, snap) {
   if (!question) return 'Error: the question is empty.';
   if (snap.docText == null) return `Error: the document text is unavailable (${snap.docError || 'export failed'}).`;
   const { sections, merged, capped } = docSections(snap);
-  if (!sections.length) return 'Error: the document has no headings to split it into sections. Use find_in_document and read_lines.';
+  if (!sections.length) return 'Error: the document has no headings to split it into sections. Use find_in_document and read_document.';
   const chars = readLimits(snap.prov).chars;
   const signal = snap.signal || new AbortController().signal;
   const scored = [];
@@ -150,7 +151,8 @@ async function findRelevantSections(args, snap) {
     } catch (e) {
       if (signal.aborted || e.name === 'AbortError') { ended = `Stopped after ${i} of ${sections.length} sections.`; break; }
       if (!scored.length) throw e;
-      ended = `Scoring stopped at section ${i + 1} of ${sections.length}: ${e.message || e}`;
+      console.warn('Munin: section scoring failed:', rawError(e));
+      ended = `Scoring stopped at section ${i + 1} of ${sections.length}: ${errorClause(e)}.`;
       break;
     }
     scored.push({ ...s, ...parseSectionScore(r.content), clipped });
@@ -179,18 +181,19 @@ function rankedSections(question, scored, { total, merged, capped, ended, chars 
     }
   }
   if (ended) out.push(`[${ended}]`);
-  out.push('[The scores are estimates from each section alone: read the best sections with read_lines before you answer, and cite their lines.]');
+  out.push('[The scores are estimates from each section alone: read the best sections with read_document before you answer, and cite their lines.]');
   return out.join('\n');
 }
 
+// On a provider with a prompt cache it stays offered for the rest of the chat once offered (stickyOffer); the document
+// note only while the document is still too long.
 registerTools([SECTION_TOOL], {
-  offer: sectionScoringOffered,
+  offer: (mode, snap) => !isDocPass(mode) && stickyOffer(snap, 'find_relevant_sections', sectionScoringOffered(mode, snap)),
   reading: true,
-  icon: '🔍',
   summary: (name, args) => {
     const q = String((args && args.question) || '').replace(/\s+/g, ' ').trim();
     return q ? `"${q.length > 60 ? q.slice(0, 60) + '…' : q}"` : '';
   },
   run: (name, args, snap) => findRelevantSections(args || {}, snap),
-  docNote: () => '[The document is too long to read whole: find_relevant_sections(question) ranks its sections for a question.]',
+  docNote: (snap) => (sectionScoringOffered('edit', snap) ? '[The document is too long to read whole: find_relevant_sections(question) ranks its sections for a question.]' : ''),
 });

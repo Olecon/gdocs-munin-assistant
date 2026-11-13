@@ -38,7 +38,7 @@ test('unclear failure, the batch arrived: it is rolled back too, on the one re-r
   await fresh(spec());
   const g = gets();
   const r = await T.commitSequence(as, plan(), 'q1', steps({ network: true, apply: true }));
-  assert.ok(r.fail && /^Error: the edit failed halfway \(could not reach the Google Docs API \(Failed to fetch\)\.\) and its first part was rolled back, so the document is as it was\./.test(r.fail.content), r.fail && r.fail.content);
+  assert.ok(r.fail && /^Error: the edit failed halfway \(Google did not answer; try again in a moment\) and its first part was rolled back, so the document is as it was\./.test(r.fail.content), r.fail && r.fail.content);
   assert.strictEqual(fake.text('t.0'), 'Body text');
   deq(posts().slice(2), [DEL, DEL]); // the second batch's rollback, then the first's
   assert.strictEqual(gets() - g, 4); // after batch 1; the re-read (used by the first rollback); before the second; the final read
@@ -61,7 +61,7 @@ test('unclear failure, the batch did not arrive: only the earlier steps are roll
 test('unclear failure and the re-read fails: nothing is rolled back, the message says to check the document', async () => {
   await fresh(spec());
   const r = await T.commitSequence(as, plan(), 'q4', [steps()[0], (m) => { fake.failNext = { network: true, apply: true }; fake.failReads = 1; return { requests: [T.reqInsert(m, 1, 'B')], rollback: del }; }]);
-  assert.strictEqual(r.fail.content, 'Error: the edit failed halfway (could not reach the Google Docs API (Failed to fetch).): its first part was applied, and whether the rest arrived is unknown '
+  assert.strictEqual(r.fail.content, 'Error: the edit failed halfway (Google did not answer; try again in a moment): its first part was applied, and whether the rest arrived is unknown '
     + 'because the document could not be read again. The edit may be partly applied; check the document before editing again.');
   assert.strictEqual(r.fail._message, 'The edit may be partly applied; check the document');
   assert.strictEqual(r.fail._ok, false);

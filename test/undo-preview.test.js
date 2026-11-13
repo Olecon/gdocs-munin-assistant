@@ -72,7 +72,8 @@ test('the preview lists relocated, blocked and stopped edits; Cancel applies not
   const html = pv.card.innerHTML;
   assert.ok(html.includes('Undo all 3 edits of this answer?'), html);
   assert.ok(html.includes('2 of 3 edits can be undone; Undo all stops at the blocked one'), html);
-  assert.ok(html.includes('↩️ Replaced line 4') && html.includes('↩️ Replaced line 10') && html.includes('⛔ Replaced line 2'), html);
+  const item = (st, label, title) => html.includes(`<span class="mk ${st}" role="img" aria-label="${label}" data-tip="${label}"></span> ${title}`);
+  assert.ok(item('ok', 'Can be undone', 'Replaced line 4') && item('ok', 'Can be undone', 'Replaced line 10') && item('fail', 'Blocked', 'Replaced line 2'), html);
   assert.ok(html.indexOf('Replaced line 4') < html.indexOf('Replaced line 10') && html.indexOf('Replaced line 10') < html.indexOf('Replaced line 2'), 'newest first');
   assert.ok(/Blocked: the document changed near that edit after it was made, so it cannot be undone automatically\. Use Undo \(Ctrl\+Z\) in Google Docs instead\./.test(html), html);
   assert.ok(html.includes('data-act="preview-accept"') && html.includes('>Undo 2</button>') && html.includes('>Cancel</button>') && !html.includes('preview-accept-all'), html);
@@ -108,7 +109,7 @@ test('an older edit whose context a newer edit of the answer changed is not repo
   assert.throws(() => T.undoableAt(now, edits()[0]._edit), /changed near that edit/); // checked on the document as it is
   const p = T.undoAllFromButton(ids[1], null);
   const [id, pv] = await cardEntry();
-  assert.ok(pv.card.innerHTML.includes('All 2 edits can be undone, newest first.') && !pv.card.innerHTML.includes('⛔'), pv.card.innerHTML);
+  assert.ok(pv.card.innerHTML.includes('All 2 edits can be undone, newest first.') && !pv.card.innerHTML.includes('aria-label="Blocked"'), pv.card.innerHTML);
   T.decidePreview(id, 'accept');
   assert.strictEqual(await p, true);
   deq(fake.text('t.0').split('\n'), ORIGINAL);
@@ -142,7 +143,7 @@ test('nothing undoable: the card has only Close', async () => {
   const html = pv.card.innerHTML;
   assert.ok(html.includes('The newest edit cannot be undone, so Undo all would undo nothing.'), html);
   assert.ok(!html.includes('preview-accept') && html.includes('>Close</button>'), html);
-  assert.ok(html.includes('⏸️ Replaced line 2') && html.includes('Not undone: Undo all stops at the blocked edit above.'), html);
+  assert.ok(html.includes('aria-label="Not undone" data-tip="Not undone"></span> Replaced line 2') && html.includes('Not undone: Undo all stops at the blocked edit above.'), html);
   T.decidePreview(id, 'reject');
   assert.strictEqual(await p, false);
   assert.strictEqual(posts(), 2);
@@ -248,8 +249,8 @@ test('while the Undo all card waits, switching, creating and deleting chats are 
   await T.deleteChat(chatB);
   deq(state.chats.map((c) => c.id), chatsBefore, 'nothing deleted');
   assert.strictEqual(refused(), 3);
-  assert.strictEqual(await T.startTurn(false), 'idle'); // Enter: the status says the same
-  assert.strictEqual(T.el.docStatus.textContent, 'Confirm or cancel Undo all first.');
+  assert.strictEqual(await T.startTurn(false), 'idle'); // Enter: a notice says the same
+  assert.strictEqual(refused(), 4);
   assert.ok(T.pendingPreviews.has(id) && T.el.chat.children.includes(pv.card), 'the card is still there');
   T.decidePreview(id, 'accept');
   assert.strictEqual(await p, true);

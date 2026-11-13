@@ -81,7 +81,7 @@ test('Enter while a turn runs queues the message; a second Enter appends after a
     enter(env, long);
     assert.strictEqual(state.queued.text, 'Second\n\n' + long);
     assert.strictEqual(rowText(env).textContent, ('Second ' + long).slice(0, 80) + '…');
-    assert.strictEqual(rowText(env).title, 'Second\n\n' + long);
+    assert.strictEqual(rowText(env).dataset.tip, 'Second\n\n' + long);
     enter(env, '   '); // blank: nothing queued
     assert.strictEqual(state.queued.text, 'Second\n\n' + long);
     assert.strictEqual(env.bodies.length, 1); // nothing sent while busy

@@ -142,17 +142,21 @@ function textWords(text) {
   const seg = segmenter('en', 'word');
   if (!seg) return s.match(WORD_FALLBACK_RE) || [];
   const out = [];
-  let joinNext = false;
-  let prev = null; // the previous segment
-  for (const part of seg.segment(s)) {
-    if (part.isWordLike) {
-      if (joinNext && out.length) out[out.length - 1] += '-' + part.segment;
-      else out.push(part.segment);
-      joinNext = false;
-    } else {
-      joinNext = HYPHENS.has(part.segment) && prev && prev.isWordLike;
+  // Line by line: V8's segment iterator slows down quadratically with the string's length (a 6,000-line document
+  // took 27 s at once, 0.1 s by lines); no word spans a line break, and a hyphen at a line's end joins nothing.
+  for (const line of s.split('\n')) {
+    let joinNext = false;
+    let prev = null; // the previous segment
+    for (const part of seg.segment(line)) {
+      if (part.isWordLike) {
+        if (joinNext && out.length) out[out.length - 1] += '-' + part.segment;
+        else out.push(part.segment);
+        joinNext = false;
+      } else {
+        joinNext = HYPHENS.has(part.segment) && prev && prev.isWordLike;
+      }
+      prev = part;
     }
-    prev = part;
   }
   return out;
 }

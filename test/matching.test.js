@@ -231,7 +231,7 @@ test('not found: the closest match, where it differs and the current lines', asy
   assert.ok(!w._ok);
   assert.strictEqual(w.content, 'Error: old_text not found. Closest match at line 4: «Alpha beta gamma.»; differs at « ray» (old_text) vs «.» (document).\n' +
     'Current text of lines 4-4:\n4: Alpha beta gamma.\n' +
-    'old_text must match the document text (without the "N: " line-number prefixes); read the exact text with read_lines or find_in_document and try again');
+    'Copy old_text exactly from the current text above, without the "N: " prefixes.');
   // only the end matches ("a beta delta."): the difference comes before it
   w = await exec('replace_all', { old_text: 'Omega beta delta.', new_text: 'x' });
   assert.ok(!w._ok && w.content.startsWith('Error: old_text not found. Closest match at line 5: «Alpha beta delta.»; differs at «Omeg» (old_text) vs «Alph» (document).\nCurrent text of lines 5-5:\n5: Alpha beta delta.\n'), w.content);
@@ -242,7 +242,8 @@ test('not found: the closest match, where it differs and the current lines', asy
   w = await exec('replace_text', { old_text: 'Alpha beta gamma, followed by a very long tail of other words', new_text: 'x' });
   assert.ok(w.content.includes('differs at «, followed by a very long tail…» (old_text) vs «.» (document)'), w.content);
   w = await exec('format_text', { old_text: 'Last lime', bold: true });
-  assert.ok(!w._ok && /Closest match at line 10: «Last line»; differs at «me» \(old_text\) vs «ne» \(document\)/.test(w.content) && /read_formatting/.test(w.content), w.content);
+  assert.ok(!w._ok && /Closest match at line 10: «Last line»; differs at «me» \(old_text\) vs «ne» \(document\)/.test(w.content), w.content);
+  assert.ok(w.content.endsWith('\nCopy old_text exactly from the current text above, without the "N: " prefixes or formatting markers.'), w.content);
   // nothing similar at all
   w = await exec('replace_text', { old_text: 'Zzyzx qwv', new_text: 'x' });
   assert.ok(!w._ok && /^Error: old_text was not found in the document, and no similar text either\. old_text must match/.test(w.content), w.content);
@@ -255,7 +256,7 @@ test('not found: markers and quotes in old_text are ignored when looking for sim
   // "**...**" alone would match nothing: the plain text's closest match is shown with the hint
   w = await exec('format_text', { old_text: '**Alpha beta gamma ray**', bold: true, italic: null, underline: null });
   assert.ok(!w._ok && w.content.startsWith('Error: old_text not found. Closest match at line 4: «Alpha beta gamma.»; differs at « ray» (old_text) vs «.» (document).\n'), w.content);
-  assert.ok(w.content.includes(`\n${HINT} old_text must match the document text`), w.content);
+  assert.ok(w.content.endsWith(`\n${HINT} Copy old_text exactly from the current text above, without the "N: " prefixes or formatting markers.`), w.content);
   w = await exec('replace_text', { old_text: "'Omega beta delta.'", new_text: 'x' });
   assert.ok(!w._ok && /Closest match at line 5: «Alpha beta delta\.»; differs at «Omeg»/.test(w.content) && w.content.includes(HINT), w.content);
   // without markers or quotes: no hint
@@ -264,6 +265,17 @@ test('not found: markers and quotes in old_text are ignored when looking for sim
   // markers around text with nothing similar: still "no similar text either", no hint
   w = await exec('replace_text', { old_text: '**Zzyzx qwv**', new_text: 'x' });
   assert.ok(!w._ok && /^Error: old_text was not found in the document, and no similar text either\. old_text must match/.test(w.content), w.content);
+  assert.strictEqual(fake.revision, 1);
+});
+
+test('a line whose positions do not add up: one refusal text with the way forward (inexactLine), per tool', async () => {
+  await fresh();
+  as.model.lines[3].exact = false; // line 4 (unexpected API output)
+  const way = (tool, args) => exec(tool, args).then((r) => { assert.ok(!r._ok, r.content); return r.content; });
+  assert.strictEqual(await way('replace_text', { old_text: 'Alpha beta gamma.', new_text: 'x' }),
+    'Error: line 4 cannot be edited through the API (its positions do not add up); edit other lines, or tell the user to change it in Google Docs');
+  assert.match(await way('delete_lines', { start: 4, end: 4 }), /^Error: line 4 cannot be edited through the API \(its positions do not add up\); delete the other lines, or tell the user to delete it in Google Docs$/);
+  assert.match(await way('insert_after_line', { line: 4, text: 'x', style: null }), /line 4 cannot be edited through the API .*; insert after another line, or tell the user to add the text in Google Docs$/);
   assert.strictEqual(fake.revision, 1);
 });
 

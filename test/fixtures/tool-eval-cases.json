@@ -1,0 +1,663 @@
+{
+  "sets": {
+    "saved-chats": ["cite-plain-doi", "cite-after-not-now", "heading-indent-like-this", "number-sections", "number-sections-si-prefix", "heading-bold-spacing", "numbers-from-earlier-message", "superscript-affiliations", "improve-one-paragraph", "remember-in-english", "selection-twice", "side-whole-selection", "web-text-no-links", "fix-after-user-fact", "headings-still-differ", "side-template-no-translation", "translate-paragraph"],
+    "controls": ["fix-typo", "export-selection", "translate-paragraph", "add-sentence-plain", "short-selection", "term-replace-all"],
+    "precedence": ["separate-edits-undo", "plan-no-questions"]
+  },
+  "docs": {
+    "report": [
+      "# Heat tolerance of a soil lipase",
+      "## Abstract",
+      "We heated the purified enzyme at 50, 60 and 70 °C and measured the residual activity. The enzyme kept 74 % of its activity after one hour at 60 °C.",
+      "## Methods",
+      "The enzyme was incubated at 37 °C for 30 min before each assay. Samples were taken every 10 min, and the residual activity was recieved as the mean of three replicates.",
+      "A pilot study with 18 samples was run in March to test the assay and is not part of the results.",
+      "## Results",
+      "Results",
+      "The half-life of the enzyme at 60 °C was 42 min, and the difference between the two buffers was significant (p = 0.02).",
+      "At 70 °C the color of the reaction mixture changed from yellow to clear within 15 min.",
+      "## Discussion",
+      "The enzyme is stable enough for detergents that are used at 60 °C, but its half-life at 70 °C is too short for industrial use."
+    ],
+    "terms": [
+      "# Notes on the sorbent",
+      "The sorbent was washed with water and dried at 105 °C.",
+      "We weighed 0.2 g of the sorbent into each flask.",
+      "After 24 h the sorbent was filtered off and the solution was analysed.",
+      "The capacity of the sorbent was 1.85 mmol/g."
+    ],
+    "ru": [
+      "# Сорбция меди на цеолите",
+      "## Методика",
+      "Цеолит промывали водой и сушили при 105 °C. Навеску 0,2 г встряхивали со 100 мл раствора в течение 24 ч.",
+      "Сорбент отделяли фильтрованием, концентрацию меди в растворе определяли атомно-абсорбционным методом.",
+      "## Результаты",
+      "Ёмкость модифицированного сорбента составила 1,85 ммоль/г, природного — 0,92 ммоль/г. Сорбент сохранял ёмкость после пяти циклов регенерации."
+    ],
+    "ru-dash": [
+      "# Сорбция меди на цеолите",
+      "## Результаты",
+      "Ёмкость модифицированного сорбента - 1,85 ммоль/г, природного - 0,92 ммоль/г. Цеолит - доступный и недорогой сорбент.",
+      "## Выводы",
+      "Модифицированный цеолит пригоден для очистки сточных вод."
+    ],
+    "copy": [
+      "# Lipase stability",
+      "## Methods",
+      "The residual activity of the purified lipase was measured after incubation at 50, 60 and 70 °C in 50 mM phosphate buffer at pH 7.5, using p-nitrophenyl butyrate as the substrate, with three technical replicates per temperature, and the values were normalised to the activity of an unheated control sample that was kept on ice for the whole duration of the experiment.",
+      "## Results",
+      "The enzyme kept 74 % of its activity after one hour at 60 °C."
+    ],
+    "claim": [
+      "# Lipases in laundry detergents",
+      "Lipases remove fatty stains from fabrics at low washing temperatures.",
+      "Lipases are the second most widely used enzymes in household detergents after proteases.",
+      "Most detergent lipases are produced in fungi and expressed in yeast."
+    ],
+    "spin": [
+      "# Spin labels in membrane transporters",
+      "## Introduction",
+      "Membrane transporters change shape when they bind a substrate, and these changes are hard to follow in a lipid bilayer.",
+      "Three methods can follow such changes: calorimetry measures the heat of binding but not the structure, fluorescence reports distances only with bulky dyes, and spin labelling gives distances of 2–8 nm with small probes.",
+      "Here we combine spin labelling with molecular dynamics to follow one transporter through its transport cycle.",
+      "## Methods",
+      "The protein was labelled at two cysteines and reconstituted into liposomes.",
+      "Distances were measured at 50 K with a four-pulse sequence.",
+      "## Results",
+      "The mean distance grew from 3.1 nm to 4.2 nm when the substrate was added. The distance distribution also became broader, which usually points to a mobile loop. Both changes reversed after the substrate was washed out."
+    ],
+    "spin-ratios": [
+      "# Spin labels in membrane transporters",
+      "## Methods",
+      "The protein was labelled at two cysteines and reconstituted into liposomes.",
+      "## Results",
+      "The mean ratio of the two distance peaks was 0.47 in the control and 1.10 after the substrate was added."
+    ],
+    "si-numbering": [
+      "# Supplementary material",
+      { "p": "Software", "style": "HEADING_2", "fmt": [[0, 8, { "size": 12 }]] },
+      "All simulations ran on one workstation with eight cores.",
+      { "p": "Sample preparation", "style": "HEADING_2", "fmt": [[0, 18, { "size": 12 }]] },
+      "The samples were frozen in liquid nitrogen within one minute.",
+      { "p": "Spectra", "style": "HEADING_2", "fmt": [[0, 7, { "size": 12 }]] },
+      "Spectra were recorded at 50 K with a four-pulse sequence."
+    ],
+    "si-indent": [
+      "# Supplementary material",
+      { "p": "Software", "style": "HEADING_2", "bullet": { "listId": "kix.h", "level": 1, "preset": "NUMBERED_DECIMAL_NESTED" } },
+      "All simulations ran on one workstation with eight cores.",
+      { "p": "Sample preparation", "style": "HEADING_2", "bullet": { "listId": "kix.h", "level": 1 }, "pstyle": { "indentStart": 36, "indentFirstLine": 18 } },
+      "The samples were frozen in liquid nitrogen within one minute.",
+      { "p": "Spectra", "style": "HEADING_2", "bullet": { "listId": "kix.h", "level": 1 }, "pstyle": { "indentStart": 36, "indentFirstLine": 18 } },
+      "Spectra were recorded at 50 K with a four-pulse sequence."
+    ],
+    "si-contents": [
+      "# Supplementary material",
+      "Contents",
+      "Sample preparation",
+      "Spectra",
+      "## Sample preparation",
+      "The samples were frozen in liquid nitrogen within one minute.",
+      "## Spectra",
+      "Spectra were recorded at 50 K with a four-pulse sequence."
+    ],
+    "authors": [
+      "# Spin labels in membrane transporters",
+      "Anna Example1, Ben Sample2",
+      "1 Department of Chemistry, Example University, Exampletown",
+      "2 Institute of Physics, Sample College, Sampleville",
+      "## Abstract",
+      "We followed one transporter through its transport cycle with spin labels and molecular dynamics."
+    ],
+    "typos": [
+      "# Heat tolerance of a soil lipase",
+      "## Methods",
+      "The enzyme was incubated at 37 °C for 30 min before each asay.",
+      "Samples were taken every 10 min, and the residual activity was calcualted as the mean of three replicates.",
+      "## Results",
+      "The half-life of the enzyme at 60 °C was 42 min, and the diference between the two buffers was significant (p = 0.02).",
+      "At 70 °C the colour of the reaction mixture changed from yelow to clear within 15 min.",
+      "## Discussion",
+      "The enzyme is stable enough for detergents that are used at 60 °C, but its half-life at 70 °C is too short for industrail use."
+    ]
+  },
+  "cases": [
+    {
+      "id": "term-replace-all", "doc": "@terms", "mode": "auto", "docsApi": true,
+      "prompts": ["Use the word \"adsorbent\" instead of \"sorbent\" everywhere in the document.", "Replace every occurrence of sorbent with adsorbent.", "Замени во всём документе слово sorbent на adsorbent."],
+      "expect": { "order": ["find_in_document|read_document", "replace_all|replace_text|edit_document"], "forbid": ["remember", "replace_section", "delete_lines"], "finalTextNot": "(?<![a-z])sorbent" },
+      "dry": [
+        [{ "calls": [["find_in_document", { "query": "sorbent", "doc": null }]] }, { "calls": [["replace_all", { "old_text": "sorbent", "new_text": "adsorbent" }]] }, { "text": "Replaced 4 occurrences." }],
+        [{ "calls": [["replace_all", { "old_text": "sorbent", "new_text": "adsorbent" }]] }, { "text": "Done." }]
+      ]
+    },
+    {
+      "id": "rewrite-section", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Rewrite the Methods section in simpler words, keeping every number.", "Make the Methods section easier to read; do not lose any values.", "Перепиши раздел Methods проще, сохранив все числа."],
+      "expect": { "order": ["read_document|find_in_document", "replace_section|replace_text|edit_document|revise_section"], "forbid": ["remember", "delete_lines"], "finalText": "37 °C[\\s\\S]*30 min[\\s\\S]*10 min" }
+    },
+    {
+      "id": "short-selection", "doc": "@report", "selection": "The enzyme is stable enough for detergents that are used at 60 °C, but its half-life at 70 °C is too short for industrial use.", "mode": "auto", "docsApi": true,
+      "prompts": ["Make this sentence shorter.", "Shorten the selected sentence.", "Сократи выделенное предложение."],
+      "expect": { "order": ["replace_selection|replace_text|edit_document"], "max": { "write": 1 }, "forbid": ["replace_section", "delete_lines", "insert_after_line"], "finalText": "60 °C", "finalTextNot": "too short for industrial use" },
+      "dry": [[{ "calls": [["replace_selection", { "text": "The enzyme suits detergents used at 60 °C, not 70 °C." }]] }, { "text": "Shortened." }]]
+    },
+    {
+      "id": "fix-typo", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Fix the spelling mistake \"recieved\" in the Methods.", "There is a typo in the Methods section (recieved); correct it.", "Исправь опечатку «recieved» в разделе Methods."],
+      "expect": { "order": ["replace_text|replace_all|edit_document"], "forbid": ["replace_section", "delete_lines", "remember"], "finalTextNot": "recieved", "finalText": "mean of three replicates" },
+      "dry": [[{ "calls": [["replace_text", { "old_text": "activity was recieevd", "new_text": "activity was received" }]] }, { "calls": [["read_document", { "scope": { "start": 5, "end": 5 }, "include": ["text"], "doc": null }]] }, { "calls": [["replace_text", { "old_text": "was recieved as", "new_text": "was taken as" }]] }, { "text": "Fixed." }]]
+    },
+    {
+      "id": "delete-paragraph", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Delete the paragraph about the pilot study.", "Remove the sentence on the pilot study from the Methods.", "Удали абзац про пилотное исследование (pilot study)."],
+      "expect": { "order": ["read_document|find_in_document", "delete_lines|replace_text|edit_document"], "forbid": ["replace_section", "remember"], "finalTextNot": "pilot study", "finalText": "mean of three replicates" }
+    },
+    {
+      "id": "duplicate-heading", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["The Results heading is followed by a stray line that repeats it. Remove that line.", "Delete the duplicated \"Results\" line under the Results heading.", "Под заголовком Results повторяется строка «Results»: удали её."],
+      "expect": { "order": ["read_document|find_in_document", "delete_lines|edit_document"], "forbid": ["replace_section"], "finalText": "Results\\nThe half-life" }
+    },
+    {
+      "id": "insert-after-heading", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Add a sentence at the start of the Discussion saying that all assays were repeated three times.", "Insert one sentence right after the Discussion heading: all assays were done in triplicate.", "Добавь в начало раздела Discussion предложение о том, что все измерения повторяли три раза."],
+      "expect": { "order": ["insert_after_line|replace_text|edit_document"], "forbid": ["replace_section", "delete_lines"], "finalText": "Discussion\\n[^\\n]*(three|triplicate)" }
+    },
+    {
+      "id": "heading-style", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Make the Discussion heading a level 1 heading.", "Change the style of the Discussion heading to Heading 1.", "Сделай заголовок Discussion заголовком первого уровня."],
+      "expect": { "order": ["format_lines|edit_document"], "forbid": ["replace_text", "replace_section", "delete_lines", "insert_after_line"] }
+    },
+    {
+      "id": "bold-term", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Make the word \"significant\" bold in the Results.", "Put \"significant\" in the Results in bold.", "Выдели жирным слово significant в разделе Results."],
+      "expect": { "order": ["format_text|edit_document"], "forbid": ["replace_text", "replace_section", "replace_all"], "finalText": "significant" }
+    },
+    {
+      "id": "ambiguous-shorten", "doc": "@report", "mode": "auto", "docsApi": true, "answer": "option:0",
+      "prompts": ["Shorten the section.", "Make the section shorter, please.", "Сократи раздел."],
+      "expect": { "order": ["ask_user"], "alone": ["ask_user"], "max": { "ask_user": 1 }, "forbid": ["delete_lines"] }
+    },
+    {
+      "id": "no-remember", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Change \"color\" to \"colour\" in the Results.", "Use the British spelling of color in the Results.", "Замени color на colour в разделе Results."],
+      "expect": { "order": ["replace_text|replace_all|edit_document"], "forbid": ["remember", "replace_section"], "finalText": "colour" }
+    },
+    {
+      "id": "remember-explicit", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Remember that this document uses British spelling.", "Please remember for this document: British spelling only.", "Запомни: в этом документе британская орфография."],
+      "expect": { "order": ["remember"], "forbid": ["write"], "max": { "remember": 1 } },
+      "dry": [[{ "calls": [["remember", { "action": "add", "text": "Use British spelling." }]] }, { "text": "I will use British spelling in this document." }]]
+    },
+    {
+      "id": "check-only", "fixture": "test/fixtures/bench/en-enzyme.txt", "mode": "auto", "docsApi": true,
+      "prompts": ["Check whether every citation in the text appears in the reference list. Do not edit anything.", "List the citations that are missing from the references; only report them.", "Проверь, все ли ссылки в тексте есть в списке литературы. Ничего не меняй."],
+      "expect": { "order": ["read_document|find_in_document"], "forbid": ["write", "remember"], "answer": "Moreno" },
+      "dry": [[{ "calls": [["read_document", { "scope": "outline", "include": null, "doc": null }]] }, { "calls": [["read_document", { "scope": { "start": 1, "end": 30 }, "include": ["text"], "doc": null }]] }, { "text": "Moreno et al. (2018) is cited but not in the reference list." }]]
+    },
+    {
+      "id": "question-only", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["At what temperature was the enzyme incubated before each assay?", "What was the incubation temperature before the assays?", "При какой температуре инкубировали фермент перед каждым измерением?"],
+      "expect": { "order": ["read_document|find_in_document"], "forbid": ["write", "remember", "ask_user"], "answer": "37" }
+    },
+    {
+      "id": "keep-numbers", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Shorten the first Results paragraph.", "Make the paragraph about the half-life shorter.", "Сократи первый абзац раздела Results."],
+      "expect": { "order": ["read_document|find_in_document", "replace_text|replace_section|edit_document"], "forbid": ["delete_lines", "remember"], "finalText": "42 min[\\s\\S]*0\\.02|0\\.02[\\s\\S]*42 min" }
+    },
+    {
+      "id": "unknown-value", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Add the protein yield to the abstract.", "Mention in the abstract how much protein we purified.", "Добавь в аннотацию выход белка."],
+      "expect": { "forbid": ["remember", "delete_lines", "replace_section"], "finalTextNot": "\\d+(\\.\\d+)? ?(mg|g)\\b[^\\n]*(protein|yield|purified)|(yield|protein)[^\\n]*\\d+(\\.\\d+)? ?mg" }
+    },
+    {
+      "id": "ru-term", "doc": "@ru", "mode": "auto", "docsApi": true,
+      "prompts": ["Замени слово «сорбент» на «адсорбент» во всём тексте.", "Везде используй «адсорбент» вместо «сорбент».", "Replace the Russian word «сорбент» with «адсорбент» throughout."],
+      "expect": { "order": ["find_in_document|read_document", "replace_all|replace_text|edit_document"], "forbid": ["remember", "replace_section"], "finalText": "Адсорбент отделяли" , "finalTextNot": "(?<![А-Яа-яЁё])[Сс]орбент" }
+    },
+    {
+      "id": "ru-selection", "doc": "@ru", "selection": "Сорбент отделяли фильтрованием, концентрацию меди в растворе определяли атомно-абсорбционным методом.", "mode": "auto", "docsApi": true,
+      "prompts": ["Перепиши выделенное предложение короче.", "Сократи выделенный фрагмент.", "Make the selected Russian sentence shorter, keep it in Russian."],
+      "expect": { "order": ["replace_selection|replace_text|edit_document"], "max": { "write": 1 }, "forbid": ["replace_section", "delete_lines"], "finalText": "[Сс]орбент" }
+    },
+    {
+      "id": "manual-summary", "doc": "@report", "mode": "manual", "docsApi": true,
+      "note": "A chat request sent in Manual, an editing turn (Auto's tools and head, every write on a card): the summary is answered in the chat, nothing is written.",
+      "prompts": ["Summarise the Results in one sentence.", "Give me a one-sentence summary of the results.", "Кратко перескажи результаты одним предложением."],
+      "expect": { "order": ["read_document|find_in_document"], "forbid": ["write", "remember", "ask_user"], "answer": "42" }
+    },
+    {
+      "id": "manual-groups-edits", "doc": "@report", "mode": "manual", "docsApi": true,
+      "note": "Manual asks before every write, and its head says the user allows each edit on a card, so related changes go in one call. Three word changes in one paragraph: one write (one card, allowed), all three in the document. The second script sends one call per change (three cards).",
+      "prompts": ["In the first Methods paragraph, change \"incubated\" to \"pre-incubated\", \"Samples\" to \"Aliquots\" and \"recieved\" to \"calculated\".", "Three changes in the Methods paragraph: incubated → pre-incubated, Samples → Aliquots, recieved → calculated.", "В первом абзаце раздела Methods замени «incubated» на «pre-incubated», «Samples» на «Aliquots» и «recieved» на «calculated»."],
+      "expect": { "order": ["write"], "max": { "write": 1 }, "forbid": ["remember", "replace_section", "delete_lines"], "failedMax": 0, "noRefusal": true,
+        "finalText": "was pre-incubated at 37 °C[^\\n]*Aliquots were taken[^\\n]*was calculated as the mean", "finalTextNot": "recieved" },
+      "dry": [
+        [{ "calls": [["edit_document", { "operations": [{ "op": "replace", "old_text": "was incubated at", "new_text": "was pre-incubated at" }, { "op": "replace", "old_text": "Samples were taken", "new_text": "Aliquots were taken" }, { "op": "replace", "old_text": "was recieved as", "new_text": "was calculated as" }] }]] },
+         { "text": "Changed the three words in the Methods paragraph." }],
+        [{ "calls": [["replace_text", { "old_text": "was incubated at", "new_text": "was pre-incubated at", "line": null }]] },
+         { "calls": [["replace_text", { "old_text": "Samples were taken", "new_text": "Aliquots were taken", "line": null }]] },
+         { "calls": [["replace_text", { "old_text": "was recieved as", "new_text": "was calculated as", "line": null }]] },
+         { "text": "Changed the three words in the Methods paragraph." }]
+      ]
+    },
+    {
+      "id": "manual-denied-edit", "doc": "@report", "mode": "manual", "docsApi": true, "cards": { "edit": "deny" }, "answer": "Leave it as it is.",
+      "note": "Manual asks before every write, and the user denies the card (a question after it is answered: leave it). No second write in that message, no claim that the document changed, the typo still there. The second script tries the same fix again in another call and says it is fixed.",
+      "prompts": ["Fix the typo \"recieved\" in the Methods.", "Correct the spelling of recieved in the Methods section.", "Исправь опечатку «recieved» в разделе Methods."],
+      "expect": { "max": { "write": 1 }, "forbid": ["remember"], "results": "did not allow this edit", "finalText": "was recieved as the mean",
+        "answerNot": "^\\s*(?:done|готово)\\b|(?<!\\b(?:not|never) |n't )\\b(?:fixed|corrected|changed|replaced|updated)\\b|(?<!не ?)(?:исправил|исправлен|заменил|заменён|заменен|изменил|изменён|изменен|внёс|внес)" },
+      "dry": [
+        [{ "calls": [["replace_text", { "old_text": "was recieved as", "new_text": "was received as", "line": null }]] },
+         { "text": "OK, the Methods stay as they are; the typo \"recieved\" is still there." }],
+        [{ "calls": [["replace_text", { "old_text": "was recieved as", "new_text": "was received as", "line": null }]] },
+         { "calls": [["edit_document", { "operations": [{ "op": "replace", "old_text": "was recieved as", "new_text": "was received as" }] }]] },
+         { "text": "Fixed the typo in the Methods." }]
+      ]
+    },
+    {
+      "id": "export-selection", "doc": "@report", "selection": "The enzyme kept 74 % of its activity after one hour at 60 °C.", "mode": "auto", "docsApi": false,
+      "prompts": ["Translate the selection into Russian.", "Put the selected sentence into Russian.", "Переведи выделенное на русский."],
+      "expect": { "order": ["replace_selection"], "max": { "replace_selection": 1 }, "forbid": ["replace_text", "replace_all", "replace_section", "insert_after_line", "delete_lines"], "finalText": "74 %[^\\n]*60 °C|74[^\\n]*60", "finalTextNot": "kept 74 % of its activity" },
+      "dry": [[{ "calls": [["replace_selection", { "text": "Фермент сохранил 74 % активности после часа при 60 °C." }]] }, { "text": "Готово." }]]
+    },
+    {
+      "id": "export-question", "doc": "@report", "mode": "auto", "docsApi": false,
+      "prompts": ["How many samples did the pilot study have?", "What was the size of the pilot study?", "Сколько образцов было в пилотном исследовании?"],
+      "expect": { "order": ["read_document|find_in_document"], "forbid": ["write", "remember"], "answer": "18" }
+    },
+    {
+      "id": "manual-export-selection", "doc": "@ru", "selection": "Сорбент отделяли фильтрованием, концентрацию меди в растворе определяли атомно-абсорбционным методом.", "mode": "manual", "docsApi": false,
+      "note": "Manual on the export + paste path, Russian: Manual edits, so the rewrite is pasted with replace_selection after its card (allowed), once, in place and still Russian. The second script answers with a <replacement> block instead and writes nothing.",
+      "prompts": ["Rewrite the selection in plainer Russian.", "Make the selected sentence simpler, in Russian.", "Перепиши выделенное проще."],
+      "expect": { "order": ["replace_selection"], "max": { "replace_selection": 1 }, "forbid": ["remember"], "failedMax": 0, "noRefusal": true,
+        "finalText": "24 ч\\.\\n[^\\n]*(?:сорбент|фильтр)[^\\n]*\\n## Результаты", "finalTextNot": "Сорбент отделяли фильтрованием, концентрацию меди в растворе определяли атомно-абсорбционным методом\\.|[A-Za-z]{3}" },
+      "dry": [
+        [{ "calls": [["replace_selection", { "text": "Сорбент отфильтровывали, а медь в растворе измеряли атомно-абсорбционным методом." }]] }, { "text": "Готово." }],
+        [{ "text": "<replacement>Сорбент отфильтровывали, а медь в растворе измеряли атомно-абсорбционным методом.</replacement>" }]
+      ]
+    },
+    {
+      "id": "ru-request-en-doc", "doc": "@report", "selection": "We heated the purified enzyme at 50, 60 and 70 °C and measured the residual activity. The enzyme kept 74 % of its activity after one hour at 60 °C.", "mode": "auto", "docsApi": true,
+      "note": "Every paraphrase is Russian on purpose: the document stays English (CORE_SCOPE_RULE), the reply is Russian (CORE_LANGUAGE).",
+      "prompts": ["Улучши этот абзац.", "Сделай выделенный абзац лучше.", "Улучши выделенный текст, пожалуйста."],
+      "expect": { "order": ["replace_selection|replace_text|edit_document"], "max": { "write": 1 }, "forbid": ["remember", "replace_section", "delete_lines"], "finalText": "74 %", "finalTextNot": "[А-Яа-яЁё]", "answer": "[А-Яа-яЁё]" },
+      "dry": [[{ "calls": [["replace_selection", { "text": "We heated the purified enzyme at 50, 60 and 70 °C and measured its residual activity; after one hour at 60 °C it retained 74 % of its activity." }]] }, { "text": "Абзац улучшен: формулировки стали точнее, числа сохранены." }]]
+    },
+    {
+      "id": "numbered-list-section", "doc": "@report", "mode": "auto", "docsApi": true,
+      "note": "The head's rules: a section through insert_after_line (style outline) or one edit_document, the list through format_lines list; typed numbers or bullets (typed heading numbers too) fail finalTextNot.",
+      "prompts": ["Add a section \"Limitations\" at the end with a numbered list of three items: one enzyme batch, only two buffers, no data above 70 °C.", "At the end of the document add a Limitations section that lists three points as a numbered list: a single enzyme batch, two buffers only, nothing measured above 70 °C.", "Добавь в конец раздел Limitations с нумерованным списком из трёх пунктов: одна партия фермента, только два буфера, нет данных выше 70 °C."],
+      "expect": { "order": ["insert_after_line|edit_document"], "forbid": ["remember", "replace_section", "delete_lines"], "finalText": "Limitations", "finalTextNot": "(?:^|\\n)\\s*(?:\\d+(?:\\.\\d+)*[.)]|[-*•])\\s" },
+      "dry": [[{ "calls": [["insert_after_line", { "line": 12, "text": "## Limitations\nOne enzyme batch was tested.\nOnly two buffers were compared.\nNo activity was measured above 70 °C.", "style": "outline" }]] }, { "calls": [["format_lines", { "start": 14, "end": 16, "list": "number" }]] }, { "text": "Added the Limitations section with a numbered list of three items." }]]
+    },
+    {
+      "id": "side-no-markdown", "doc": "@report", "selection": "The half-life of the enzyme at 60 °C was 42 min, and the difference between the two buffers was significant (p = 0.02).", "mode": "auto", "docsApi": true,
+      "note": "A side question (/side: the read-only turn with the edit-block rules; the mode button does not change it): the proposed text in one <replacement> block, plain, no ** inside.",
+      "prompts": ["/side Rewrite the selected sentence so that the key result stands out.", "/side Make the main finding of the selection more prominent.", "/side Перепиши выделенное предложение так, чтобы главный результат был заметнее."],
+      "expect": { "forbid": ["write", "remember"], "answer": "<replacement>", "answerNot": "<replacement>(?:(?!</replacement>)[\\s\\S])*\\*\\*" },
+      "dry": [[{ "text": "<replacement>At 60 °C the enzyme had a half-life of 42 min, and the two buffers differed significantly (p = 0.02).</replacement>" }]]
+    },
+    {
+      "id": "ru-dash-typography", "doc": "@ru-dash", "mode": "auto", "docsApi": true,
+      "prompts": ["Fix the typography of the Results paragraph: the hyphens there stand for dashes.", "Исправь типографику в абзаце раздела «Результаты».", "Замени в абзаце с результатами дефисы, которые стоят вместо тире, на тире."],
+      "expect": { "order": ["replace_text|replace_all|edit_document"], "forbid": ["remember", "replace_section", "delete_lines"], "finalText": "—", "finalTextNot": " - " },
+      "dry": [[{ "calls": [["read_document", { "scope": { "start": 3, "end": 3 }, "include": ["text"], "doc": null }]] }, { "calls": [["replace_all", { "old_text": " - ", "new_text": " — " }]] }, { "text": "Готово: дефисы заменены на тире." }]]
+    },
+    {
+      "id": "add-sentence-plain", "doc": "@report", "mode": "auto", "docsApi": true,
+      "prompts": ["Add one sentence to the end of the Abstract paragraph saying that the enzyme was purified from a soil isolate.", "Extend the Abstract by one sentence: the enzyme came from a soil isolate.", "Добавь в конец абзаца Abstract одно предложение о том, что фермент выделен из почвенного изолята."],
+      "expect": { "order": ["replace_text|edit_document"], "max": { "write": 1 }, "forbid": ["remember", "replace_section", "delete_lines"], "finalText": "isolate", "finalTextNot": "\\*\\*|`|#" },
+      "dry": [[{ "calls": [["replace_text", { "old_text": "after one hour at 60 °C.", "new_text": "after one hour at 60 °C. The enzyme was purified from a soil isolate." }]] }, { "text": "Added the sentence to the Abstract." }]]
+    },
+    {
+      "id": "cite-claim-search", "doc": "@claim", "selection": "Lipases are the second most widely used enzymes in household detergents after proteases.", "mode": "auto", "docsApi": true, "requires": ["munin-key"],
+      "note": "The search tool is offered while a Munin account has a key (with any chat provider). drySearch is the canned answer of Munin's database in the dry run (10.5555 is a test DOI prefix).",
+      "prompts": ["Add a citation for this claim.", "Find a source for the selected claim and cite it in the text.", "Подбери источник для этого утверждения и добавь ссылку на него."],
+      "expect": { "order": ["search", "write"], "forbid": ["remember", "replace_section", "delete_lines"], "finalText": "10\\.\\d{4,}/" },
+      "drySearch": { "papers": [{ "title": "Lipases as detergent enzymes: a review", "authors": ["J. Doe", "A. Roe"], "year": 2010, "journal": "Journal of Test Enzymes", "doi": "10.5555/eval.lipase.2010", "abstract": "Lipases are the second most used detergent enzymes after proteases." }] },
+      "dry": [[{ "calls": [["search", { "query": "lipases detergent enzymes market share after proteases", "where": "database", "top_k": null }]] }, { "calls": [["replace_selection", { "text": "Lipases are the second most widely used enzymes in household detergents after proteases (Doe and Roe, 2010, https://doi.org/10.5555/eval.lipase.2010)." }]] }, { "text": "Added a citation from the Munin database." }]]
+    },
+    {
+      "id": "copy-heavy-edit", "doc": "@copy", "mode": "auto", "docsApi": true,
+      "note": "One word changed in a sentence of about 60 words: old_text must be copied exactly (the tool-round sampling has no presence penalty), and nothing else of the sentence may change.",
+      "prompts": ["In the Methods, change \"measured\" to \"determined\".", "Replace the word measured with determined in the Methods sentence.", "В разделе Methods замени слово measured на determined."],
+      "expect": { "order": ["replace_text|replace_all|edit_document"], "max": { "write": 1 }, "forbid": ["replace_section", "revise_section", "delete_lines", "remember"], "finalTextNot": "was measured", "finalText": "The residual activity of the purified lipase was determined after incubation at 50, 60 and 70 °C in 50 mM phosphate buffer at pH 7\\.5, using p-nitrophenyl butyrate as the substrate, with three technical replicates per temperature, and the values were normalised to the activity of an unheated control sample that was kept on ice for the whole duration of the experiment\\." },
+      "dry": [[{ "calls": [["replace_text", { "old_text": "lipase was measured after", "new_text": "lipase was determined after" }]] }, { "text": "Done." }]]
+    },
+    {
+      "id": "refs-then-plain-edit", "doc": "@report", "mode": "auto", "docsApi": true,
+      "note": "Two turns: the first message named references (on OpenAI and Anthropic the reference tools stay offered for the rest of the chat, so the cached prefix holds); the second is a plain edit that must not cite.",
+      "history": [{ "role": "user", "content": "Does this report need more references in the Discussion?" }, { "role": "assistant", "content": "One claim in the Discussion has no citation; the rest is your own data." }],
+      "prompts": ["Fix the typo \"recieved\" in the Methods.", "Correct the spelling of recieved in the Methods section.", "Исправь опечатку recieved в разделе Methods."],
+      "expect": { "order": ["replace_text|replace_all|edit_document"], "forbid": ["cite", "find_reference", "check_references", "remember", "replace_section"], "finalTextNot": "recieved" },
+      "dry": [[{ "calls": [["replace_text", { "old_text": "was recieved as", "new_text": "was received as" }]] }, { "text": "Fixed." }]]
+    },
+    {
+      "id": "highlight-repeated-doi", "mode": "auto", "docsApi": true,
+      "note": "The 2026-11-01 incident: one DOI is cited twice, so a format_text of it without line or all is refused; the model must use all: true or one operation per line, never give up.",
+      "doc": ["# Membrane curvature notes", "## References", "Smith J. Curvature sensing by amphipathic helices. Biophys J. 2022. [10.1016/j.bpj.2022.08.002]", "Jones K. Lipid packing defects. J Phys Chem B. 2021. [10.1021/acs.jpcb.1c01234]", "Lee M. Coarse-grained membranes. J Chem Phys. 2020. [10.1063/5.0012345]", "Smith J. Curvature sensing by amphipathic helices (supplement). Biophys J. 2022. [10.1016/j.bpj.2022.08.002]", "Park S. Elastic membrane theory. Phys Rev E. 2019. [10.1103/PhysRevE.99.012345]", "Kim H. Peptide insertion free energies. Phys Chem Chem Phys. 2018. [10.1039/c8cp01234a]"],
+      "prompts": ["Highlight all DOIs in green.", "Mark every DOI in the references with a green highlight.", "Выдели все DOI зелёным маркером."],
+      "expect": { "order": ["format_text|edit_document"], "forbid": ["replace_text", "replace_all", "replace_section", "delete_lines"], "finalFormatting": "bg=#", "finalFormattingNot": "\\[10\\.\\d{4,}/[^\\]\\s]+\\](?!\\}\\()", "answerNot": "manually|by hand|вручную" },
+      "dry": [
+        [{ "calls": [["read_document", { "scope": "all", "include": null, "doc": null }]] },
+         { "calls": [["edit_document", { "operations": [
+           { "op": "format_text", "old_text": "[10.1016/j.bpj.2022.08.002]", "all": true, "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1021/acs.jpcb.1c01234]", "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1063/5.0012345]", "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1103/PhysRevE.99.012345]", "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1039/c8cp01234a]", "highlight": "green" }] }]] },
+         { "text": "Highlighted." }],
+        [{ "calls": [["edit_document", { "operations": [
+           { "op": "format_text", "old_text": "[10.1016/j.bpj.2022.08.002]", "line": 3, "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1016/j.bpj.2022.08.002]", "line": 6, "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1021/acs.jpcb.1c01234]", "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1063/5.0012345]", "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1103/PhysRevE.99.012345]", "highlight": "green" },
+           { "op": "format_text", "old_text": "[10.1039/c8cp01234a]", "highlight": "green" }] }]] },
+         { "text": "Highlighted." }]
+      ]
+    },
+    {
+      "id": "cite-plain-doi", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "note": "plans F1: the user wants a citation as a plain bracketed DOI; it is typed by a text edit, with no cite or lookup call and no refusal. The first script is the expected behaviour, the second the saved chat's (cite, the access card, Not now, a refusal).",
+      "prompts": ["Добавь в конец первого предложения введения ссылку [10.5555/eval.transport.2021] просто текстом.", "Put the citation [10.5555/eval.transport.2021] at the end of the first Introduction sentence, as plain text in square brackets.", "Вставь [10.5555/eval.transport.2021] после первого предложения раздела Introduction обычным текстом."],
+      "expect": { "order": ["replace_text|edit_document|replace_all"], "forbid": ["cite", "find_reference", "check_references", "remember"], "failedMax": 0, "noRefusal": true, "finalText": "bilayer\\.?\\s?\\[10\\.5555/eval\\.transport\\.2021\\]" },
+      "dry": [
+        [{ "calls": [["replace_text", { "old_text": "in a lipid bilayer.", "new_text": "in a lipid bilayer [10.5555/eval.transport.2021].", "line": null }]] }, { "text": "Добавил ссылку [10.5555/eval.transport.2021] в конец первого предложения введения." }],
+        [{ "calls": [["cite", { "action": "insert", "ids": ["doi:10.5555/eval.transport.2021"], "after_text": "in a lipid bilayer", "style": null }]] }, { "text": "Я не могу вставить ссылку обычной текстовой правкой: цитаты добавляются только через механизм цитирования." }]
+      ]
+    },
+    {
+      "id": "cite-after-not-now", "doc": "@spin", "mode": "auto", "docsApi": true, "cards": { "access": "not-now" },
+      "note": "plans F1, F2: the first message asks for a lookup and the access card is answered Not now; the second asks for the DOI as plain text: no second lookup and no second card, the DOI typed. The second script is the saved chat's (the lookup again).",
+      "prompts": ["Look up the paper with DOI 10.5555/eval.transport.2021 and cite it after the first sentence of the Introduction.", "Найди статью по DOI 10.5555/eval.transport.2021 и процитируй её после первого предложения введения."],
+      "expect": { "forbid": ["remember", "delete_lines"] },
+      "turns": [{
+        "prompts": ["Не надо ничего искать, просто впиши [10.5555/eval.transport.2021] текстом после первого предложения.", "No lookup: just type [10.5555/eval.transport.2021] after the first sentence as plain text."],
+        "expect": { "order": ["replace_text|edit_document|replace_all"], "forbid": ["find_reference", "cite", "check_references", "phrase_usage"], "cardsMax": { "access": 0 }, "failedMax": 0, "noRefusal": true, "finalText": "bilayer\\.?\\s?\\[10\\.5555/eval\\.transport\\.2021\\]" }
+      }],
+      "dry": [
+        [[{ "calls": [["find_reference", { "query": "10.5555/eval.transport.2021" }]] }, { "text": "Reference lookups are not allowed, so I did not look the DOI up. I can type it as plain text if you like." }],
+         [{ "calls": [["replace_text", { "old_text": "in a lipid bilayer.", "new_text": "in a lipid bilayer [10.5555/eval.transport.2021].", "line": null }]] }, { "text": "Готово: [10.5555/eval.transport.2021] стоит после первого предложения." }]],
+        [[{ "calls": [["find_reference", { "query": "10.5555/eval.transport.2021" }]] }, { "text": "Please allow reference lookups so that I can insert a verified citation." }],
+         [{ "calls": [["find_reference", { "query": "10.5555/eval.transport.2021" }]] }, { "text": "Доступ к поиску ссылок снова отклонён, поэтому я не могу вставить ссылку." }]]
+      ]
+    },
+    {
+      "id": "heading-indent-like-this", "doc": "@si-indent", "mode": "auto", "docsApi": true, "selection": "Software",
+      "namedStyles": { "HEADING_2": { "indentStart": 28.5, "indentFirstLine": 21.26 } },
+      "note": "alignment F1: the selected heading is a list item (level 2) with no indent of its own; Docs draws it at its heading style's indent (here 28.5/21.26 pt), never at the list level's 72/54 (chrome-check line-starts in the real editor), and the panel reported 72/54. The other headings must draw the same indent (indentLike): inheriting like it (format_lines indent \"style\") or the same numbers of their own pass, the list level's do not, and the selected heading keeps no indent of its own. The H1 on line 1 is the document's title, not one of the other headings: it keeps its indent (0/0). The second script copies 72/54 like the saved chat.",
+      "prompts": ["Сделай отступы у остальных заголовков такими же, как у этого.", "Give the other headings the same indent as this one.", "Выровняй остальные заголовки по этому: те же отступы."],
+      "expect": { "order": ["format_lines|edit_document"], "forbid": ["replace_text", "delete_lines", "insert_after_line"], "failedMax": 0,
+        "lines": [{ "match": "^Software$", "ownIndent": null }, { "match": "^Sample preparation$", "indentLike": "^Software$" }, { "match": "^Spectra$", "indentLike": "^Software$" }, { "match": "^Supplementary material$", "indent": [0, 0] }] },
+      "dry": [
+        [{ "calls": [["style_map", { "property": "indent", "scope": { "start": 1, "end": 7 } }]] },
+         { "calls": [["format_lines", { "start": 4, "end": 4, "style": null, "align": null, "list": null, "indent_start": "style", "indent_first_line": "style", "space_above": null, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null, "numbers": null, "apply_sheet": null }],
+           ["format_lines", { "start": 6, "end": 6, "style": null, "align": null, "list": null, "indent_start": "style", "indent_first_line": "style", "space_above": null, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null, "numbers": null, "apply_sheet": null }]] },
+         { "text": "Заголовки 4 и 6 теперь наследуют отступ так же, как выделенный: своих значений у них нет." }],
+        [{ "calls": [["style_map", { "property": "indent", "scope": { "start": 1, "end": 7 } }]] },
+         { "calls": [["format_lines", { "start": 4, "end": 4, "style": null, "align": null, "list": null, "indent_start": 72, "indent_first_line": 54, "space_above": null, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null, "numbers": null, "apply_sheet": null }],
+           ["format_lines", { "start": 6, "end": 6, "style": null, "align": null, "list": null, "indent_start": 72, "indent_first_line": 54, "space_above": null, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null, "numbers": null, "apply_sheet": null }]] },
+         { "text": "Отступы одинаковые: текст 72 пт, первая строка 54 пт." }]
+      ]
+    },
+    {
+      "id": "number-sections", "doc": "@si-numbering", "mode": "auto", "docsApi": true,
+      "note": "alignment F3: one Heading 1 title and Heading 2 sections set to 12 pt by the user; numbering makes the sections 1, 2, 3 at the top level of one list, and their 12 pt survives. The second script types the numbers.",
+      "prompts": ["Пронумеруй разделы.", "Number the sections.", "Добавь нумерацию разделов."],
+      "expect": { "order": ["format_lines|edit_document"], "forbid": ["replace_text", "replace_all", "delete_lines"], "failedMax": 0,
+        "lines": [{ "match": "Software$", "text": "^Software$", "listLevel": 0, "numbered": true, "size": 12 }, { "match": "Sample preparation$", "text": "^Sample preparation$", "listLevel": 0, "numbered": true, "size": 12 }, { "match": "Spectra$", "text": "^Spectra$", "listLevel": 0, "numbered": true, "size": 12 }, { "match": "^Supplementary material$", "listLevel": null }],
+        "sameList": ["Software$", "Sample preparation$", "Spectra$"] },
+      "dry": [
+        [{ "calls": [["format_lines", { "start": 2, "end": 7, "style": null, "align": null, "list": null, "indent_start": null, "indent_first_line": null, "space_above": null, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null, "numbers": "set", "apply_sheet": null }]] }, { "text": "Разделы пронумерованы: 1, 2, 3." }],
+        [{ "calls": [["edit_document", { "operations": [{ "op": "replace", "old_text": "Software", "new_text": "1. Software", "line": 2 }, { "op": "replace", "old_text": "Sample preparation", "new_text": "2. Sample preparation", "line": 4 }, { "op": "replace", "old_text": "Spectra", "new_text": "3. Spectra", "line": 6 }] }]] }, { "text": "Numbered." }]
+      ]
+    },
+    {
+      "id": "number-sections-si-prefix", "doc": "@si-numbering", "mode": "auto", "docsApi": true,
+      "note": "alignment F12: the user wants supporting-information numbers S1, S2, S3; format_lines numbers typed with prefix S writes them (the title h1 gets none), not text edits. The second script is the saved chat's: Google Docs numbering, the S lost.",
+      "prompts": ["Пронумеруй разделы как S1, S2, S3.", "Number the sections S1, S2, S3, as in supporting information.", "Добавь разделам номера S1–S3."],
+      "expect": { "order": ["format_lines|edit_document"], "forbid": ["replace_text", "replace_all", "delete_lines"], "failedMax": 0,
+        "finalText": "^Supplementary material\\nS1 Software\\n[^\\n]*\\nS2 Sample preparation\\n[^\\n]*\\nS3 Spectra\\n" },
+      "dry": [
+        [{ "calls": [["format_lines", { "start": 1, "end": 7, "style": null, "align": null, "list": null, "indent_start": null, "indent_first_line": null, "space_above": null, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null, "numbers": "typed", "prefix": "S", "apply_sheet": null }]] }, { "text": "Разделы пронумерованы: S1, S2, S3." }],
+        [{ "calls": [["format_lines", { "start": 1, "end": 7, "style": null, "align": null, "list": null, "indent_start": null, "indent_first_line": null, "space_above": null, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null, "numbers": "set", "prefix": null, "apply_sheet": null }]] }, { "text": "Разделы пронумерованы." }]
+      ]
+    },
+    {
+      "id": "heading-bold-spacing", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "note": "alignment F2: bold (format_text) and space above (format_lines) on one heading in one edit_document call; both apply, nothing is refused or dropped. The second script is the saved chat's: the batch, then a second call with the spacing alone (after the overlap refusal of the old code; with the overlap allowed it is a redundant second write).",
+      "prompts": ["Make the Methods heading bold and put 12 pt of space above it.", "Сделай заголовок Methods жирным и добавь перед ним интервал 12 пт.", "Заголовок Methods: жирный шрифт и 12 пт сверху."],
+      "expect": { "order": ["edit_document"], "forbid": ["replace_text", "delete_lines"], "failedMax": 0, "max": { "write": 1 },
+        "lines": [{ "match": "^Methods$", "bold": true, "spaceAbove": 12 }] },
+      "dry": [
+        [{ "calls": [["edit_document", { "operations": [{ "op": "format_text", "old_text": "Methods", "line": 6, "all": null, "bold": true, "italic": null, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "link": null }, { "op": "format_lines", "start": 6, "end": 6, "style": null, "align": null, "list": null, "indent_start": null, "indent_first_line": null, "space_above": 12, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null }] }]] }, { "text": "The Methods heading is bold with 12 pt above it." }],
+        [{ "calls": [["edit_document", { "operations": [{ "op": "format_text", "old_text": "Methods", "line": 6, "all": null, "bold": true, "italic": null, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "link": null }, { "op": "format_lines", "start": 6, "end": 6, "style": null, "align": null, "list": null, "indent_start": null, "indent_first_line": null, "space_above": 12, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null }] }]] },
+         { "calls": [["edit_document", { "operations": [{ "op": "format_lines", "start": 6, "end": 6, "style": null, "align": null, "list": null, "indent_start": null, "indent_first_line": null, "space_above": 12, "space_below": null, "line_spacing": null, "indent_end": null, "box": null, "page_break_before": null }] }]] },
+         { "text": "Done." }]
+      ]
+    },
+    {
+      "id": "numbers-from-earlier-message", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "note": "alignment F4: the numbers come from the user's earlier message (history), not from this one; the write is not refused by the provenance check. The second script is the saved chat's: the refusal and an identical retry.",
+      "history": [{ "role": "user", "content": "Как лучше описать экструзию? Мы продавливали липосомы 31 раз через фильтр 200 нм при 42 °C." }, { "role": "assistant", "content": "For the Methods you could write: \"The liposomes were extruded 31 times through a 200 nm filter at 42 °C.\"" }],
+      "prompts": ["Добавь это предложение в Methods сам.", "Add that sentence to the Methods yourself.", "Вставь это в раздел Methods после первого предложения."],
+      "expect": { "order": ["insert_after_line|replace_text|edit_document"], "forbid": ["remember", "delete_lines"], "max": { "write": 1 }, "failedMax": 0, "resultsNot": "Refused by a check", "finalText": "31 times[^\\n]*200 nm[^\\n]*42 °C" },
+      "dry": [
+        [{ "calls": [["replace_text", { "old_text": "reconstituted into liposomes.", "new_text": "reconstituted into liposomes. The liposomes were extruded 31 times through a 200 nm filter at 42 °C.", "line": null }]] }, { "text": "Добавил предложение об экструзии в Methods." }],
+        [{ "calls": [["replace_text", { "old_text": "reconstituted into liposomes.", "new_text": "reconstituted into liposomes. The liposomes were extruded 31 times through a 200 nm filter at 42 °C.", "line": null }]] },
+         { "calls": [["replace_text", { "old_text": "reconstituted into liposomes.", "new_text": "reconstituted into liposomes. The liposomes were extruded 31 times through a 200 nm filter at 42 °C.", "line": null }]] },
+         { "text": "Добавил. Числа 31, 200 и 42 взяты из вашего сообщения." }]
+      ]
+    },
+    {
+      "id": "superscript-affiliations", "doc": "@authors", "mode": "auto", "docsApi": true,
+      "note": "alignment F5: affiliation markers 1, 2 made superscript: with format_text script (baselineOffset SUPERSCRIPT, shown as {1}(script=super)) or written as ¹, ²; neither may be refused by the number-drop check. The second script is the saved chat's: the characters, refused, then the same edit again.",
+      "prompts": ["Сделай номера аффилиаций надстрочными.", "Turn the affiliation numbers into superscripts.", "Номера аффилиаций у авторов и в адресах сделай верхним индексом."],
+      "expect": { "order": ["replace_text|replace_all|edit_document|format_text"], "forbid": ["delete_lines", "remember"], "failedMax": 0, "resultsNot": "Refused by a check", "finalFormatting": "(?:¹|\\{1\\}\\(script=super\\))\\s?Department[\\s\\S]*(?:²|\\{2\\}\\(script=super\\))\\s?Institute" },
+      "dry": [
+        [{ "calls": [["edit_document", { "operations": [
+           { "op": "format_text", "old_text": "1", "line": 2, "all": null, "bold": null, "italic": null, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "script": "super", "link": null },
+           { "op": "format_text", "old_text": "2", "line": 2, "all": null, "bold": null, "italic": null, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "script": "super", "link": null },
+           { "op": "format_text", "old_text": "1", "line": 3, "all": null, "bold": null, "italic": null, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "script": "super", "link": null },
+           { "op": "format_text", "old_text": "2", "line": 4, "all": null, "bold": null, "italic": null, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "script": "super", "link": null }] }]] },
+         { "text": "Номера аффилиаций теперь надстрочные." }],
+        [{ "calls": [["edit_document", { "operations": [{ "op": "replace", "old_text": "Example1, Ben Sample2", "new_text": "Example¹, Ben Sample²", "line": 2 }, { "op": "replace", "old_text": "1 Department", "new_text": "¹ Department", "line": 3 }, { "op": "replace", "old_text": "2 Institute", "new_text": "² Institute", "line": 4 }] }]] },
+         { "calls": [["edit_document", { "operations": [{ "op": "replace", "old_text": "Example1, Ben Sample2", "new_text": "Example¹, Ben Sample²", "line": 2 }, { "op": "replace", "old_text": "1 Department", "new_text": "¹ Department", "line": 3 }, { "op": "replace", "old_text": "2 Institute", "new_text": "² Institute", "line": 4 }] }]] },
+         { "text": "Цифры 1 и 2 не удалены, а заменены надстрочными ¹ и ²." }]
+      ]
+    },
+    {
+      "id": "improve-one-paragraph", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "selection": "Three methods can follow such changes: calorimetry measures the heat of binding but not the structure, fluorescence reports distances only with bulky dyes, and spin labelling gives distances of 2–8 nm with small probes.",
+      "note": "plans F6: a vague improve request on one paragraph of the Introduction gets the section's criteria line; the paragraph keeps its three methods (no cut the user did not ask for) and the answer has no criteria block. The second script is the saved chat's (a cut and «Применённые критерии»).",
+      "prompts": ["Улучши этот абзац.", "Improve this paragraph.", "Как улучшить этот абзац?"],
+      "expect": { "forbid": ["delete_lines", "replace_section", "remember"], "max": { "write": 1 }, "failedMax": 0, "finalText": "calorimetr[^\\n]*fluorescen[^\\n]*spin.label", "answerNot": "criteri|критери" },
+      "dry": [
+        [{ "calls": [["replace_selection", { "text": "Three methods can follow such changes: calorimetry measures the heat of binding but not the structure, fluorescence reports distances only with bulky dyes, and spin labelling measures distances of 2–8 nm with small probes." }]] }, { "text": "Абзац чуть точнее: «gives» заменено на «measures», все три метода сохранены." }],
+        [{ "calls": [["replace_selection", { "text": "Spin labelling measures distances of 2–8 nm with small probes, which the other methods cannot." }]] }, { "text": "Сократил абзац до одного аргумента.\n\n**Применённые критерии:** пробел поставлен перед вкладом; связка с related work." }]
+      ]
+    },
+    {
+      "id": "remember-in-english", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "note": "plans F5: a rule said in Russian is stored in English (MAIN.md and DOC.md are English).",
+      "prompts": ["Запомни: в этом документе между числом и единицей всегда ставим пробел.", "Запомни на будущее: в этом документе пишем spin labelling с двумя l.", "Запомни правило для этого документа: никаких сокращений в заголовках."],
+      "expect": { "order": ["remember"], "forbid": ["write"], "max": { "remember": 1 }, "argsNot": { "remember": "[А-Яа-яЁё]" }, "answerLang": "ru" },
+      "dry": [
+        [{ "calls": [["remember", { "scope": "document", "action": "add", "text": "Always put a space between a number and its unit.", "old": null }]] }, { "text": "Запомнил: между числом и единицей всегда пробел." }],
+        [{ "calls": [["remember", { "scope": "document", "action": "add", "text": "Между числом и единицей всегда ставим пробел.", "old": null }]] }, { "text": "Запомнил." }]
+      ]
+    },
+    {
+      "id": "selection-twice", "doc": "@si-contents", "mode": "auto", "docsApi": true, "selection": "Sample preparation",
+      "note": "alignment F7: the selected heading text is also a contents line; the heading (line 5) is edited, the contents line is not, and no find_in_document call is spent once the turn context names the candidate lines (with the selection's text: no get_selection needed). Asking which place is meant is fine: the user picks the answer that names line 5 or the heading (else types it); editing the contents line still fails. The second script is the saved chat's (get_selection, answered with a pointer to the context, and a find call).",
+      "prompts": ["Сделай этот заголовок курсивом.", "Make this heading italic.", "Выдели этот заголовок курсивом."],
+      "cards": { "ask": { "match": ["(?:line|строк\\S*)\\s*5(?!\\d)", "heading|заголов"], "other": "The heading, line 5." } },
+      "expect": { "order": ["format_text|edit_document"], "forbid": ["replace_text", "delete_lines"], "max": { "find_in_document": 0 }, "failedMax": 0,
+        "lines": [{ "match": "^Sample preparation$", "nth": 2, "italic": true }, { "match": "^Sample preparation$", "nth": 1, "italic": false }] },
+      "dry": [
+        [{ "calls": [["format_text", { "old_text": "Sample preparation", "line": 5, "all": null, "bold": null, "italic": true, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "link": null }]] }, { "text": "Заголовок «Sample preparation» (строка 5) теперь курсивом." }],
+        [{ "calls": [["get_selection", {}]] }, { "calls": [["find_in_document", { "query": "Sample preparation", "doc": null }]] }, { "calls": [["format_text", { "old_text": "Sample preparation", "line": 5, "all": null, "bold": null, "italic": true, "underline": null, "font": null, "size": null, "color": null, "highlight": null, "link": null }]] }, { "text": "Done." }]
+      ]
+    },
+    {
+      "id": "side-whole-selection", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "selection": "The mean distance grew from 3.1 nm to 4.2 nm when the substrate was added. The distance distribution also became broader, which usually points to a mobile loop. Both changes reversed after the substrate was washed out.",
+      "note": "plans F8: a request about one sentence of a selected paragraph, as a side question (/side: the read-only turn with the edit-block rules); Apply replaces the whole selection, so the <replacement> holds the whole paragraph. The second script is the saved chat's (only the changed sentence).",
+      "prompts": ["/side Перепиши второе предложение без слова usually.", "/side Rewrite the second sentence without the word usually.", "/side Убери из второго предложения слово usually."],
+      "expect": { "forbid": ["write", "remember"], "answer": "<replacement>[\\s\\S]*mean distance grew[\\s\\S]*washed out[\\s\\S]*</replacement>", "answerNot": "<replacement>(?:(?!</replacement>)[\\s\\S])*usually" },
+      "dry": [
+        [{ "text": "<replacement>The mean distance grew from 3.1 nm to 4.2 nm when the substrate was added. The distance distribution also became broader, which points to a mobile loop. Both changes reversed after the substrate was washed out.</replacement>" }],
+        [{ "text": "<replacement>The distance distribution also became broader, which points to a mobile loop.</replacement>\nЗамена только для второго предложения." }]
+      ]
+    },
+    {
+      "id": "web-text-no-links", "doc": "@spin", "mode": "manual", "docsApi": true, "requires": ["web-search"],
+      "selection": "Membrane transporters change shape when they bind a substrate, and these changes are hard to follow in a lipid bilayer.",
+      "note": "plans F4: text for the document backed by web search carries no markdown link (the Sources fold lists them). Manual edits, so the sentence is rewritten in the document (the card allowed) with the citation as [doi]. Needs a provider with hosted search; the dry run cannot play a search, so the provenance check refuses the DOI once and the identical call passes: the scripts only exercise the expectation. The second script writes the saved chat's text (a markdown link with utm_source).",
+      "prompts": ["Подбери в интернете источник для этого утверждения и перепиши предложение со ссылкой в виде [doi].", "Search the web for a source for this claim and rewrite the sentence with the citation as [doi]."],
+      "expect": { "order": ["write"], "forbid": ["remember", "replace_section", "delete_lines"], "noRefusal": true,
+        "finalText": "Introduction\\n[^\\n]*\\[(?:doi:\\s?|https?://(?:dx\\.)?doi\\.org/)?10\\.\\d{4,}/[^\\]\\s]+\\]", "finalTextNot": "\\]\\(https?:|utm_source" },
+      "dry": [
+        [{ "calls": [["replace_selection", { "text": "Membrane transporters change shape when they bind a substrate, and these changes are hard to follow in a lipid bilayer [10.5555/eval.web.2020]." }]] },
+         { "calls": [["replace_selection", { "text": "Membrane transporters change shape when they bind a substrate, and these changes are hard to follow in a lipid bilayer [10.5555/eval.web.2020]." }]] },
+         { "text": "Ссылка [10.5555/eval.web.2020] стоит в конце предложения; источник: [Transporter dynamics review](https://example.org/review)." }],
+        [{ "calls": [["replace_selection", { "text": "Membrane transporters change shape when they bind a substrate ([example.org](https://example.org/review?utm_source=openai)), and these changes are hard to follow in a lipid bilayer [10.5555/eval.web.2020]." }]] },
+         { "calls": [["replace_selection", { "text": "Membrane transporters change shape when they bind a substrate ([example.org](https://example.org/review?utm_source=openai)), and these changes are hard to follow in a lipid bilayer [10.5555/eval.web.2020]." }]] },
+         { "text": "Готово." }]
+      ]
+    },
+    {
+      "id": "fix-after-user-fact", "doc": "@spin-ratios", "mode": "auto", "docsApi": true,
+      "note": "alignment F8: the user states values that contradict the agent's last edit (history); the agent fixes the document in the same turn instead of only agreeing. The number-drop check lets the correction through at once (the values the user names stand in place of 0.47 and 1.10), so no call may fail. The second script is the saved chat's (agrees, changes nothing).",
+      "history": [{ "role": "user", "content": "Впиши в Results отношение пиков из моей таблицы: контроль и субстрат." }, { "role": "assistant", "content": "Done: the Results now say the ratio was 0.47 in the control and 1.10 after the substrate was added." }],
+      "prompts": ["Mine shows 0.74 and 1.01.", "У меня в таблице 0.74 и 1.01.", "В моей таблице стоит 0.74 и 1.01, а не так."],
+      "expect": { "order": ["replace_text|replace_all|edit_document"], "forbid": ["delete_lines", "remember"], "max": { "write": 1 }, "failedMax": 0, "resultsNot": "Refused by a check", "finalText": "0\\.74[^\\n]*1\\.01", "finalTextNot": "0\\.47|1\\.10" },
+      "dry": [
+        [{ "calls": [["replace_text", { "old_text": "was 0.47 in the control and 1.10 after", "new_text": "was 0.74 in the control and 1.01 after", "line": 5 }]] },
+         { "text": "Corrected to your values: 0.74 in the control and 1.01 with the substrate; I had swapped the digits." }],
+        [{ "text": "Yes, with your table the values are 0.74 and 1.01; my previous answer relied on older data." }]
+      ]
+    },
+    {
+      "id": "headings-still-differ", "doc": "@si-indent", "mode": "auto", "docsApi": true, "selection": "Software",
+      "namedStyles": { "HEADING_2": { "indentStart": 28.5, "indentFirstLine": 21.26 } },
+      "answer": "Software: left 1.01 cm, first line 0.74 cm; the other two: left 2.54 cm, first line 1.91 cm.",
+      "note": "alignment F1 (the model's share): message 1 replays the saved chat's turn (style_map read 72/54 for the selected heading in that chat; it reads 28.5/21.26, inherited; 72/54 is copied to the others, \"the same\"); message 2: the user says they came out different. The user is right: the indent is read again (style_map, which reads the selected heading's as inherited, or read_document with formatting) or asked for (ask_user, answered with the values the user sees), and after message 2 the three headings draw the same indent. The second script is the saved chat's (the same reading, \"the same\" again: the headings still differ).",
+      "prompts": ["Сделай отступы у остальных заголовков такими же, как у этого.", "Give the other headings the same indent as this one.", "Выровняй остальные заголовки по этому: те же отступы."],
+      "expect": { "forbid": ["remember", "delete_lines"] },
+      "turns": [{
+        "prompts": ["Сравни их, они получились разными.", "Compare them, they came out different.", "Они всё ещё разные, сравни ещё раз."],
+        "expect": { "order": ["read_document|ask_user|style_map"], "forbid": ["remember", "delete_lines", "replace_text"], "failedMax": 0,
+          "lines": [{ "match": "^Sample preparation$", "indentLike": "^Software$" }, { "match": "^Spectra$", "indentLike": "^Software$" }] }
+      }],
+      "dry": [
+        [[{ "calls": [["style_map", { "property": "indent", "scope": { "start": 1, "end": 7 } }]] },
+          { "calls": [["edit_document", { "operations": [{ "op": "format_lines", "start": 4, "end": 4, "indent_start": 72, "indent_first_line": 54 }, { "op": "format_lines", "start": 6, "end": 6, "indent_start": 72, "indent_first_line": 54 }] }]] },
+          { "text": "Отступы одинаковые: текст 72 пт, первая строка 54 пт." }],
+         [{ "calls": [["style_map", { "property": "indent", "scope": { "start": 1, "end": 7 } }]] },
+          { "calls": [["edit_document", { "operations": [{ "op": "format_lines", "start": 4, "end": 4, "indent_start": "style", "indent_first_line": "style" }, { "op": "format_lines", "start": 6, "end": 6, "indent_start": "style", "indent_first_line": "style" }] }]] },
+          { "text": "Вы правы: у строки 2 нет своего отступа, 72/54 было значением уровня списка, а не тем, что рисует Docs. Теперь строки 4 и 6 тоже без своих значений и наследуют отступ так же." }]],
+        [[{ "calls": [["style_map", { "property": "indent", "scope": { "start": 1, "end": 7 } }]] },
+          { "calls": [["edit_document", { "operations": [{ "op": "format_lines", "start": 4, "end": 4, "indent_start": 72, "indent_first_line": 54 }, { "op": "format_lines", "start": 6, "end": 6, "indent_start": 72, "indent_first_line": 54 }] }]] },
+          { "text": "Отступы одинаковые: текст 72 пт, первая строка 54 пт." }],
+         [{ "calls": [["style_map", { "property": "indent", "scope": { "start": 1, "end": 7 } }]] },
+          { "text": "Отступы одинаковые: текст 72 пт, первая строка 54 пт." }]]
+      ]
+    },
+    {
+      "id": "side-template-no-translation", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "note": "alignment F11: a template request in Russian on an English document, as a side question (/side: the read-only turn with the edit-block rules): one English block and a short note; no translation of the block. The second script is the saved chat's (the whole template again in Russian).",
+      "prompts": ["/side Сделай шаблон раздела Data availability для этой статьи.", "/side Набросай шаблон раздела Data availability.", "/side Нужен шаблон раздела о доступности данных для этой статьи."],
+      "expect": { "forbid": ["write", "remember"], "answer": "<(insertion|replacement)>", "answerNot": "перевод|translation|<(insertion|replacement)>(?:(?!</(?:insertion|replacement)>)[\\s\\S])*[А-Яа-яЁё]{3}", "answerOutsideMax": 300 },
+      "dry": [
+        [{ "text": "<insertion>## Data availability\nThe EPR spectra and the simulation inputs are available from [repository] under accession [ID]. Further data are available from the corresponding author on request.</insertion>\nШаблон раздела: вставьте его после Results и заполните поля в скобках." }],
+        [{ "text": "<insertion>## Data availability\nThe EPR spectra and the simulation inputs are available from [repository] under accession [ID]. Further data are available from the corresponding author on request.</insertion>\n\n**Русский перевод**\n\n## Доступность данных\nСпектры ЭПР и входные файлы моделирования доступны в [репозиторий] под номером [ID]. Остальные данные можно получить у автора для переписки по запросу. Укажите также DOI набора данных и дату его публикации. Шаблон можно дополнить сведениями о лицензии и о сроках хранения данных в репозитории." }]
+      ]
+    },
+    {
+      "id": "translate-paragraph", "doc": "@spin", "mode": "auto", "docsApi": true,
+      "selection": "Here we combine spin labelling with molecular dynamics to follow one transporter through its transport cycle.",
+      "note": "Control: an explicit translation of one selected paragraph on the Docs API path (export-selection covers the export path).",
+      "prompts": ["Translate this paragraph into Russian.", "Переведи этот абзац на русский.", "Put the selected paragraph into Russian."],
+      "expect": { "order": ["replace_selection|replace_text|edit_document"], "max": { "write": 1 }, "forbid": ["delete_lines", "remember", "replace_section"], "failedMax": 0, "finalText": "[А-Яа-яЁё]{4}[^\\n]*\\nMethods\\n", "finalTextNot": "Here we combine" },
+      "dry": [
+        [{ "calls": [["replace_selection", { "text": "Здесь мы сочетаем спиновые метки с молекулярной динамикой, чтобы проследить за одним транспортером на протяжении всего транспортного цикла." }]] }, { "text": "Абзац переведён на русский." }],
+        [{ "calls": [["replace_selection", { "text": "Here we combine spin labelling with molecular dynamics (MD) to follow one transporter through its whole transport cycle." }]] }, { "text": "Done." }]
+      ]
+    },
+    {
+      "id": "separate-edits-undo", "doc": "@typos", "mode": "auto", "docsApi": true,
+      "note": "audit A19 (precedence): the user's explicit order outranks rule 4 (several changes: ONE edit_document): each fix is its own edit, so each has its own undo. The second script follows the rule against the order.",
+      "prompts": ["Fix the typos «asay» and «yelow»; make each fix a separate edit so I can undo them one by one.", "Исправь опечатки «asay» и «yelow», каждую отдельной правкой, чтобы я мог отменять их по одной.", "Correct asay and yelow in two separate edits, so that each one can be undone on its own."],
+      "expect": { "forbid": ["edit_document", "replace_section", "delete_lines", "remember"], "min": { "write": 2 }, "failedMax": 0, "finalText": "each assay\\.[\\s\\S]*from yellow to", "finalTextNot": "asay|yelow" },
+      "dry": [
+        [{ "calls": [["replace_text", { "old_text": "each asay.", "new_text": "each assay.", "line": null }]] }, { "calls": [["replace_text", { "old_text": "from yelow to", "new_text": "from yellow to", "line": null }]] }, { "text": "Fixed both typos, each as its own edit." }],
+        [{ "calls": [["edit_document", { "operations": [{ "op": "replace", "old_text": "each asay.", "new_text": "each assay." }, { "op": "replace", "old_text": "from yelow to", "new_text": "from yellow to" }] }]] }, { "text": "Fixed both typos in one edit." }]
+      ]
+    },
+    {
+      "id": "plan-no-questions", "doc": "@report", "mode": "plan", "docsApi": true,
+      "note": "audit A37 (precedence): in Plan the user's \"don't ask me\" outranks rule 3 (open choices: ask_user first); the plan comes with defaults the model chose. The second script asks anyway.",
+      "prompts": ["Plan how to make the Results section clearer. Don't ask me anything, pick sensible defaults yourself.", "Составь план, как сделать раздел Results понятнее. Ничего у меня не спрашивай, выбери разумные варианты сам.", "Plan a clearer Results section; no questions, choose the defaults yourself."],
+      "expect": { "order": ["read_document|find_in_document"], "forbid": ["ask_user", "write", "remember"], "answer": "(?:^|\\n)\\s*1[.)]" },
+      "dry": [
+        [{ "calls": [["read_document", { "scope": { "start": 7, "end": 10 }, "include": ["text"], "doc": null }]] },
+         { "text": "1. Line 8: delete the stray \"Results\" line under the heading.\n2. Line 9: give the half-life first, then the buffer difference with its p value.\n3. Line 10: say what the colour change shows.\nDefaults I chose: the same terms, no new data." }],
+        [{ "calls": [["read_document", { "scope": { "start": 7, "end": 10 }, "include": ["text"], "doc": null }]] },
+         { "calls": [["ask_user", { "questions": [{ "question": "Who will read the Results?", "options": ["Specialists", "A general audience"], "multiple": null }] }]] },
+         { "text": "1. Line 8: delete the stray \"Results\" line.\n2. Line 9: give the half-life first." }]
+      ]
+    },
+    {
+      "id": "manual-list-every-typo", "doc": "@typos", "mode": "manual", "docsApi": true,
+      "note": "A list asked for in the chat, sent in Manual (an editing turn): all five typos with their corrections in the answer, nothing written. The second script fixes the typos instead of listing them.",
+      "prompts": ["List every typo in the document with its correction.", "Найди все опечатки в документе и для каждой дай исправление.", "Give me all the spelling mistakes in the text and how to fix each one."],
+      "expect": { "order": ["read_document|find_in_document"], "forbid": ["write", "remember"], "answer": "(?=[\\s\\S]*assay)(?=[\\s\\S]*calculated)(?=[\\s\\S]*difference)(?=[\\s\\S]*yellow)(?=[\\s\\S]*industrial)" },
+      "dry": [
+        [{ "calls": [["read_document", { "scope": "all", "include": null, "doc": null }]] },
+         { "text": "- line 3: asay → assay\n- line 4: calcualted → calculated\n- line 6: diference → difference\n- line 7: yelow → yellow\n- line 9: industrail → industrial" }],
+        [{ "calls": [["read_document", { "scope": "all", "include": null, "doc": null }]] },
+         { "calls": [["edit_document", { "operations": [{ "op": "replace", "old_text": "each asay.", "new_text": "each assay." }, { "op": "replace", "old_text": "calcualted", "new_text": "calculated" }, { "op": "replace", "old_text": "diference", "new_text": "difference" }, { "op": "replace", "old_text": "yelow", "new_text": "yellow" }, { "op": "replace", "old_text": "industrail", "new_text": "industrial" }] }]] },
+         { "text": "Fixed all five typos." }]
+      ]
+    },
+    {
+      "id": "section-heading-outline", "mode": "auto", "docsApi": true,
+      "note": "A section (a heading with its text) goes in with style outline: the heading line is a heading, its sentence body text (edit rule 5, insert_after_line's style). The second script is a saved chat's: style h2 on the heading and its sentence makes both headings (the result names the sentence).",
+      "doc": ["# Enzyme notes", "## Results", "The enzyme kept 74 % of its activity after one hour at 60 °C.", "## Discussion", "The loss above 60 °C points to unfolding."],
+      "prompts": ["Add a Limitations section after the Results paragraph with one sentence: only one enzyme batch was tested.", "После абзаца Results добавь раздел Limitations с одним предложением: проверена только одна партия фермента.", "Insert a short Limitations section (heading and one sentence: a single enzyme batch was tested) after the results."],
+      "expect": { "order": ["insert_after_line|edit_document"], "forbid": ["remember", "replace_section", "delete_lines"], "failedMax": 0,
+        "lines": [{ "match": "^Limitations$", "style": "HEADING_2" }, { "match": "enzyme batch", "style": "NORMAL_TEXT" }] },
+      "dry": [
+        [{ "calls": [["insert_after_line", { "line": 3, "text": "## Limitations\nOnly one enzyme batch was tested.", "style": "outline", "fill": null }]] },
+         { "text": "Added the Limitations section." }],
+        [{ "calls": [["insert_after_line", { "line": 3, "text": "Limitations\nOnly one enzyme batch was tested.", "style": "h2", "fill": null }]] },
+         { "text": "Added the Limitations section." }]
+      ]
+    },
+    {
+      "id": "grey-headings-black", "mode": "auto", "docsApi": true,
+      "note": "A saved chat: Heading 4's named style is grey (Docs' default #666666), the other headings black. The formatting view's header names the grey style, so exactly the h4 lines get an explicit black. The second script is the chat's: black on headings that already show black (no change), the grey ones left grey.",
+      "doc": ["# Spin label notes", "## Methods", { "p": "Sample preparation", "style": "HEADING_4" }, "The samples were dried overnight.", { "p": "Measurements", "style": "HEADING_4" }, "Spectra were recorded at 80 K.", "## Results", "The spectra show two components."],
+      "prompts": ["Make the grey headings black.", "Сделай серые заголовки чёрными.", "The grey headings should be black like the others."],
+      "expect": { "order": ["format_text|edit_document"], "forbid": ["document_styles", "replace_text", "replace_all", "delete_lines"], "failedMax": 0,
+        "resultsNot": "did not apply",
+        "finalFormatting": "\\{Sample preparation\\}\\(color=#000000\\)[\\s\\S]*\\{Measurements\\}\\(color=#000000\\)",
+        "finalFormattingNot": "\\[h[1-3][^\\]]*\\][^\\n]*\\(color=|color=#(?!000000\\b)" },
+      "dry": [
+        [{ "calls": [["read_document", { "scope": "all", "include": ["formatting"], "doc": null }]] },
+         { "calls": [["edit_document", { "operations": [
+           { "op": "format_text", "old_text": "Sample preparation", "color": "#000000" },
+           { "op": "format_text", "old_text": "Measurements", "color": "#000000" }] }]] },
+         { "text": "The two grey h4 headings are black now." }],
+        [{ "calls": [["read_document", { "scope": "all", "include": ["formatting"], "doc": null }]] },
+         { "calls": [["edit_document", { "operations": [
+           { "op": "format_text", "old_text": "Methods", "color": "#000000" },
+           { "op": "format_text", "old_text": "Results", "color": "#000000" }] }]] },
+         { "text": "The headings are black now." }]
+      ]
+    }
+  ]
+}

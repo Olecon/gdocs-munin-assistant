@@ -62,8 +62,8 @@ test('the caps: the line limit counts sentence entries; a long sentence is cut a
 
 test('own-changes: a one-word change in a paragraph is reported by its sentence', () => {
   assert.strictEqual(T.ownChangesLine(`A\n${PARA}`, `A\n${PARA.replace('high', 'low')}`),
-    'Since your last message you changed line 2: «The yield was high in every run.» → «The yield was low in every run.».');
+    'Since your previous turn the document was changed outside the panel (by the user or a collaborator): changed line 2: «The yield was high in every run.» → «The yield was low in every run.».');
   const s = T.splitSentences(PARA);
-  assert.strictEqual(T.ownChangesLine(PARA, [s[0], s[1], s[3]].join(' ')), `Since your last message you deleted from line 1: «${s[2]}».`);
-  assert.strictEqual(T.ownChangesLine('a\nb', 'a\nB'), 'Since your last message you changed line 2: «b» → «B».');
+  assert.strictEqual(T.ownChangesLine(PARA, [s[0], s[1], s[3]].join(' ')), `Since your previous turn the document was changed outside the panel (by the user or a collaborator): deleted from line 1: «${s[2]}».`);
+  assert.strictEqual(T.ownChangesLine('a\nb', 'a\nB'), 'Since your previous turn the document was changed outside the panel (by the user or a collaborator): changed line 2: «b» → «B».');
 });

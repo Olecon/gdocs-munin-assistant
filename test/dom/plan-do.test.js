@@ -1,7 +1,7 @@
 'use strict';
 // The Do it button of a Plan answer (jsdom): under the latest Plan answer only, with Copy and without Apply; a click
-// switches the mode to Edit automatically (stored) and sends PLAN_DO_TEXT once through the Send path, as an Edit
-// automatically turn; Manual and Edit automatically answers have no Do it; ignored while an answer runs.
+// switches the mode to Auto (stored) and sends PLAN_DO_TEXT once through the Send path, as an Auto
+// turn; Manual and Auto answers have no Do it; ignored while an answer runs.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { load, click, key, typeInto, tick } = require('../lib/dom-sandbox');
@@ -41,7 +41,7 @@ async function send(text) {
   await tick(5);
 }
 
-test('a Plan answer gets Do it and Copy; Do it switches to Edit automatically and sends once', async () => {
+test('a Plan answer gets Do it and no corner buttons; Do it switches to Auto and sends once', async () => {
   T.applyApplyMode('plan');
   await T.createChat();
   await send('Plan how to tighten this');
@@ -49,8 +49,7 @@ test('a Plan answer gets Do it and Copy; Do it switches to Edit automatically an
   const doIt = last.querySelector('button[data-act="plan-do"]');
   assert.ok(doIt);
   assert.strictEqual(doIt.textContent, 'Do it');
-  assert.ok(last.querySelector('button[data-act="copy-msg"]'));
-  assert.strictEqual(last.querySelector('button[data-act="apply-msg"]'), null);
+  assert.strictEqual(last.querySelector('button[data-act$="-code"]'), null); // a plan is no document text
   assert.ok(!bodies[0].tools.some((t) => t.name === 'replace_selection' || t.name === 'remember'));
   // ignored while an answer runs
   state.busy = true;
@@ -63,24 +62,24 @@ test('a Plan answer gets Do it and Copy; Do it switches to Edit automatically an
   await tick(5);
   assert.strictEqual(state.applyMode, 'auto');
   assert.strictEqual(env.storage.muninApplyMode, 'auto');
-  assert.strictEqual(el.modeLabel.textContent, 'Edit automatically');
+  assert.strictEqual(el.modeLabel.textContent, 'Auto');
   const users = state.messages.filter((m) => m.role === 'user' && !m._auto);
   assert.strictEqual(users.length, 2);
   assert.strictEqual(users[1].content, T.PLAN_DO_TEXT);
-  assert.strictEqual(T.PLAN_DO_TEXT, 'Carry out the plan above, step by step, one edit per step.');
-  assert.ok(bodies[1].tools.some((t) => t.name === 'replace_selection')); // an Edit automatically turn
-  // the plan is no longer the latest message, and the Edit automatically answer has none
+  assert.strictEqual(T.PLAN_DO_TEXT, 'Carry out the plan above; group the steps that fit into one edit_document call.');
+  assert.ok(bodies[1].tools.some((t) => t.name === 'replace_selection')); // an Auto turn
+  // the plan is no longer the latest message, and the Auto answer has none
   assert.strictEqual($$('button[data-act="plan-do"]').length, 0);
   assert.ok(state.messages.some((m) => m._plan));
   assert.strictEqual(state.messages[state.messages.length - 1]._plan, undefined);
 });
 
-test('a Manual answer has no Do it (Apply and Copy as before)', async () => {
+test('a plain Manual answer has no Do it and no Insert / Copy', async () => {
   T.applyApplyMode('manual');
   bodies.length = 0;
   await T.createChat();
   await send('Suggest a title');
   const last = $$('.msg.assistant').pop();
   assert.strictEqual(last.querySelector('button[data-act="plan-do"]'), null);
-  assert.ok(last.querySelector('button[data-act="apply-msg"]'));
+  assert.strictEqual(last.querySelector('button[data-act$="-code"]'), null);
 });

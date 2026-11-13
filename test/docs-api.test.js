@@ -3,7 +3,7 @@
 // Sign out, full turns with the API, the export fallback.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, installDocTab, installIdentity } = require('./lib/sandbox');
+const { chatCards, deq, load, installDocTab, installIdentity, turnRowTexts } = require('./lib/sandbox');
 const { sseResponse, ev, tu, msgStart, stopTool } = require('./lib/streams');
 const { fakeDocsServer, OC, docSpec, ORIGINAL, WRITE_SET, docsBench } = require('./lib/fake-docs');
 
@@ -33,15 +33,17 @@ test('Docs API line model: indices, emoji, tables, objects, tabs', async () => {
   ident.granted = true;
   state.googleConnected = true;
 
-  // --- line model: indices written out by hand (UTF-16: the emoji takes 2), headings, tables, objects, tabs
+  // --- line model: indices written out by hand (UTF-16: the emoji takes 2), headings, tables, objects, tabs; the table
+  // ends one index after its last cell (88), as in Docs
   model = await D.fetchDocModel('DOC123', null);
   assert.strictEqual(fake.log[0].url, 'https://docs.googleapis.com/v1/documents/DOC123?includeTabsContent=true&fields=' + T.DOCS_GET_FIELDS);
   assert.strictEqual(fake.log[0].auth, 'Bearer tok-1');
   deq(model.lines.map((l) => [l.line, l.start, l.end, l.text, l.heading]), [
     [1, 1, 10, 'Report 📊', 1], [2, 11, 25, 'Intro 😀 text.', 0], [3, 26, 33, 'Methods', 1], [4, 34, 51, 'Alpha beta gamma.', 0],
-    [5, 52, 69, 'Alpha beta delta.', 0], [6, 73, 79, 'Cell A', 0], [7, 81, 87, 'Cell B', 0], [8, 88, 95, 'Details', 2],
-    [9, 96, 108, 'Image ' + OC + ' done', 0], [10, 109, 118, 'Last line', 0],
+    [5, 52, 69, 'Alpha beta delta.', 0], [6, 73, 79, 'Cell A', 0], [7, 81, 87, 'Cell B', 0], [8, 89, 96, 'Details', 2],
+    [9, 97, 109, 'Image ' + OC + ' done', 0], [10, 110, 119, 'Last line', 0],
   ]);
+  assert.strictEqual(D.lineAtIndex(model, 88), null);
   assert.ok(model.lines.every((l) => l.exact && !l.suggested));
   deq(model.lines.map((l) => !!l.closing), [false, false, false, false, true, true, true, false, false, true]);
   assert.strictEqual(model.text, ORIGINAL.join('\n'));
@@ -70,19 +72,28 @@ test('Docs API outline, prompt, tool set, parallel tool use off', async () => {
   deq(T.docOutline(as).map((h) => [h.line, h.level, h.title]), [[1, 1, 'Report 📊'], [3, 1, 'Methods'], [8, 2, 'Details']]);
   assert.strictEqual(D.formatOutline(T.docOutline(as)), 'L1: [Title] Report 📊\nL3: [H1] Methods\nL8: [H2] Details');
   assert.ok(/^3 headings \(10 lines in total\):\nL1: \[Title\]/.test(T.runReadingTool('get_outline', {}, as)));
-  deq(T.toolsFor('edit', as).map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'open_document', 'remember', ...WRITE_SET, 'replace_selection', 'ask_user', 'table', 'page_parts', 'read_comments', 'draft', 'revise_section']);
-  deq(T.toolsFor('manual', as).map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'open_document', 'remember', 'ask_user', 'page_parts', 'read_comments']);
-  deq(T.toolsFor('research', as).map((t) => t.function.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'open_document', 'remember', 'ask_user', 'page_parts', 'read_comments']);
+  deq(T.toolsFor('edit', as).map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', ...WRITE_SET, 'replace_selection', 'ask_user', 'table', 'page_parts', 'document_styles', 'style_map', 'draft', 'revise_section', 'trim_to_words', 'phrase_usage', 'models', 'search', 'delegate']);
+  deq(T.toolsFor('manual', as).map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user', 'page_parts', 'document_styles', 'style_map', 'phrase_usage', 'models', 'search', 'delegate']);
+  deq(T.toolsFor('research', as).map((t) => t.function.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user', 'page_parts', 'document_styles', 'style_map', 'models', 'search', 'delegate']);
   let areq = T.buildRequest('edit', as);
   const sys0 = areq.body.system[0].text;
   const ctx0 = T.buildTurnContext('edit', as); // feat/context: the outline is in the turn context of the user message
   assert.ok(ctx0.includes('<document title="My Doc" tab="Main" format="docs-api" lines="10" characters="'));
   assert.ok(ctx0.includes('Outline (line: heading):\nL1: [Title] Report 📊\nL3: [H1] Methods\nL8: [H2] Details'));
-  assert.ok(sys0.includes('read through the Google Docs API as plain text') && sys0.includes('with the writing tools.') && sys0.includes('one tool call at a time'));
-  assert.ok(!sys0.includes('replace_text(old_text, new_text)') && sys0.includes('Use replace_all for terminology or notation changes')); // the definitions describe the tools
-  assert.ok(sys0.includes('one short sentence summarizing'));
-  deq(areq.body.tool_choice, { type: 'auto', disable_parallel_tool_use: true });
-  areq.body.tools.forEach((t) => { assert.strictEqual(t.strict, true); deq(Object.keys(t.input_schema.properties).sort(), [...t.input_schema.required].sort()); });
+  assert.ok(sys0.includes('read through the Google Docs API as plain text') && sys0.includes('with the writing tools.') && sys0.includes('ONE edit_document call') && sys0.includes('Otherwise one edit call per response'));
+  assert.ok(!sys0.includes('replace_text(old_text, new_text)') && sys0.includes('Use replace_all for terminology or notation changes across the document, once find_in_document shows')); // the definitions describe the tools
+  assert.ok(sys0.includes('8. When every edit succeeded, add nothing: the edit cards already show what changed.'));
+  // Next to the filtering search (web_search_20260209 runs code execution) the API refuses disable_parallel_tool_use: no
+  // tool_choice, and the loop runs one edit per response (runRoundCalls); without the search the edits go one at a time.
+  assert.strictEqual(areq.body.tools[areq.body.tools.length - 1].type, 'web_search_20260209');
+  assert.strictEqual(areq.body.tool_choice, undefined);
+  deq(T.buildRequest('edit', { ...as, quiet: true }).body.tool_choice, { type: 'auto', disable_parallel_tool_use: true });
+  // the fixed strict set strict (every property required: request.js ANTHROPIC_STRICT_TOOLS); every other tool compact
+  // and without the strict field, edit_document among them (test/anthropic-strict.test.js counts the API's limits)
+  areq.body.tools.filter((t) => t.input_schema && T.ANTHROPIC_STRICT_TOOLS.includes(t.name)).forEach((t) => { assert.strictEqual(t.strict, true); deq(Object.keys(t.input_schema.properties).sort(), [...t.input_schema.required].sort()); });
+  const ed = areq.body.tools.find((t) => t.name === 'edit_document');
+  assert.strictEqual(ed.strict, undefined);
+  deq(ed.input_schema, T.compactSchema(T.TOOL_DEFS.edit_document.function.parameters));
   assert.strictEqual(T.buildRequest('manual', as).body.tool_choice, undefined); // no write tools, parallel calls allowed
   state.settings.provider = 'openai';
   let oas = T.takeSnapshot(); T.snapshotDocument(oas);
@@ -119,7 +130,7 @@ test('settings: Google account Sign in / Sign out', async () => {
   storage.muninGoogleConnected = undefined;
   T.openSettings();
   const shown = (e) => !e.classList.contains('hidden');
-  assert.strictEqual(T.el.googleStatus.title, 'Not signed in');
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Not signed in');
   assert.ok(shown(T.el.googleConnect) && !shown(T.el.googleSwitch) && !shown(T.el.googleDisconnect));
   ident.granted = false; ident.calls.length = 0; ident.forget();
   ident.failInteractive = 'The user did not approve access.';
@@ -134,7 +145,8 @@ test('settings: Google account Sign in / Sign out', async () => {
   deq(ident.requests[1].scope.split(' '), ['https://www.googleapis.com/auth/documents', 'openid', 'email', 'profile']);
   deq(userinfo, [['https://openidconnect.googleapis.com/v1/userinfo', 'Bearer tok-1']]);
   assert.strictEqual(state.googleConnected, true); assert.strictEqual(storage.muninGoogleConnected, true);
-  assert.strictEqual(T.el.googleStatus.title, 'Signed in as ann@example.com');
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Signed in as ann@example.com');
+  assert.strictEqual(T.el.googleHint.textContent, 'Signed in as ann@example.com.'); // the settings say it, not the chat
   assert.ok(!shown(T.el.googleConnect) && shown(T.el.googleSwitch) && shown(T.el.googleDisconnect));
   await T.loadSettings(); assert.strictEqual(state.googleConnected, true); deq(state.googleAccount, { email: 'ann@example.com' }); // remembered
   const revoked = [];
@@ -143,14 +155,15 @@ test('settings: Google account Sign in / Sign out', async () => {
   deq(revoked, [['https://oauth2.googleapis.com/revoke', 'token=tok-1', 'no-cors']]);
   assert.strictEqual(state.googleConnected, false); assert.strictEqual(storage.muninGoogleConnected, false); assert.strictEqual(state.docModel, null);
   assert.strictEqual(state.googleAccount, null); assert.ok(!('muninGoogleAccount' in storage));
-  assert.strictEqual(T.el.googleStatus.title, 'Not signed in');
-  assert.ok(T.el.chat.children.some((c) => /Signed out of Google/.test(c.innerHTML)));
+  assert.strictEqual(T.el.googleStatus.dataset.tip, 'Not signed in');
+  assert.ok(!T.el.chat.children.some((c) => /Signed (out|in)/.test(c.innerHTML || c._text || ''))); // nothing in the chat
+  assert.strictEqual(T.el.googleHint.textContent, '');
   T.el.settings.classList.add('hidden');
 });
 
-test('end-to-end turn with the Docs API (Anthropic): parallel edit refused, Undo button', async () => {
-  // --- end-to-end turn (Anthropic): read, then two edits in ONE response (the second, line-based, is
-  //     refused), final sentence; Undo button; sendMessage blocked while an undo runs
+test('end-to-end turn with the Docs API (Anthropic): the second edit of a response waits, Undo button', async () => {
+  // --- end-to-end turn (Anthropic): read, then two edits in ONE response (the second is not run: it waits for the
+  //     next response), final sentence; Undo button; sendMessage blocked while an undo runs
   fake = fakeDocsServer(docSpec());
   tabMsgs2 = [];
   chrome.tabs.sendMessage = async (id, msg) => {
@@ -168,7 +181,7 @@ test('end-to-end turn with the Docs API (Anthropic): parallel edit refused, Undo
   state.applyMode = 'auto';
   state.settings.provider = 'anthropic';
   apiRounds = [
-    msgStart + tu(0, 'toolu_r', 'read_lines', { start: 4, end: 5 }) + stopTool,
+    msgStart + tu(0, 'toolu_r', 'read_document', { scope: { start: 4, end: 5 }, include: ['text'], doc: null }) + stopTool,
     msgStart + tu(0, 'toolu_w', 'replace_text', { old_text: 'beta gamma', new_text: 'beta GAMMA' }) + tu(1, 'toolu_d', 'delete_lines', { start: 5, end: 5 }) + stopTool,
     msgStart + ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }) +
       ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Capitalized "gamma" in line 4.' } }) +
@@ -183,30 +196,38 @@ test('end-to-end turn with the Docs API (Anthropic): parallel edit refused, Undo
   assert.strictEqual(apiBodies.length, 3);
   assert.ok(!tabMsgs2.includes('GET_DOC_TEXT')); // no export when the API works
   assert.strictEqual(state.docFormat, 'docs-api');
-  deq(apiBodies[0].tools.map((t) => t.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'read_formatting', 'open_document', 'remember', ...WRITE_SET, 'replace_selection', 'ask_user', 'table', 'page_parts', 'read_comments', 'draft', 'revise_section']);
-  deq(apiBodies[0].tool_choice, { type: 'auto', disable_parallel_tool_use: true });
+  deq(apiBodies[0].tools.map((t) => t.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', ...WRITE_SET, 'replace_selection', 'ask_user', 'table', 'page_parts', 'document_styles', 'style_map', 'draft', 'revise_section', 'trim_to_words', 'phrase_usage', 'chat_title', 'models', 'search', 'delegate', 'web_search']);
+  assert.strictEqual(apiBodies[0].tool_choice, undefined); // next to the filtering search: one edit per response is the loop's
   assert.ok(apiBodies[0].messages[0].content[0].text.includes('L3: [H1] Methods')); // feat/context: in the user message
   deq(apiBodies[1].messages[2].content, [{ type: 'tool_result', tool_use_id: 'toolu_r', content: 'Lines 4-5 of 10:\n4: Alpha beta gamma.\n5: Alpha beta delta.', cache_control: { type: 'ephemeral' } }]);
   const results2 = apiBodies[2].messages[4].content;
   assert.strictEqual(results2[0].tool_use_id, 'toolu_w');
-  assert.strictEqual(results2[0].content, 'Done: replaced line 4.\nLines 4-4 now:\n4: Alpha beta GAMMA.\nThe document now has 10 lines.');
+  assert.strictEqual(results2[0].content, 'Done: replaced line 4; the document has 10 lines.'); // no section note (src/prose-tools.js): no sentence of 5+ words to quote
   assert.strictEqual(results2[1].tool_use_id, 'toolu_d'); assert.strictEqual(results2[1].is_error, true);
-  assert.ok(/line numbers changed after the previous edit/.test(results2[1].content));
+  assert.strictEqual(results2[1].content, T.ONE_EDIT_TEXT); // both results in the one user message after the response
+  assert.strictEqual(T.ONE_EDIT_TEXT, 'Not run: only one edit runs per response (an edit can shift line numbers). Send this call again in your next response, with current line numbers if it uses any.');
   deq(apiBodies[2].system, apiBodies[0].system); // the prompt stays frozen for the turn
   assert.ok(fake.text('t.0').includes('Alpha beta GAMMA.') && fake.text('t.0').includes('Alpha beta delta.'));
   assert.ok(state.docText.includes('Alpha beta GAMMA.'));
   let hist = state.messages;
   assert.strictEqual(hist.length, 7);
   assert.strictEqual(hist[4]._edit.id, 'toolu_w'); assert.strictEqual(hist[4]._message, 'Replaced line 4');
-  assert.strictEqual(hist[5]._ok, false);
+  assert.strictEqual(hist[5]._ok, false); assert.strictEqual(hist[5]._deferred, true);
   assert.strictEqual(hist[6].content, 'Capitalized "gamma" in line 4.');
   deq(JSON.parse(JSON.stringify(storage['muninChatHistory:DOC123:' + state.chatId]))[4]._edit.restore, 'gamma'); // the journal is persisted (only the changed word: prefix/suffix trimming)
   T.el.chat.children.length = 0; // the stub's innerHTML = '' does not drop children
   D.renderHistory();
-  let cards = T.el.chat.children.filter((c) => c.className.includes('tool-card'));
-  assert.strictEqual(cards.length, 2);
-  assert.ok(cards[0].innerHTML.includes('✅ Replaced line 4') && cards[0].innerHTML.includes('data-act="undo-edit" data-edit="toolu_w"') && cards[0].innerHTML.includes('<details class="what-changed"><summary>What changed</summary><div class="word-diff">beta <del>gamma</del><ins>GAMMA</ins></div></details>'));
-  assert.ok(cards[1].innerHTML.includes('⚠️ delete_lines: line numbers changed by the previous edit; not applied'));
+  // the applied edit is its action-log row (status, preview, Undo, What changed in the fold); the one that waited has no
+  // row and no card (the model sends it again, and that call has the row)
+  const writeRows = () => T.el.chat.children.flatMap((c) => c._rows || []).filter((r) => r.className.includes('write-row'));
+  assert.strictEqual(chatCards(T.el.chat).length, 0);
+  assert.strictEqual(T.el.chat.children.filter((c) => c.className.includes('tool-card')).length, 0);
+  const failed = T.el.chat.children.flatMap((c) => c._rows || []).filter((r) => /\blog-row fail\b/.test(r.className));
+  assert.strictEqual(failed.length, 0);
+  assert.ok(!T.el.chat.children.flatMap((c) => c._rows || []).some((r) => r.innerHTML.includes('<span class="activity-name">delete_lines</span>')));
+  const row = writeRows()[0];
+  assert.ok(row.innerHTML.includes('<span class="activity-name">replace_text</span> · <span class="log-status">Done</span><span class="log-preview"> · beta GAMMA</span>'), row.innerHTML);
+  assert.ok(row.innerHTML.includes('data-act="undo-edit" data-edit="toolu_w"') && row.innerHTML.includes('<div class="log-what">Replaced line 4</div>') && row.innerHTML.includes('<div class="log-label">What changed</div><div class="word-diff">beta <del>gamma</del><ins>GAMMA</ins></div>'));
   // sendMessage waits while an undo is running
   state.undoing = true;
   const before = apiBodies.length;
@@ -219,13 +240,13 @@ test('end-to-end turn with the Docs API (Anthropic): parallel edit refused, Undo
   assert.ok(state.docText.includes('Alpha beta gamma.'));
   assert.strictEqual(state.messages[4]._edit.undone, true);
   assert.ok(/user undid this edit/.test(state.messages[4].content));
-  const cardEl = T.el.chat.children.filter((c) => c.className.includes('tool-card')).slice(-2)[0];
-  assert.ok(cardEl.innerHTML.includes('Replaced line 4 (undone)') && !cardEl.innerHTML.includes('undo-edit'));
+  const rowEl = writeRows().pop();
+  assert.ok(rowEl.className.includes('undone') && rowEl.innerHTML.includes('<span class="log-status">Undone</span>') && !rowEl.innerHTML.includes('undo-edit'));
   assert.strictEqual(await D.undoFromButton('toolu_w'), false); // already undone
 });
 
-test('Docs API failure falls back to the export (with a notice)', async () => {
-  // --- connected but the API fails: one notice, export fallback, no writing tools
+test('Docs API failure falls back to the export (with a row of the turn)', async () => {
+  // --- connected but the API fails: one row of the turn, export fallback, no writing tools
   fake.failNext = { status: 403, message: 'The caller does not have permission' };
   apiBodies.length = 0;
   const finalOnly = apiRounds[2];
@@ -236,8 +257,9 @@ test('Docs API failure falls back to the export (with a notice)', async () => {
   await T.sendMessage();
   await new Promise((r) => setTimeout(r, 20));
   assert.ok(tabMsgs2.includes('GET_DOC_TEXT')); assert.strictEqual(state.docFormat, 'markdown'); assert.strictEqual(state.docModel, null);
-  assert.ok(T.el.chat.children.some((c) => /Could not read the document through the Google Docs API: Google denied access \(HTTP 403\)/.test(c.innerHTML)));
-  deq(apiBodies[0].tools.map((t) => t.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user']);
+  assert.ok(turnRowTexts(T.el.chat).some((t) => /^Could not read the document through the Google Docs API: Google denied access \(HTTP 403\)/.test(t)));
+  assert.ok(/^Could not read the document through the Google Docs API/.test(state.messages.find((m) => m.content === 'Anything')._notes[0])); // stored with the turn
+  deq(apiBodies[0].tools.map((t) => t.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user', 'phrase_usage', 'chat_title', 'models', 'search', 'delegate', 'web_search']);
   assert.strictEqual(apiBodies[0].tool_choice, undefined);
 });
 
@@ -251,7 +273,7 @@ test('not connected: export path and the old tools', async () => {
   await new Promise((r) => setTimeout(r, 20));
   assert.strictEqual(fake.log.length, getsBefore); // the Docs API is not called
   assert.ok(tabMsgs2.includes('GET_DOC_TEXT')); assert.strictEqual(state.docFormat, 'markdown');
-  deq(apiBodies[0].tools.map((t) => t.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user']);
+  deq(apiBodies[0].tools.map((t) => t.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user', 'phrase_usage', 'chat_title', 'models', 'search', 'delegate', 'web_search']);
   assert.ok(apiBodies[0].system[0].text.includes('Call replace_selection at most once per request'));
 });
 

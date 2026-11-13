@@ -2,7 +2,7 @@
 // Full turns through sendMessage: Anthropic and OpenAI tool loops, Manual mode, Auto edits with the action log.
 const { test, before } = require('node:test');
 const assert = require('node:assert');
-const { deq, load, installIdentity } = require('./lib/sandbox');
+const { chatCards, deq, load, installIdentity } = require('./lib/sandbox');
 const { sseResponse, ev, tu, msgStart, stopTool, textRound } = require('./lib/streams');
 const { fakeDocsServer, docSpec, docsBench } = require('./lib/fake-docs');
 
@@ -10,10 +10,13 @@ let fake; let as; // the fake Docs server and the turn snapshot; fresh() replace
 const ref = { get fake() { return fake; }, set fake(v) { fake = v; }, get as() { return as; }, set as(v) { as = v; } };
 let env, T, D, state, sandbox, storage, chrome, ident, routeDocs, bodies, readOut, h, o2, hist;
 const EPH = { type: 'ephemeral' };
-const pasteOk = () => JSON.stringify({ ok: true, note: T.PASTE_DONE_NOTE }); // the model's result of a paste
-// The turn context of the sample document (Markdown export, selection "quick brown").
+const pasteOk = () => T.PASTE_DONE_NOTE; // the model's result of a paste
+// The turn context of the sample document (Markdown export, selection "quick brown", short: with its text).
 const CTX1 = '<document title="My Doc" format="markdown" lines="8" characters="66">\nOutline (line: heading):\nL1: # My Doc\nL5: ## Methods\n</document>\n' +
-  'Selection: line 7 (11 characters)';
+  'Selection: line 7 (11 characters)\nIts text (no need for get_selection):\n<selection>\nquick brown\n</selection>';
+// The line that names the model, on a chat's first turn and after a model change (runAsLine).
+const RUN_A = '\nYou run as claude-opus-5-5 (Anthropic (Claude)).';
+const RUN_O = '\nYou run as gpt-6.1-sol (OpenAI (ChatGPT)).';
 
 before(async () => {
   env = await load();
@@ -49,8 +52,8 @@ test('end-to-end turn (Anthropic)', async () => {
   Object.assign(state.settings.providers.anthropic, { apiKey: 'sk-ant-NEW', model: 'claude-opus-5-5', baseUrl: 'https://api.anthropic.com/v1' });
   bodies = [];
   const round0 = ev('message_start', { type: 'message_start', message: { model: 'claude-opus-5-5', usage: { input_tokens: 80 } } }) +
-    ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_read', name: 'read_lines', input: {} } }) +
-    ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"start":5,"end":7}' } }) +
+    ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_read', name: 'read_document', input: {} } }) +
+    ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"scope":{"start":5,"end":7},"include":["text"],"doc":null}' } }) +
     ev('content_block_stop', { type: 'content_block_stop', index: 0 }) +
     ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 15 } }) + ev('message_stop', { type: 'message_stop' });
   const round1 = ev('message_start', { type: 'message_start', message: { model: 'claude-opus-5-5', usage: { input_tokens: 100 } } }) +
@@ -78,12 +81,12 @@ test('end-to-end turn (Anthropic)', async () => {
   assert.strictEqual(bodies[0].system.length, 1);
   assert.ok(!bodies[0].system[0].text.includes('Outline (line: heading)'));
   assert.ok(!JSON.stringify(bodies[0]).includes('The quick brown fox.')); // the text itself is not in the prompt
-  deq(bodies[0].tools.map((t) => t.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user']);
-  deq(bodies[0].messages, [{ role: 'user', content: [{ type: 'text', text: `${CTX1}\n\nMake it faster and replace`, cache_control: EPH }] }]);
+  deq(bodies[0].tools.map((t) => t.name), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user', 'phrase_usage', 'chat_title', 'delegate', 'web_search']);
+  deq(bodies[0].messages, [{ role: 'user', content: [{ type: 'text', text: `${CTX1}${RUN_A}\n\nMake it faster and replace`, cache_control: EPH }] }]);
   readOut = 'Lines 5-7 of 8:\n5: ## Methods\n6: \n7: The quick brown fox.';
   deq(bodies[1].messages, [
-    { role: 'user', content: [{ type: 'text', text: `${CTX1}\n\nMake it faster and replace` }] },
-    { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read', name: 'read_lines', input: { start: 5, end: 7 } }] },
+    { role: 'user', content: [{ type: 'text', text: `${CTX1}${RUN_A}\n\nMake it faster and replace` }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read', name: 'read_document', input: { scope: { start: 5, end: 7 }, include: ['text'], doc: null } }] },
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_read', content: readOut, cache_control: EPH }] },
   ]);
   deq(bodies[2].system, bodies[0].system); // frozen for the turn although the selection was cleared by the replacement
@@ -95,11 +98,13 @@ test('end-to-end turn (Anthropic)', async () => {
   assert.ok(tabMsgs.includes('REPLACE_SELECTION'));
   h = state.messages;
   assert.strictEqual(h.length, 6);
-  assert.strictEqual(h[0].content, 'Make it faster and replace'); assert.strictEqual(h[0]._context, CTX1);
+  assert.strictEqual(h[0].content, 'Make it faster and replace'); assert.strictEqual(h[0]._context, CTX1 + RUN_A); assert.strictEqual(h[0]._model, 'anthropic/claude-opus-5-5');
+  assert.strictEqual(h[0]._mode, 'edit'); // the turn's mode (Auto), for the chat export; stored, never sent
+  assert.ok(!JSON.stringify(bodies).includes('_mode'));
   // the replay payloads are dropped when the turn ends (slimHistory); a short read result stays as it is
-  assert.strictEqual(h[1].tool_calls[0].function.name, 'read_lines'); assert.strictEqual(h[1]._anthropicBlocks, undefined);
+  assert.strictEqual(h[1].tool_calls[0].function.name, 'read_document'); assert.strictEqual(h[1]._anthropicBlocks, undefined);
   assert.ok(h[2]._reading && h[2]._ok && h[2].content === readOut);
-  deq(T.actionLogFromToolCalls(h[1].tool_calls, new Map([['toolu_read', h[2]]])), [{ log: true, name: 'read_lines', summary: 'lines 5–7', args: { start: 5, end: 7 }, result: readOut, status: 'ok' }]);
+  deq(T.actionLogFromToolCalls(h[1].tool_calls, new Map([['toolu_read', h[2]]])), [{ log: true, id: 'toolu_read', name: 'read_document', summary: 'lines 5–7', args: { scope: { start: 5, end: 7 }, include: ['text'], doc: null }, result: readOut, status: 'ok' }]);
   assert.strictEqual(h[3]._anthropicBlocks, undefined); assert.strictEqual(h[3]._reasoning, 'Plan.'); assert.strictEqual(h[3].tool_calls[0].id, 'toolu_e2e');
   assert.strictEqual(h[4]._ok, true);
   assert.strictEqual(h[5].content, 'Replaced it.'); assert.strictEqual(h[5]._anthropicBlocks, undefined);
@@ -112,6 +117,9 @@ test('end-to-end turn (OpenAI)', async () => {
   // --- end-to-end turn (OpenAI) continuing the same chat: previous turn rebuilt, current turn's items replayed
   state.settings.provider = 'openai';
   Object.assign(state.settings.providers.openai, { apiKey: 'sk-OPEN', model: 'gpt-6.1-sol', baseUrl: 'https://api.openai.com/v1' });
+  // Only one provider with a key: the turn context has no Agents line (test/agents.test.js), so it repeats CTX1.
+  const anthropicKey = state.settings.providers.anthropic.apiKey;
+  state.settings.providers.anthropic.apiKey = '';
   bodies.length = 0;
   const rsItem = { type: 'reasoning', id: 'rs_e2e', summary: [{ type: 'summary_text', text: 'Thinking it over' }], encrypted_content: 'ENC' };
   const fcItem = { type: 'function_call', id: 'fc_e2e', call_id: 'call_e2e', name: 'replace_selection', arguments: '{"text":"fast brown"}', status: 'completed' };
@@ -129,36 +137,51 @@ test('end-to-end turn (OpenAI)', async () => {
   await T.sendMessage();
   await new Promise((r) => setTimeout(r, 20));
   assert.strictEqual(bodies.length, 2);
-  deq(bodies[0].reasoning, { summary: 'auto' });
+  deq(bodies[0].reasoning, { effort: 'medium', summary: 'auto' });
   deq(bodies[0].input, [
-    { role: 'user', content: `${CTX1}\n\nMake it faster and replace` },
-    { type: 'function_call', call_id: 'toolu_read', name: 'read_lines', arguments: '{"start":5,"end":7}' },
+    { role: 'user', content: `${CTX1}${RUN_A}\n\nMake it faster and replace` },
+    { type: 'function_call', call_id: 'toolu_read', name: 'read_document', arguments: '{"scope":{"start":5,"end":7},"include":["text"],"doc":null}' },
     { type: 'function_call_output', call_id: 'toolu_read', output: readOut },
     { type: 'function_call', call_id: 'toolu_e2e', name: 'replace_selection', arguments: '{"text":"fast brown"}' },
     { type: 'function_call_output', call_id: 'toolu_e2e', output: pasteOk() },
     { role: 'assistant', content: 'Replaced it.' },
-    { role: 'user', content: `${CTX1}\n\nOnce more, replace` }, // the same document and selection: the same context, no changes note
+    { role: 'user', content: `${CTX1}${RUN_O}\n\nOnce more, replace` }, // the same document and selection: no changes note; another model: named
   ]);
-  assert.strictEqual(bodies[0].prompt_cache_key, 'DOC123:' + state.chatId);
-  assert.strictEqual(bodies[0].tools.length, 8); // + open_document (Phase C1), remember, ask_user
+  assert.strictEqual(bodies[0].prompt_cache_key, 'openai:DOC123:' + state.chatId);
+  assert.strictEqual(bodies[0].tools.length, 11); // read_document, find_in_document, get_selection, open_document, remember, replace_selection, ask_user, phrase_usage, chat_title, delegate, web_search (models: one usable model)
   assert.strictEqual(bodies[1].instructions, bodies[0].instructions);
   deq(bodies[1].input.slice(7), [rsItem, fcItem, { type: 'function_call_output', call_id: 'call_e2e', output: pasteOk() }]);
   h = state.messages;
   assert.strictEqual(h.length, 10);
   assert.strictEqual(h[7]._reasoning, 'Thinking it over'); assert.strictEqual(h[7]._openaiItems, undefined); assert.strictEqual(h[7]._anthropicBlocks, undefined); // dropped after the turn
   assert.strictEqual(h[9].content, 'Done!'); deq(h[9]._usage, { prompt_tokens: 70, completion_tokens: 3, total_tokens: 73 });
+  state.settings.providers.anthropic.apiKey = anthropicKey;
 });
 
-test('manual mode request (reading tools only)', async () => {
-  // --- Manual mode on OpenAI: no tools, tool history stripped
+test('Manual mode request: the writing tools and the rules of Auto; the head names Manual and asks for grouped changes; the message records Manual', async () => {
+  // --- Manual mode on OpenAI: an editing turn (every write asks on a card)
   state.applyMode = 'manual';
   bodies.length = 0;
   sandbox.fetch = async (url, init) => { bodies.push(JSON.parse(init.body)); return sseResponse(o2); };
   T.el.input.value = 'Suggest a synonym';
   await T.sendMessage();
   assert.strictEqual(bodies.length, 1);
-  deq(bodies[0].tools.map((t) => t.name), ['get_outline', 'read_lines', 'find_in_document', 'get_selection', 'open_document', 'remember', 'ask_user']); // reading, no editing
-  assert.ok(bodies[0].instructions.includes('You CANNOT modify the document: there is no replace_selection tool'));
+  deq(bodies[0].tools.map((t) => t.name || t.type), ['read_document', 'find_in_document', 'get_selection', 'open_document', 'remember', 'replace_selection', 'ask_user', 'phrase_usage', 'chat_title', 'models', 'delegate', 'web_search']); // as in Auto
+  assert.ok(!bodies[0].instructions.includes('You CANNOT modify the document'));
+  assert.ok(bodies[0].instructions.includes('this is Manual mode; the user allows each edit on a card, so group related changes into one call; other modes: Auto, Plan; commands:'), bodies[0].instructions.slice(0, 600));
+  // each turn's message keeps its own mode; a slimmed history keeps it; the requests never carry it
+  const users = state.messages.filter((m) => m.role === 'user');
+  deq(users.map((m) => [m._mode, m._asks]), [['edit', undefined], ['edit', undefined], ['edit', true]]);
+  assert.ok(!JSON.stringify(bodies).includes('_mode') && !JSON.stringify(bodies).includes('_asks'));
+  T.slimHistory(state.messages);
+  deq(state.messages.filter((m) => m.role === 'user').map((m) => [m._mode, m._asks]), [['edit', undefined], ['edit', undefined], ['edit', true]]);
+  deq(state.messages.filter((m) => m.role === 'user').map((m) => T.sentApplyMode(m)), ['auto', 'auto', 'manual']);
+  state.applyMode = 'plan';
+  bodies.length = 0;
+  T.el.input.value = 'Plan the rewrite';
+  await T.sendMessage();
+  assert.strictEqual(state.messages.filter((m) => m.role === 'user').pop()._mode, 'plan');
+  assert.ok(!JSON.stringify(bodies).includes('_mode'));
   state.applyMode = 'auto';
 });
 
@@ -182,7 +205,7 @@ test('Auto mode: edits applied directly; result to the model; action log live an
 
   // --- Auto mode: the edit is applied directly (no confirmation), its result goes to the model
   let turn = startTurn([
-    msgStart + tu(0, 'toolu_pr', 'read_lines', { start: 4, end: 5 }) + stopTool,
+    msgStart + tu(0, 'toolu_pr', 'read_document', { scope: { start: 4, end: 5 }, include: ['text'], doc: null }) + stopTool,
     msgStart + tu(0, 'toolu_pw', 'replace_text', { old_text: 'beta gamma', new_text: 'beta GAMMA' }) + stopTool,
     textRound('Done.'),
   ], 'Capitalize gamma');
@@ -191,28 +214,31 @@ test('Auto mode: edits applied directly; result to the model; action log live an
   assert.strictEqual(T.pendingPreviews.size, 0);
   assert.ok(!T.el.chat.children.some((c) => c.className.includes('preview'))); // no confirmation card
   assert.ok(fake.text('t.0').includes('Alpha beta GAMMA.'));
-  assert.strictEqual(toolResult(pvBodies[2]).content, 'Done: replaced line 4.\nLines 4-4 now:\n4: Alpha beta GAMMA.\nThe document now has 10 lines.');
+  assert.strictEqual(toolResult(pvBodies[2]).content, 'Done: replaced line 4; the document has 10 lines.'); // no section note: the section has no sentence of 5+ words to quote
   hist = state.messages;
   assert.strictEqual(hist[4]._decision, undefined); assert.strictEqual(hist[4]._ok, true); assert.strictEqual(hist[4]._edit.id, 'toolu_pw');
   assert.strictEqual(hist[2]._decision, undefined); // reading calls are never gated
   // action log rows: live, from the history (end of the turn), and after another re-render
-  const READ_ROW = '<summary title="read_lines: lines 4–5">📖 <span class="activity-name">read_lines</span>: lines 4–5</summary><div class="log-body">' +
-    '<div class="log-label">Arguments</div><pre>start: 4\nend: 5</pre><div class="log-label">Result (58 characters)</div><pre>Lines 4-5 of 10:\n4: Alpha beta gamma.\n5: Alpha beta delta.</pre></div>';
-  const WRITE_ROW = '<summary title="replace_text: &quot;beta gamma&quot;">✏️ <span class="activity-name">replace_text</span>: &quot;beta gamma&quot;</summary><div class="log-body">' +
-    '<div class="log-label">Arguments</div><pre>old_text: beta gamma\nnew_text: beta GAMMA</pre><div class="log-label">Result (89 characters)</div>' +
-    '<pre>Done: replaced line 4.\nLines 4-4 now:\n4: Alpha beta GAMMA.\nThe document now has 10 lines.</pre></div>';
+  const READ_ROW = '<summary data-tip="read_document: lines 4–5"><span class="activity-name">read_document</span>: lines 4–5</summary><div class="log-body">' +
+    '<div class="log-label">Arguments</div><pre>scope: {&quot;start&quot;:4,&quot;end&quot;:5}\ninclude: [&quot;text&quot;]\ndoc: null</pre><div class="log-label">Result (58 characters)</div><pre>Lines 4-5 of 10:\n4: Alpha beta gamma.\n5: Alpha beta delta.</pre></div>';
+  // the applied write: one row (no card) with the status word, the preview, the card's body in its fold and Undo at the end
+  const WRITE_ROW = '<details class="log-fold"><summary data-tip="replace_text · Replaced line 4"><span class="activity-name">replace_text</span> · <span class="log-status">Done</span>' +
+    '<span class="log-preview"> · beta GAMMA</span></summary><div class="log-body"><div class="log-what">Replaced line 4</div>' +
+    '<div class="log-label">What changed</div><div class="word-diff">beta <del>gamma</del><ins>GAMMA</ins></div>' +
+    '<div class="log-label">Arguments</div><pre>old_text: beta gamma\nnew_text: beta GAMMA</pre><div class="log-label">Result (49 characters)</div>' +
+    '<pre>Done: replaced line 4; the document has 10 lines.</pre></div></details>' +
+    '<span class="row-acts"><button class="row-act" type="button" data-act="undo-edit" data-edit="toolu_pw" data-tip="Undo this edit" aria-label="Undo this edit">↶</button></span>';
   const rowsOf = (bs) => bs.map((b) => b._rows.map((r) => [r.tagName, r.className, r.innerHTML]));
-  const EXPECTED_ROWS = [[['details', 'activity-row log-row ok', READ_ROW]], [['details', 'activity-row log-row ok', WRITE_ROW]]];
+  const EXPECTED_ROWS = [[['details', 'activity-row log-row ok', READ_ROW], ['div', 'activity-row log-row ok write-row', WRITE_ROW]]]; // one bubble, two stages
   const all = bubbles();
-  assert.strictEqual(all.length, 4); // two live bubbles, then the two rendered from the history
-  deq(rowsOf(all.slice(0, 2)), EXPECTED_ROWS);
-  deq(rowsOf(all.slice(2)), EXPECTED_ROWS);
+  assert.strictEqual(all.length, 2); // the live bubble (one per turn), then the one rendered from the history
+  deq(all.map((b) => b._rounds.map((r) => r.rows.length)), [[1, 1, 0], [1, 1, 0]]); // a stage per round
+  deq(rowsOf(all.slice(0, 1)), EXPECTED_ROWS);
+  deq(rowsOf(all.slice(1)), EXPECTED_ROWS);
   T.el.chat.children.length = 0;
   T.renderHistory();
   deq(rowsOf(bubbles()), EXPECTED_ROWS);
-  let cardsNow = T.el.chat.children.filter((c) => c.className.includes('tool-card'));
-  assert.strictEqual(cardsNow.length, 1);
-  assert.ok(cardsNow[0].innerHTML.startsWith('<div>✅ Replaced line 4</div>') && cardsNow[0].innerHTML.includes('data-act="undo-edit" data-edit="toolu_pw"'));
+  assert.strictEqual(T.el.chat.children.filter((c) => c.className.includes('tool-card')).length, 0); // the row stands in for the card
 });
 
 test('one paste per turn: a second replace_selection is refused without a paste; the next message may paste again', async () => {
@@ -233,7 +259,7 @@ test('one paste per turn: a second replace_selection is refused without a paste;
   Object.assign(state.settings.providers.anthropic, { apiKey: 'sk-ant-NEW', model: 'claude-opus-5-5', baseUrl: 'https://api.anthropic.com/v1' });
   let rounds = [
     msgStart + tu(0, 'toolu_p1', 'replace_selection', { text: 'Hello.' }) + stopTool,
-    msgStart + tu(0, 'toolu_r1', 'read_lines', { start: 1, end: 1 }) + stopTool,
+    msgStart + tu(0, 'toolu_r1', 'read_document', { scope: { start: 1, end: 1 }, include: ['text'], doc: null }) + stopTool,
     msgStart + tu(0, 'toolu_p2', 'replace_selection', { text: 'Hello.' }) + stopTool,
     textRound('Done.'),
   ];
@@ -253,9 +279,14 @@ test('one paste per turn: a second replace_selection is refused without a paste;
       'so reading tools cannot show it. Do not paste again; if more changes are needed, say so in the chat and the user will send a new message.');
     const refused = state.messages.find((m) => m.tool_call_id === 'toolu_p2');
     assert.strictEqual(refused._ok, false); assert.strictEqual(refused._message, 'Not pasted again (already pasted once in this message)');
-    const cards = T.el.chat.children.filter((c) => c.className.includes('tool-card')).map((c) => c.innerHTML).slice(-2); // as rendered from the history
-    assert.ok(cards[0].includes('Pasted'), cards[0]);
-    assert.ok(cards[1].startsWith('<div>⚠️ Not pasted again (already pasted once in this message)</div>') && cards[1].includes('<summary>Text (not pasted)</summary>'), cards[1]);
+    // as rendered from the history: the paste is its row (Done, the text), the refused second paste its failed row (no
+    // card; the text not pasted is in its fold's arguments)
+    assert.strictEqual(chatCards(T.el.chat).length, 0);
+    const pasteRow = T.el.chat.children.flatMap((c) => c._rows || []).filter((r) => r.className.includes('write-row')).pop();
+    assert.ok(pasteRow.innerHTML.includes('<span class="activity-name">replace_selection</span> · <span class="log-status">Done</span><span class="log-preview"> · Hello.</span>'), pasteRow.innerHTML);
+    const failRow = T.el.chat.children.flatMap((c) => c._rows || []).filter((r) => /\blog-row fail\b/.test(r.className)).pop();
+    assert.ok(failRow.innerHTML.includes('<span class="activity-name">replace_selection</span>') && failRow.innerHTML.includes(' · failed</summary>') &&
+      failRow.innerHTML.includes('text: Hello.') && failRow.innerHTML.includes('Error: replace_selection was already used in this message'), failRow.innerHTML);
     // a new message is a new turn: it may paste again
     rounds = [msgStart + tu(0, 'toolu_p3', 'replace_selection', { text: 'Again.' }) + stopTool, textRound('Done.')];
     bodies = [];
@@ -263,4 +294,27 @@ test('one paste per turn: a second replace_selection is refused without a paste;
     await T.sendMessage();
     deq(pastes, ['Hello.', 'Again.']);
   } finally { state.googleConnected = true; }
+});
+
+// A revert after a pick in the model menu (accounts.js revertChatModel) is stored as a user-role row (_auto, _revert):
+// every provider gets its text as a plain user message (Anthropic: merged with the tool results before it), it belongs
+// to its turn, a fold notes it, and the wrap-up / nudge cleanup leaves it.
+test('a revert row: sent as a user message by every provider, part of its turn, kept after the turn, noted in a fold', () => {
+  const row = { role: 'user', content: 'The switch to Munin failed (connection refused); this chat runs on OpenAI/gpt-6.1-sol.', _auto: true,
+    _revert: { from: 'Munin', to: 'OpenAI/gpt-6.1-sol', error: 'connection refused' } };
+  const call = { id: 'c1', type: 'function', function: { name: 'read_document', arguments: '{}' } };
+  const user = { role: 'user', content: 'Hi' };
+  const hist = [user, { role: 'assistant', content: null, tool_calls: [call] }, { role: 'tool', tool_call_id: 'c1', content: 'text' }, row];
+  assert.strictEqual(T.lastUserIndex(hist), 0); // not a new turn
+  const chat = T.buildApiMessages(true, hist, 'sys');
+  deq(chat[chat.length - 1], { role: 'user', content: row.content });
+  const oa = T.toResponsesInput(true, hist);
+  deq(oa[oa.length - 1], { role: 'user', content: row.content });
+  const an = T.toAnthropicMessages(true, hist);
+  deq(an[an.length - 1].content.map((b) => b.type), ['tool_result', 'text']);
+  assert.strictEqual(an[an.length - 1].content[1].text, row.content);
+  const msgs = [...hist, { role: 'assistant', content: 'Done.' }];
+  T.settleAutoKinds(msgs, user);
+  assert.ok(msgs.includes(row));
+  assert.ok(T.foldText(msgs).includes(`[${row.content}]`));
 });

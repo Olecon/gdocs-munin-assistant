@@ -1,26 +1,31 @@
 'use strict';
 // Module revise.js: revise_section(heading, goal), a revision of one section paragraph by paragraph that the panel
 // drives, not the model. The section is resolved like replace_section; each paragraph (a body line with text) goes
-// to one quiet request (no chat history: a short head with the writing rules and the prompt of the section type,
-// then the document's title, keywords and research question, the goal and the paragraph) that answers with the
+// to one quiet request (no chat history: a short head with the document writing rules (DOCUMENT_WRITING_RULES), the prompt
+// of the section type, MAIN.md, DOC.md and the untrusted-data note; then the document's title, keywords and research
+// question, the section line (sectionExpectation: its heading and first sentence), the goal and the paragraph) that answers with the
 // revised paragraph; a paragraph that differs is written as one verified replace through the write path (the
 // beforeWrite checks and the edit gate of replace_text apply, so a refused paragraph is skipped with a note). After
 // the last paragraph one more request over the revised section asks for transition fixes only ({old, new} sentence
 // pairs, applied the same way). The edits form one journal entry (kind 'multi'), so Undo on the card restores the
 // whole section. Progress on the call's card and the status line; Stop ends the loop between paragraphs.
-/* global anthropicHeaders, apiEditing, apiUrl, bearerHeaders, citationsInRanges, commitEdit, countWords, escapeHtml, gateEdit,
-   MUNIN_REASONING_EFFORT, OBJECT_CHAR, oneLine, paperCards, parseJsonLoose, planReplaceText, rangeLabel, registerTools, replacePlan,
-   runStream, samplingFields, setStatus, showText, WRITING_RULES */
-/* exported REVISE_DEF, REVISE_SECTION_PROMPTS, reviseSectionKind, reviseSection, reviseParagraphText */
+/* global chatBody, anthropicHeaders, apiEditing, apiUrl, bearerHeaders, citationsInRanges, commitEdit, countWords, gateEdit,
+   MUNIN_REASONING_EFFORT, OBJECT_CHAR, oneLine, parseJsonLoose, planReplaceText, rangeLabel, registerTools, replacePlan,
+   runStream, samplingFields, setStatus, showText, DOCUMENT_WRITING_RULES, docInstructionsBlock, UNTRUSTED_DATA_NOTE, sectionKind,
+   sectionKindAt, sectionExpectation, textExcerpt */
+/* global errorClause, rawError */
+/* exported REVISE_DEF, REVISE_SECTION_PROMPTS, reviseSectionKind, reviseSection, reviseParagraphText, reviseAsk, reviseDocLines */
 
 const REVISE_MIN_WORDS = 5; // shorter body lines (captions, labels) are left alone
 const REVISE_MAX_PAIRS = 3; // transition fixes per section
 const REVISE_MAX_NOTES = 8;
-const REVISE_CONTEXT_CHARS = 400; // the previous paragraph, as context
+const REVISE_CONTEXT_CHARS = 400; // the end of the previous paragraph, as context
 const REVISE_GOAL_CHARS = 300;
 const REVISE_DEFAULT_GOAL = 'make it clearer and tighter in the author\'s voice; keep every claim, number and citation';
 
-// The prompt of each section type (about 60 tokens each), detected from the heading (English and Russian).
+// The prompt of each section type (about 60 tokens each), detected from the whole heading (English and Russian) by
+// sectionKind, for a subsection from the classic section above it (sectionKindAt; src/doc-conventions.js, whose
+// SECTION_HINTS are the one-clause forms of these); limitations and data availability sections get the general prompt.
 const REVISE_SECTION_PROMPTS = {
   abstract: 'Section: abstract. A paragraph a reader can use alone: the problem, what was done, the main result with its number, what it means. No citations, no undefined abbreviations, at most one sentence of background.',
   introduction: 'Section: introduction. Move from what is known to the gap to this work\'s aim. Every claim about earlier work keeps the source the text gives. Do not preview results unless the text already does.',
@@ -29,14 +34,10 @@ const REVISE_SECTION_PROMPTS = {
   discussion: 'Section: discussion. Interpret: what the results mean, how they compare with the work the text cites, the limits, what follows. Keep claim strength exactly as written; add no new results.',
   other: 'Section: general text. Keep its purpose and the order of its points; one clear point per sentence.',
 };
-const REVISE_KIND_RES = [
-  ['abstract', /\b(abstract|summary)\b|аннотац|реферат|резюме/i],
-  ['introduction', /\b(introduction|background)\b|введение|актуальност/i],
-  ['methods', /\b(methods?|methodology|materials|experimental|procedures?)\b|метод|материал|экспериментальн/i],
-  ['results', /\b(results?|findings)\b|результат/i],
-  ['discussion', /\b(discussion|conclusions?)\b|обсуждени|заключени|вывод/i],
-];
-const reviseSectionKind = (heading) => (REVISE_KIND_RES.find(([, re]) => re.test(String(heading || ''))) || ['other'])[0];
+const reviseSectionKind = (heading) => { const k = sectionKind(heading); return k && REVISE_SECTION_PROMPTS[k] ? k : 'other'; };
+// The type of the section headed on line n of the model: its own, else that of the classic section it sits under (a
+// subsection of the Methods is methods text: sectionKindAt).
+const reviseKindAt = (model, n) => { const k = sectionKindAt(model, n); return k && REVISE_SECTION_PROMPTS[k] ? k : 'other'; };
 
 const REVISE_HEAD = 'You revise one paragraph of a document. Answer with the revised paragraph only, as plain text in the paragraph\'s language: no quotes, labels, comments, Markdown or line breaks. If the paragraph needs no change for the goal, return it unchanged.';
 const REVISE_TRANSITIONS_HEAD = 'You check only the transitions between the paragraphs of one section. Where a paragraph does not follow from the one before, change its first sentence (or the last sentence before it) so the link is clear; change nothing else. Answer with a JSON array of at most 3 objects {"old": the exact sentence as it is in the text, "new": its replacement}, or [] when the transitions are fine.';
@@ -47,13 +48,13 @@ const reviseKey = (t) => String(t).replace(/\s+/g, ' ').trim().toLowerCase();
 // the body up to the next heading of the same or a higher level): { name, from, to, paras: [line] } or { error }.
 function reviseFindSection(model, heading) {
   const want = reviseKey(heading || '');
-  if (!want) return { error: 'heading is empty. Pass the heading text as get_outline shows it' };
+  if (!want) return { error: 'heading is empty. Pass the heading text as the outline shows it' };
   const heads = model.lines.filter((l) => l.heading && !l.cell && l.text.trim());
   const found = heads.filter((l) => reviseKey(l.text) === want);
   if (!found.length) {
     const near = heads.filter((l) => reviseKey(l.text).includes(want) || want.includes(reviseKey(l.text))).slice(0, 5);
     const list = (near.length ? near : heads.slice(0, 5)).map((l) => `"${oneLine(l.text.trim(), 80)}" (line ${l.line})`).join(', ');
-    return { error: `no heading reads "${oneLine(heading, 80)}". ${near.length ? 'Closest' : 'Some'} headings: ${list || 'none'}. Pass the heading exactly as get_outline shows it` };
+    return { error: `no heading reads "${oneLine(heading, 80)}". ${near.length ? 'Closest' : 'Some'} headings: ${list || 'none'}. Pass the heading exactly as the outline shows it` };
   }
   if (found.length > 1) return { error: `${found.length} headings read "${oneLine(heading, 80)}" (lines ${found.map((l) => l.line).join(', ')}); revise one with replace_text instead` };
   const h = found[0];
@@ -72,9 +73,12 @@ const reviseable = (l) => !l.heading && !l.cell && !l.suggested && l.exact !== f
   !l.text.includes(OBJECT_CHAR) && !l.text.includes('\u000b') && countWords(l.text) >= REVISE_MIN_WORDS;
 
 // ---- The requests ----------------------------------------------------------------------------------------
-// A plain request without tools for the turn's provider (like the summary request of compaction.js).
-function reviseRequest(snap, system, user) {
-  const { prov, cfg } = snap;
+// A plain request without tools for the turn's provider (like the summary request of compaction.js). opts (the other
+// quiet requests of src/prose-tools.js and src/polish.js): profile, Munin's sampling profile ('tools' copies the text,
+// 'summary' for an answer of its own); maxTokens, the reply budget (default: the provider's).
+function reviseRequest(snap, system, user, opts = {}) {
+  const { prov: p0, cfg } = snap;
+  const prov = opts.maxTokens ? { ...p0, maxTokens: opts.maxTokens } : p0;
   if (prov.id === 'openai') {
     return { kind: 'responses', url: apiUrl(snap, '/responses'), headers: bearerHeaders(cfg), tools: [],
       body: { model: cfg.model, instructions: system, input: [{ role: 'user', content: user }], max_output_tokens: prov.maxTokens, stream: true, store: false } };
@@ -87,21 +91,19 @@ function reviseRequest(snap, system, user) {
     model: cfg.model, persona: 'raw', max_tokens: prov.maxTokens, stream: true, stream_options: { include_usage: true },
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     chat_template_kwargs: { reasoning_effort: MUNIN_REASONING_EFFORT }, // a paragraph needs no deep thinking
-    ...samplingFields(prov),
+    ...samplingFields(prov, opts.profile || 'tools'), // the paragraph is mostly copied: no presence penalty
   };
-  return { kind: 'chat', url: apiUrl(snap, '/chat/completions'), headers: bearerHeaders(cfg), body, tools: [] };
+  return { kind: 'chat', url: apiUrl(snap, '/chat/completions'), headers: bearerHeaders(cfg), body: chatBody(prov, body), tools: [] };
 }
 
-// The document lines of the user message: the title, keywords (a "Keywords:" line) and the paper card's question.
+// The document lines of the user message: the title and keywords (a "Keywords:" line), cut at a word when long.
 function reviseDocLines(snap) {
   const lines = snap.model.lines;
   const title = (lines.find((l) => l.style === 'TITLE' && l.text.trim()) || {}).text || snap.docTitle || '';
   const kw = lines.find((l) => /^\s*(key ?words|ключевые слова)\s*[:.—–-]/i.test(l.text));
-  const card = typeof paperCards !== 'undefined' && paperCards.docId === snap.model.docId && paperCards.entry ? paperCards.entry.card : null;
   return [
-    title ? `Document: ${oneLine(title.trim(), 200)}` : '',
-    kw ? `Keywords: ${oneLine(kw.text.replace(/^\s*(key ?words|ключевые слова)\s*[:.—–-]\s*/i, ''), 200)}` : '',
-    card && card.question ? `Research question: ${oneLine(card.question, 200)}` : '',
+    title ? `Document: ${textExcerpt(title, 200)}` : '',
+    kw ? `Keywords: ${textExcerpt(kw.text.replace(/^\s*(key ?words|ключевые слова)\s*[:.—–-]\s*/i, ''), 200)}` : '',
   ].filter(Boolean);
 }
 
@@ -120,8 +122,8 @@ function reviseParagraphText(raw, original) {
 }
 
 // One quiet request: { content, tokens }. Throws on failure (an AbortError after Stop).
-async function reviseAsk(snap, system, user) {
-  const r = await runStream(reviseRequest(snap, system, user), snap.signal || new AbortController().signal, snap, {});
+async function reviseAsk(snap, system, user, opts = {}) {
+  const r = await runStream(reviseRequest(snap, system, user, opts), snap.signal || new AbortController().signal, snap, {});
   const u = r.usage || {};
   return { content: String(r.content || ''), tokens: (Number(u.prompt_tokens) || 0) + (Number(u.completion_tokens) || 0) };
 }
@@ -155,15 +157,17 @@ function paragraphPlan(model, n, oldText, newText) {
 }
 
 // ---- The tool ----------------------------------------------------------------------------------------------
-async function reviseSection(args, snap, ui = {}, call = {}) {
+async function reviseSection(args, snap, _ui = {}, call = {}) {
   if (!snap.model) return 'Error: revise_section needs the Google Docs API, which is not available for this message.';
   const heading = typeof args.heading === 'string' ? args.heading : '';
   const sec = reviseFindSection(snap.model, heading);
   if (sec.error) return `Error: ${sec.error}.`;
   if (!sec.paras.length) return `Error: the section «${sec.name}» has no paragraphs to revise (subheadings, tables, images and lines under ${REVISE_MIN_WORDS} words are left alone).`;
-  const kind = reviseSectionKind(sec.name);
-  const goal = typeof args.goal === 'string' && args.goal.trim() ? oneLine(args.goal.trim(), REVISE_GOAL_CHARS) : REVISE_DEFAULT_GOAL;
-  const system = `${REVISE_HEAD}\n\n${WRITING_RULES}\n\n${REVISE_SECTION_PROMPTS[kind]}`;
+  const kind = reviseKindAt(snap.model, sec.from);
+  const goal = typeof args.goal === 'string' && args.goal.trim() ? textExcerpt(args.goal, REVISE_GOAL_CHARS) : REVISE_DEFAULT_GOAL;
+  // The user's standing instructions (MAIN.md, DOC.md) and the untrusted-data rule hold here as in the chat: the paragraph is data.
+  const tail = [docInstructionsBlock(snap), UNTRUSTED_DATA_NOTE].filter(Boolean).join('\n\n');
+  const system = `${REVISE_HEAD}\n\n${DOCUMENT_WRITING_RULES}\n\n${REVISE_SECTION_PROMPTS[kind]}\n\n${tail}`;
   const docLines = reviseDocLines(snap);
   const total = sec.paras.length;
   const id = call.id || 'revise';
@@ -175,7 +179,7 @@ async function reviseSection(args, snap, ui = {}, call = {}) {
   let stopped = -1; // the paragraph index Stop came before
   const progress = (t) => {
     setStatus(t);
-    if (ui.card && ui.card.isConnected) ui.card.innerHTML = `<div>${escapeHtml('⏳ ' + t)}</div>`;
+    if (snap.onCallProgress) snap.onCallProgress(t); // the bubble's status line (a write has no pending card)
   };
   const aborted = () => !!(snap.signal && snap.signal.aborted);
   let prev = '';
@@ -183,13 +187,17 @@ async function reviseSection(args, snap, ui = {}, call = {}) {
     if (aborted()) { stopped = i; break; }
     const p = sec.paras[i];
     progress(`Revising ${sec.name}: paragraph ${i + 1} of ${total}`);
-    const user = [...docLines, `Section: ${sec.name}`, `Goal: ${goal}`,
-      prev ? `Previous paragraph (context only, do not revise it):\n${oneLine(prev, REVISE_CONTEXT_CHARS)}` : '',
+    // The section line names the section and quotes its first sentence (not this paragraph's) as the register to keep.
+    // The previous paragraph by its end, the part this one follows from: whole sentences, […] where its start was left out.
+    const where = sectionExpectation(snap.model, p.line, { skipLine: true, hint: false }) || `Section: ${sec.name}`;
+    const user = [...docLines, where, `Goal: ${goal}`,
+      prev ? `Previous paragraph (context only, do not revise it):\n${textExcerpt(prev, REVISE_CONTEXT_CHARS, 'end')}` : '',
       `Paragraph to revise:\n${p.text}`].filter(Boolean).join('\n');
     let answer;
     try { answer = await reviseAsk(snap, system, user); } catch (e) {
       if (aborted() || e.name === 'AbortError') { stopped = i; break; }
-      skipped++; note(`paragraph ${i + 1}: the request failed (${e.message})`);
+      console.warn('Munin: revise request failed:', rawError(e));
+      skipped++; note(`paragraph ${i + 1}: the request failed (${errorClause(e)})`);
       prev = p.text;
       continue;
     }
@@ -212,15 +220,16 @@ async function reviseSection(args, snap, ui = {}, call = {}) {
     const now = sec.paras.map((p) => (snap.model.lines[p.line - 1] || {}).text || p.text);
     let pairs = [];
     try {
-      const a = await reviseAsk(snap, `${REVISE_TRANSITIONS_HEAD}\n\n${WRITING_RULES}`, [...docLines, `Section: ${sec.name}`, '', now.join('\n\n')].join('\n'));
+      const a = await reviseAsk(snap, `${REVISE_TRANSITIONS_HEAD}\n\n${DOCUMENT_WRITING_RULES}\n\n${tail}`, [...docLines, `Section: ${sec.name}`, '', now.join('\n\n')].join('\n'));
       requests++; tokens += a.tokens;
       const v = parseJsonLoose(a.content);
       pairs = (Array.isArray(v) ? v : []).filter((x) => x && typeof x.old === 'string' && typeof x.new === 'string' && x.old.trim() && x.new.trim() && x.old !== x.new && !/\n/.test(x.new)).slice(0, REVISE_MAX_PAIRS);
     } catch (e) {
-      if (!aborted()) note(`transitions: the request failed (${e.message})`);
+      if (!aborted()) { console.warn('Munin: revise request failed:', rawError(e)); note(`transitions: the request failed (${errorClause(e)})`); }
     }
     for (let k = 0; k < pairs.length && !aborted(); k++) {
       const plan = planReplaceText(snap.model, { old_text: pairs[k].old, new_text: pairs[k].new });
+      if (plan.reply) continue; // the sentence already reads that (a "No change" plan)
       if (plan.error || plan.from < sec.from || plan.to > sec.to || plan.from !== plan.to) { note(`transition ${k + 1}: its sentence was not found once in the section; skipped`); continue; }
       const w = await reviseWrite(snap, plan, pairs[k].old, pairs[k].new, `${id}.t${k + 1}`);
       if (w.stop) break;
@@ -250,7 +259,7 @@ const REVISE_DEF = { type: 'function', function: {
   parameters: {
     type: 'object',
     properties: {
-      heading: { type: 'string', description: 'As get_outline shows it.' },
+      heading: { type: 'string', description: 'As the outline shows it.' },
       goal: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'What to achieve; null: a general polish.' },
     },
     required: ['heading', 'goal'],
@@ -264,5 +273,6 @@ registerTools([REVISE_DEF], {
   run: (name, args, snap, ui, call) => reviseSection(args, snap, ui, call),
   summary: (name, args) => (typeof args.heading === 'string' ? `«${oneLine(args.heading, 60)}»` : ''),
   pending: 'Revising the section…',
-  prompt: [{ section: 'edit', line: '- revise_section(heading, goal): a whole section, paragraph by paragraph, then its transitions (one request per paragraph, 1–2k tokens each); for a few sentences use replace_text.' }],
+  // The rewrite routing: one line, here because revise_section is the tool it adds (offered where this line is).
+  prompt: [{ section: 'edit', line: '- Rewrites: a few sentences → replace_text; polish or simplify a whole section keeping its content → revise_section (one request per paragraph); replace a section\'s body with new content → replace_section.' }],
 });
